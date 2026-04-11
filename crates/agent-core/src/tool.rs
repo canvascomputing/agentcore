@@ -1,4 +1,5 @@
-use std::collections::HashSet;
+use std::any::{Any, TypeId};
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -15,10 +16,57 @@ use crate::message::ContentBlock;
 // ---------------------------------------------------------------------------
 
 /// Context passed to tool execution.
-#[derive(Clone, Debug)]
 pub struct ToolContext {
     pub working_directory: PathBuf,
     pub tool_registry: Option<Arc<ToolRegistry>>,
+    extensions: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+}
+
+impl ToolContext {
+    pub fn new(working_directory: PathBuf) -> Self {
+        Self {
+            working_directory,
+            tool_registry: None,
+            extensions: HashMap::new(),
+        }
+    }
+
+    pub fn with_registry(mut self, registry: Arc<ToolRegistry>) -> Self {
+        self.tool_registry = Some(registry);
+        self
+    }
+
+    /// Store a typed extension value accessible by tools.
+    pub fn set_extension<T: Any + Send + Sync + 'static>(&mut self, value: T) {
+        self.extensions.insert(TypeId::of::<T>(), Arc::new(value));
+    }
+
+    /// Retrieve a typed extension value.
+    pub fn get_extension<T: Any + Send + Sync + 'static>(&self) -> Option<&T> {
+        self.extensions
+            .get(&TypeId::of::<T>())
+            .and_then(|arc| arc.downcast_ref::<T>())
+    }
+}
+
+impl Clone for ToolContext {
+    fn clone(&self) -> Self {
+        Self {
+            working_directory: self.working_directory.clone(),
+            tool_registry: self.tool_registry.clone(),
+            extensions: self.extensions.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for ToolContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolContext")
+            .field("working_directory", &self.working_directory)
+            .field("tool_registry", &self.tool_registry)
+            .field("extensions_count", &self.extensions.len())
+            .finish()
+    }
 }
 
 /// Definition sent to the LLM as part of the tools parameter.
@@ -653,5 +701,21 @@ mod tests {
     #[should_panic(expected = "requires a handler")]
     fn tool_builder_panics_without_handler() {
         let _ = ToolBuilder::new("no_handler", "missing").build();
+    }
+
+    #[test]
+    fn tool_context_extensions_set_get() {
+        let mut ctx = test_tool_context();
+        ctx.set_extension(42u32);
+        ctx.set_extension("hello".to_string());
+
+        assert_eq!(ctx.get_extension::<u32>(), Some(&42));
+        assert_eq!(ctx.get_extension::<String>(), Some(&"hello".to_string()));
+    }
+
+    #[test]
+    fn tool_context_extensions_missing() {
+        let ctx = test_tool_context();
+        assert!(ctx.get_extension::<u32>().is_none());
     }
 }

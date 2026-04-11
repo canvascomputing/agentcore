@@ -247,17 +247,12 @@ impl Tool for DeferredMockTool {
 // ---------------------------------------------------------------------------
 
 pub fn test_tool_context() -> ToolContext {
-    ToolContext {
-        working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        tool_registry: None,
-    }
+    ToolContext::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
 pub fn test_tool_context_with_registry(registry: Arc<ToolRegistry>) -> ToolContext {
-    ToolContext {
-        working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        tool_registry: Some(registry),
-    }
+    ToolContext::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        .with_registry(registry)
 }
 
 // ---------------------------------------------------------------------------

@@ -643,10 +643,9 @@ impl LlmAgent {
                 ctx.cost_tracker.record_tool_calls(1);
             }
 
-            let tool_ctx = ToolContext {
-                working_directory: ctx.working_directory.clone(),
-                tool_registry: Some(Arc::new(tools.clone())),
-            };
+            let mut tool_ctx = ToolContext::new(ctx.working_directory.clone())
+                .with_registry(Arc::new(tools.clone()));
+            tool_ctx.set_extension(ctx.clone());
             let tool_results = execute_tool_calls(&tool_calls, &tools, &tool_ctx).await;
 
             // Emit tool end events

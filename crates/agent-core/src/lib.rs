@@ -5,6 +5,7 @@ pub mod provider;
 pub mod cost;
 pub mod prompt;
 pub mod agent;
+pub mod spawn;
 
 #[cfg(test)]
 pub(crate) mod testutil;
@@ -37,3 +38,6 @@ pub use agent::{
     Agent, AgentBuilder, AgentOutput, CommandQueue, CommandSource, Event, InvocationContext,
     OutputSchema, QueuePriority, QueuedCommand, generate_agent_id, validate_value,
 };
+
+// Orchestration
+pub use spawn::SpawnAgentTool;

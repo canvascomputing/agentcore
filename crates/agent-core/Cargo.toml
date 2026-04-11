@@ -17,3 +17,6 @@ name = "minimal_provider"
 
 [[example]]
 name = "minimal_agent"
+
+[[example]]
+name = "minimal_orchestrator"
