@@ -1,9 +1,6 @@
 //! Integration test: Agent-driven task management with persistence.
 //!
 //! Exercises the full stack: agent loop → tool calls → TaskStore/SessionStore → disk.
-//! Requires ANTHROPIC_API_KEY.
-//!
-//! Run: cargo run -p agent-core --example minimal_persistence
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -12,16 +9,12 @@ use std::sync::{Arc, Mutex};
 
 use agent::{
     AgentBuilder, AgenticError, AnthropicProvider, CostTracker, Event, HttpTransport,
-    InvocationContext, SessionStore, TaskStore, generate_agent_id, task_create_tool,
-    task_list_tool, task_update_tool,
+    InvocationContext, LiteLlmProvider, LlmProvider, SessionStore, TaskStore, generate_agent_id,
+    task_create_tool, task_list_tool, task_update_tool,
 };
 
-#[tokio::main]
-async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let api_key =
-        std::env::var("ANTHROPIC_API_KEY").expect("Set ANTHROPIC_API_KEY environment variable");
-
-    let transport: HttpTransport = Box::new(|url, headers, body| {
+fn build_transport() -> HttpTransport {
+    Box::new(|url, headers, body| {
         let url = url.to_string();
         let headers: Vec<(String, String)> = headers
             .into_iter()
@@ -30,34 +23,53 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         Box::pin(async move {
             let client = reqwest::Client::new();
             let mut req = client.post(&url).json(&body);
-            for (key, value) in &headers {
-                req = req.header(key.as_str(), value.as_str());
+            for (k, v) in &headers {
+                req = req.header(k.as_str(), v.as_str());
             }
-            let resp = req
-                .send()
-                .await
-                .map_err(|e| AgenticError::Other(e.to_string()))?;
-            let json: serde_json::Value = resp
-                .json()
-                .await
-                .map_err(|e| AgenticError::Other(e.to_string()))?;
-            Ok(json)
+            let resp = req.send().await.map_err(|e| AgenticError::Other(e.to_string()))?;
+            resp.json().await.map_err(|e| AgenticError::Other(e.to_string()))
         })
-    });
+    })
+}
 
-    let provider = Arc::new(AnthropicProvider::new(api_key, transport));
+fn build_provider() -> (Arc<dyn LlmProvider>, String) {
+    let transport = build_transport();
+    if let Ok(url) = std::env::var("LITELLM_API_URL") {
+        let key = std::env::var("LITELLM_API_KEY").unwrap_or_else(|_| "unused".into());
+        let model = std::env::var("LITELLM_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".into());
+        return (Arc::new(LiteLlmProvider::new(key, transport).base_url(url)), model);
+    }
+    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+        let mut p = AnthropicProvider::new(key, transport);
+        if let Ok(url) = std::env::var("ANTHROPIC_BASE_URL") {
+            p = p.base_url(url);
+        }
+        let model = std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".into());
+        return (Arc::new(p), model);
+    }
+    if std::net::TcpStream::connect("127.0.0.1:4000").is_ok() {
+        let key = std::env::var("LITELLM_API_KEY").unwrap_or_else(|_| "unused".into());
+        let model = std::env::var("LITELLM_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".into());
+        return (Arc::new(LiteLlmProvider::new(key, transport).base_url("http://localhost:4000".into())), model);
+    }
+    let supported = ["ANTHROPIC_API_KEY", "LITELLM_API_URL"];
+    eprintln!("Error: Set {}", supported.join(" or "));
+    std::process::exit(1);
+}
 
-    // --- Set up persistence in a temp directory ---
+#[tokio::main]
+async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let (provider, model) = build_provider();
+
     let tmp = tempfile::tempdir()?;
     let base = tmp.path();
 
     let task_store = Arc::new(Mutex::new(TaskStore::open(base, "integration-test")));
     let session_store = SessionStore::new(base, "test-session");
 
-    // --- Build agent with task tools ---
     let agent = AgentBuilder::new()
         .name("planner")
-        .model("claude-sonnet-4-20250514")
+        .model(&model)
         .system_prompt(
             "You are a project planner. Use the task tools to manage work items. Be concise.",
         )
@@ -99,10 +111,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         agent_id: generate_agent_id("planner"),
     };
 
-    // --- Run ---
     let _output = agent.run(ctx).await?;
 
-    // --- Verify persistence ---
     println!("\n\n--- Verification ---");
 
     let verify_store = TaskStore::open(base, "integration-test");

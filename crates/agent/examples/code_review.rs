@@ -148,15 +148,36 @@ struct Config {
 }
 
 fn parse_args(args: &[String]) -> Config {
+    // Auto-detect provider:
+    //   LITELLM_API_URL set → litellm
+    //   ANTHROPIC_API_KEY set → anthropic
+    //   localhost:4000 reachable → litellm (default)
+    let (default_provider, default_api_key, default_base_url, default_model) =
+        if let Ok(url) = std::env::var("LITELLM_API_URL") {
+            let key = std::env::var("LITELLM_API_KEY").unwrap_or_else(|_| "unused".into());
+            let model = std::env::var("LITELLM_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".into());
+            ("litellm".into(), key, Some(url), model)
+        } else if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+            let base = std::env::var("ANTHROPIC_BASE_URL").ok();
+            let model = std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".into());
+            ("anthropic".into(), key, base, model)
+        } else if std::net::TcpStream::connect("127.0.0.1:4000").is_ok() {
+            let key = std::env::var("LITELLM_API_KEY").unwrap_or_else(|_| "unused".into());
+            let model = std::env::var("LITELLM_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".into());
+            ("litellm".into(), key, Some("http://localhost:4000".into()), model)
+        } else {
+            ("anthropic".into(), String::new(), None, "claude-sonnet-4-20250514".into())
+        };
+
     let mut c = Config {
         folder: String::new(),
         prompt: "Analyze this repository. Identify its purpose, languages, and key components. \
                  Provide a detailed architecture summary."
             .into(),
-        model: "claude-sonnet-4-20250514".into(),
-        provider: "anthropic".into(),
-        api_key: std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
-        base_url: None,
+        model: default_model,
+        provider: default_provider,
+        api_key: default_api_key,
+        base_url: default_base_url,
         output: "review.json".into(),
         max_cost: 5.00,
     };
@@ -182,6 +203,9 @@ fn parse_args(args: &[String]) -> Config {
                 eprintln!("  --base-url <URL>    Override provider URL");
                 eprintln!("  -o, --output <PATH> Output file (default: review.json)");
                 eprintln!("  --max-cost <N>      Max cost in USD (default: 5.00)");
+                eprintln!("\nEnvironment:");
+                eprintln!("  ANTHROPIC_API_KEY   Use Anthropic directly");
+                eprintln!("  LITELLM_API_URL     Use LiteLLM proxy (e.g. http://localhost:4000)");
                 std::process::exit(0);
             }
             other if !other.starts_with('-') && c.folder.is_empty() => c.folder = other.into(),
@@ -195,7 +219,9 @@ fn parse_args(args: &[String]) -> Config {
 
     if c.folder.is_empty() { c.folder = ".".into(); }
     if c.api_key.is_empty() {
-        eprintln!("Error: API key required. Set ANTHROPIC_API_KEY or use --api-key");
+        let supported = ["ANTHROPIC_API_KEY", "LITELLM_API_URL"];
+        let names = supported.join(" or ");
+        eprintln!("Error: Set {names}");
         std::process::exit(1);
     }
     c

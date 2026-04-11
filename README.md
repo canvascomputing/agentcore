@@ -58,19 +58,37 @@ println!("{}", cost_tracker.summary());
 ## Development
 
 ```bash
-make
-make test
-make fmt
-make clean
+make          # build
+make test     # test
+make fmt      # format
+make example  # list and run examples
+make litellm  # start LiteLLM proxy
 ```
 
-Examples (require `ANTHROPIC_API_KEY`):
+### Examples
+
+Examples auto-detect the provider: `ANTHROPIC_API_KEY`, `LITELLM_API_URL`, or a running proxy at `localhost:4000`.
 
 ```bash
-make example
-make example name=llm_provider_call
-make example name=agent_with_tools
-make example name=multi_agent_spawn
-make example name=task_and_session_store
-make example name=code_review
+make example name=llm_provider_call           # direct API call
+make example name=agent_with_tools            # agent with custom tool
+make example name=multi_agent_spawn           # multi-agent orchestration
+make example name=task_and_session_store      # persistence
+make example name=code_review                 # code review CLI
+```
+
+### LiteLLM
+
+| Variable | Description |
+|----------|-------------|
+| `ANTHROPIC_API_KEY` | Use Anthropic directly |
+| `ANTHROPIC_BASE_URL` | API URL (default: `https://api.anthropic.com`) |
+| `ANTHROPIC_MODEL` | Model (default: `claude-sonnet-4-20250514`) |
+| `LITELLM_API_KEY` | Auth key (optional) |
+| `LITELLM_API_URL` | Use LiteLLM proxy (default: `http://localhost:4000`) |
+| `LITELLM_MODEL` | Model (default: `claude-sonnet-4-20250514`) |
+
+```bash
+make litellm                     # default: anthropic
+make litellm provider=openai     # uses OPENAI_API_KEY
 ```
