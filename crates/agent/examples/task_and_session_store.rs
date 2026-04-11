@@ -81,7 +81,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let cost_tracker = CostTracker::new();
 
-    let on_event: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(|event| match &event {
+    let event_handler: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(|event| match &event {
         Event::TextChunk { content: text, .. } => print!("{text}"),
         Event::ToolCallStart { tool_name: tool, .. } => eprintln!("\n[tool] {tool}"),
         Event::ToolCallEnd { tool_name: tool, output: result, is_error, .. } => {
@@ -96,16 +96,16 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     });
 
     let ctx = InvocationContext {
-        input: "Create two tasks: 'Design API' and 'Write tests'. \
+        prompt: "Create two tasks: 'Design API' and 'Write tests'. \
                 Then mark 'Design API' as Completed. \
                 Finally list all tasks and summarize their status."
             .into(),
-        state: HashMap::new(),
+        template_variables: HashMap::new(),
         working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         provider,
         cost_tracker: cost_tracker.clone(),
-        on_event,
-        cancelled: Arc::new(AtomicBool::new(false)),
+        event_handler,
+        cancel_signal: Arc::new(AtomicBool::new(false)),
         session_store: Some(Arc::new(Mutex::new(session_store))),
         command_queue: None,
         agent_id: generate_agent_id("planner"),

@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::error::Result;
 
-use super::provider::{CompletionRequest, HttpTransport, LlmProvider, ToolChoice};
+use super::provider::{CompletionRequest, HttpTransport, LlmProvider, ToolChoice, default_transport};
 use super::types::{ContentBlock, Message, ModelResponse, StopReason, TokenUsage};
 
 pub struct MistralProvider {
@@ -15,6 +15,14 @@ pub struct MistralProvider {
 }
 
 impl MistralProvider {
+    pub fn from_api_key(api_key: impl Into<String>) -> Self {
+        Self {
+            api_key: api_key.into(),
+            base_url: "https://api.mistral.ai".into(),
+            transport: default_transport(),
+        }
+    }
+
     pub fn new(api_key: String, transport: HttpTransport) -> Self {
         Self {
             api_key,

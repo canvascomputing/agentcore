@@ -73,7 +73,7 @@ impl AgentLoop {
 
     fn init_state(&self, ctx: &InvocationContext) -> LoopState {
         let mut messages = Vec::new();
-        let mut system_prompt = interpolate(&self.system_prompt, &ctx.state);
+        let mut system_prompt = interpolate(&self.system_prompt, &ctx.template_variables);
 
         if self.output_schema.is_some() {
             system_prompt.push_str(prompt::STRUCTURED_OUTPUT_INSTRUCTION);
@@ -86,7 +86,7 @@ impl AgentLoop {
         }
 
         messages.push(Message::User {
-            content: vec![ContentBlock::Text { text: ctx.input.clone() }],
+            content: vec![ContentBlock::Text { text: ctx.prompt.clone() }],
         });
 
         // Record initial user message
@@ -127,7 +127,7 @@ impl AgentLoop {
     }
 
     fn check_guards(&self, ctx: &InvocationContext, state: &LoopState) -> Result<()> {
-        if ctx.cancelled.load(Ordering::Relaxed) {
+        if ctx.cancel_signal.load(Ordering::Relaxed) {
             return Err(AgenticError::Aborted);
         }
         if let Some(max) = self.max_turns {
@@ -323,7 +323,7 @@ impl AgentLoop {
     }
 
     fn emit(&self, ctx: &InvocationContext, event: Event) {
-        (ctx.on_event)(event);
+        (ctx.event_handler)(event);
     }
 }
 

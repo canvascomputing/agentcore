@@ -277,9 +277,9 @@ pub struct TestHarness {
     provider: Arc<MockProvider>,
     events: EventCollector,
     cost_tracker: CostTracker,
-    state: HashMap<String, serde_json::Value>,
+    template_variables: HashMap<String, serde_json::Value>,
     working_directory: PathBuf,
-    cancelled: Arc<AtomicBool>,
+    cancel_signal: Arc<AtomicBool>,
 }
 
 impl TestHarness {
@@ -288,26 +288,26 @@ impl TestHarness {
             provider: Arc::new(provider),
             events: EventCollector::new(),
             cost_tracker: CostTracker::new(),
-            state: HashMap::new(),
+            template_variables: HashMap::new(),
             working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-            cancelled: Arc::new(AtomicBool::new(false)),
+            cancel_signal: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub fn with_state(mut self, key: &str, value: serde_json::Value) -> Self {
-        self.state.insert(key.to_string(), value);
+        self.template_variables.insert(key.to_string(), value);
         self
     }
 
     pub fn build_context(&self, input: &str) -> InvocationContext {
         InvocationContext {
-            input: input.to_string(),
-            state: self.state.clone(),
+            prompt: input.to_string(),
+            template_variables: self.template_variables.clone(),
             working_directory: self.working_directory.clone(),
             provider: self.provider.clone(),
             cost_tracker: self.cost_tracker.clone(),
-            on_event: self.events.callback(),
-            cancelled: self.cancelled.clone(),
+            event_handler: self.events.callback(),
+            cancel_signal: self.cancel_signal.clone(),
             session_store: None,
             command_queue: None,
             agent_id: "test".into(),
@@ -328,7 +328,7 @@ impl TestHarness {
     }
 
     pub fn cancel(&self) {
-        self.cancelled
+        self.cancel_signal
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }

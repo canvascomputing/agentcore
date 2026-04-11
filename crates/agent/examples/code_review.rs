@@ -308,7 +308,7 @@ async fn main() {
     state.insert("folder_path".into(), serde_json::Value::String(folder.display().to_string()));
     state.insert("prompt".into(), serde_json::Value::String(config.prompt.clone()));
 
-    let on_event: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(|event| match &event {
+    let event_handler: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(|event| match &event {
         Event::ToolCallStart { tool_name: tool, input, .. } => {
             eprintln!("[tool] {tool}({})", serde_json::to_string(input).unwrap_or_default());
         }
@@ -316,9 +316,9 @@ async fn main() {
         _ => {}
     });
 
-    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancel_signal = Arc::new(AtomicBool::new(false));
     {
-        let c = cancelled.clone();
+        let c = cancel_signal.clone();
         tokio::spawn(async move {
             tokio::signal::ctrl_c().await.ok();
             c.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -326,13 +326,13 @@ async fn main() {
     }
 
     let ctx = InvocationContext {
-        input: config.prompt.clone(),
-        state,
+        prompt: config.prompt.clone(),
+        template_variables: state,
         working_directory: folder,
         provider,
         cost_tracker: cost_tracker.clone(),
-        on_event,
-        cancelled,
+        event_handler,
+        cancel_signal,
         session_store: None,
         command_queue: None,
         agent_id: generate_agent_id("code-reviewer"),

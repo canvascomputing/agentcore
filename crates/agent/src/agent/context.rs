@@ -16,19 +16,41 @@ use super::queue::CommandQueue;
 /// Runtime context passed to Agent::run().
 #[derive(Clone)]
 pub struct InvocationContext {
-    pub input: String,
-    pub state: HashMap<String, Value>,
+    // Lifecycle
+    pub agent_id: String,
+    pub event_handler: Arc<dyn Fn(Event) + Send + Sync>,
+    pub cancel_signal: Arc<AtomicBool>,
+
+    // What to do
+    pub prompt: String,
+    pub template_variables: HashMap<String, Value>,
     pub working_directory: PathBuf,
+
+    // LLM
     pub provider: Arc<dyn LlmProvider>,
     pub cost_tracker: CostTracker,
-    pub on_event: Arc<dyn Fn(Event) + Send + Sync>,
-    pub cancelled: Arc<AtomicBool>,
+
+    // Optional persistence
     pub session_store: Option<Arc<Mutex<SessionStore>>>,
     pub command_queue: Option<Arc<CommandQueue>>,
-    pub agent_id: String,
 }
 
 impl InvocationContext {
+    pub fn new(provider: Arc<dyn LlmProvider>) -> Self {
+        Self {
+            agent_id: generate_agent_id("agent"),
+            event_handler: Arc::new(|_| {}),
+            cancel_signal: Arc::new(AtomicBool::new(false)),
+            prompt: String::new(),
+            template_variables: HashMap::new(),
+            working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            provider,
+            cost_tracker: CostTracker::new(),
+            session_store: None,
+            command_queue: None,
+        }
+    }
+
     pub fn child(&self, agent_name: &str) -> Self {
         let mut child = self.clone();
         child.agent_id = generate_agent_id(agent_name);
@@ -37,7 +59,7 @@ impl InvocationContext {
 
     pub fn with_input(&self, input: impl Into<String>) -> Self {
         let mut child = self.clone();
-        child.input = input.into();
+        child.prompt = input.into();
         child
     }
 }

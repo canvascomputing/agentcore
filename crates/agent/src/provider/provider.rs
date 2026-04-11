@@ -4,7 +4,7 @@ use std::pin::Pin;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::error::Result;
+use crate::error::{AgenticError, Result};
 
 use super::types::{Message, ModelResponse};
 use crate::tools::tool::ToolDefinition;
@@ -39,6 +39,26 @@ pub type HttpTransport = Box<
         + Send
         + Sync,
 >;
+
+/// Default transport using reqwest.
+pub fn default_transport() -> HttpTransport {
+    Box::new(|url, headers, body| {
+        let url = url.to_string();
+        let headers: Vec<(String, String)> = headers
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        Box::pin(async move {
+            let client = reqwest::Client::new();
+            let mut req = client.post(&url).json(&body);
+            for (k, v) in &headers {
+                req = req.header(k.as_str(), v.as_str());
+            }
+            let resp = req.send().await.map_err(|e| AgenticError::Other(e.to_string()))?;
+            resp.json().await.map_err(|e| AgenticError::Other(e.to_string()))
+        })
+    })
+}
 
 #[cfg(test)]
 mod tests {

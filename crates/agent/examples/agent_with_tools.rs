@@ -86,7 +86,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let cost_tracker = CostTracker::new();
 
-    let on_event: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(|event| match event {
+    let event_handler: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(|event| match event {
         Event::TextChunk { content: text, .. } => print!("{text}"),
         Event::ToolCallStart { tool_name: tool, .. } => eprintln!("\n[tool] {tool}"),
         Event::ToolCallEnd { output: result, is_error, .. } => {
@@ -101,13 +101,13 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     });
 
     let ctx = InvocationContext {
-        input: "Use the echo tool to echo 'Hello from agent!' and then say goodbye.".into(),
-        state: HashMap::new(),
+        prompt: "Use the echo tool to echo 'Hello from agent!' and then say goodbye.".into(),
+        template_variables: HashMap::new(),
         working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         provider,
         cost_tracker: cost_tracker.clone(),
-        on_event,
-        cancelled: Arc::new(AtomicBool::new(false)),
+        event_handler,
+        cancel_signal: Arc::new(AtomicBool::new(false)),
         session_store: None,
         command_queue: None,
         agent_id: generate_agent_id("assistant"),

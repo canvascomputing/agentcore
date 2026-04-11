@@ -68,7 +68,7 @@ Examples are in `crates/agent/examples/`. Run with `make example name=<name>`.
 ## Key conventions
 
 - **No new dependencies without asking.** The crate is intentionally minimal (tokio, serde, serde_json, libc). HTTP transport is injected by the caller.
-- **No ad-hoc changes to critical types without a plan.** These types form the public API and are used across the entire codebase: `Agent`, `InvocationContext`, `ToolContext`, `Event`, `Tool` trait, `AgentBuilder`, `CompletionRequest`. Propose changes in a plan first.
+- **No ad-hoc changes to critical types without a plan.** These types form the public API and are used across the entire codebase: `Agent`, `InvocationContext`, `ToolContext`, `Event`, `Tool` trait, `AgentBuilder`, `CompletionRequest`, `AgentOutput`. Propose changes in a plan first.
 - **Tools capture dependencies at construction time** via closures or struct fields. Do not use type-erased extension bags on context objects.
 - **`tools/tool.rs` vs `tools/`**: `tool.rs` defines the trait and infrastructure (Tool, ToolRegistry, ToolBuilder, execute_tool_calls). Other files in `tools/` are concrete implementations.
 - **`agent/` vs `provider/` vs `persistence/`**: `agent/` contains the agent loop, builder, context, events, output, and prompt. `provider/` contains LLM communication and cost tracking. `persistence/` contains disk storage.

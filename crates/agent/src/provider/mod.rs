@@ -9,5 +9,5 @@ pub use anthropic::AnthropicProvider;
 pub use cost::{CostTracker, ModelCosts, ModelUsage};
 pub use litellm::LiteLlmProvider;
 pub use mistral::MistralProvider;
-pub use provider::{CompletionRequest, HttpTransport, LlmProvider, ToolChoice};
+pub use provider::{CompletionRequest, HttpTransport, LlmProvider, ToolChoice, default_transport};
 pub use types::{ContentBlock, Message, ModelResponse, StopReason, TokenUsage};

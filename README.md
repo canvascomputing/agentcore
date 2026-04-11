@@ -22,7 +22,7 @@
 ## Quick Start
 
 ```rust
-let provider = Arc::new(AnthropicProvider::new(api_key, transport));
+let provider = Arc::new(AnthropicProvider::from_api_key(api_key));
 
 let agent = AgentBuilder::new()
     .name("assistant")
@@ -32,19 +32,10 @@ let agent = AgentBuilder::new()
     .tool(GrepTool)
     .build()?;
 
-let output = agent.run(InvocationContext {
-    input: "Find all TODO comments".into(),
-    state: HashMap::new(),
-    working_directory: std::env::current_dir()?,
-    provider,
-    cost_tracker: CostTracker::new(),
-    on_event: Arc::new(|_| {}),
-    cancelled: Arc::new(AtomicBool::new(false)),
-    session_store: None,
-    command_queue: None,
-    agent_id: generate_agent_id("assistant"),
-}).await?;
+let mut ctx = InvocationContext::new(provider);
+ctx.prompt = "Find all TODO comments".into();
 
+let output = agent.run(ctx).await?;
 println!("{}", output.response_raw);
 ```
 
@@ -86,23 +77,25 @@ let output = agent.run(InvocationContext {
     provider,
     cost_tracker: CostTracker::new(),
     on_event: Arc::new(|e| { /* handle events */ }),
-    cancelled: Arc::new(AtomicBool::new(false)),
-    ..
-}).await?;
+let mut ctx = InvocationContext::new(provider);
+ctx.prompt = "Analyze this repo".into();
+ctx.event_handler = Arc::new(|e| { /* handle events */ });
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `input` | `String` | User prompt |
-| `state` | `HashMap<String, Value>` | Key-value pairs for `{key}` interpolation |
-| `working_directory` | `PathBuf` | Base path for tool file operations |
-| `provider` | `Arc<dyn LlmProvider>` | LLM provider |
-| `cost_tracker` | `CostTracker` | Shared cost tracker (thread-safe, cloneable) |
-| `on_event` | `Arc<dyn Fn(Event)>` | Event callback for streaming |
-| `cancelled` | `Arc<AtomicBool>` | Cancellation flag, checked each turn |
-| `session_store` | `Option<Arc<Mutex<SessionStore>>>` | JSONL transcript persistence |
-| `command_queue` | `Option<Arc<CommandQueue>>` | Inter-agent notifications |
-| `agent_id` | `String` | Unique ID (use `generate_agent_id()`) |
+`InvocationContext::new(provider)` sets sensible defaults. Override what you need:
+
+| Field | Type | Default |
+|-------|------|---------|
+| `agent_id` | `String` | `generate_agent_id("agent")` |
+| `event_handler` | `Arc<dyn Fn(Event)>` | no-op |
+| `cancel_signal` | `Arc<AtomicBool>` | `false` |
+| `prompt` | `String` | empty |
+| `template_variables` | `HashMap<String, Value>` | empty |
+| `working_directory` | `PathBuf` | current dir |
+| `provider` | `Arc<dyn LlmProvider>` | *required* |
+| `cost_tracker` | `CostTracker` | new (pre-loaded with Claude pricing) |
+| `session_store` | `Option<Arc<Mutex<SessionStore>>>` | `None` |
+| `command_queue` | `Option<Arc<CommandQueue>>` | `None` |
 
 ### AgentOutput
 
@@ -166,12 +159,12 @@ Built-in: `ReadFileTool`, `WriteFileTool`, `EditFileTool`, `GlobTool`, `GrepTool
 ### LlmProvider
 
 ```rust
-let provider = AnthropicProvider::new(api_key, transport);
-let provider = MistralProvider::new(api_key, transport);
-let provider = LiteLlmProvider::new(api_key, transport).base_url("http://localhost:4000".into());
+let provider = AnthropicProvider::from_api_key(api_key);
+let provider = MistralProvider::from_api_key(api_key);
+let provider = LiteLlmProvider::from_api_key(api_key);
 ```
 
-`HttpTransport` wraps any HTTP client as `Box<dyn Fn(url, headers, body) -> Future<Result<Value>>>`.
+For custom HTTP transport, use `::new(api_key, transport)` instead.
 
 ### CostTracker
 

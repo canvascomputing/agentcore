@@ -83,7 +83,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let cost_tracker = CostTracker::new();
     let queue = Arc::new(CommandQueue::new());
 
-    let on_event: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(|event| match event {
+    let event_handler: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(|event| match event {
         Event::TextChunk { content: text, agent_name } => {
             if agent_name == "orchestrator" {
                 print!("{text}");
@@ -96,14 +96,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     });
 
     let ctx = InvocationContext {
-        input: "What is the capital of France? Use the researcher agent to find out, then tell me."
+        prompt: "What is the capital of France? Use the researcher agent to find out, then tell me."
             .into(),
-        state: HashMap::new(),
+        template_variables: HashMap::new(),
         working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         provider,
         cost_tracker: cost_tracker.clone(),
-        on_event,
-        cancelled: Arc::new(AtomicBool::new(false)),
+        event_handler,
+        cancel_signal: Arc::new(AtomicBool::new(false)),
         session_store: None,
         command_queue: Some(queue),
         agent_id: generate_agent_id("orchestrator"),

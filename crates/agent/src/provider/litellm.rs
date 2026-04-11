@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::error::Result;
 
 use super::types::{ContentBlock, Message, ModelResponse, StopReason, TokenUsage};
-use super::provider::{CompletionRequest, HttpTransport, LlmProvider, ToolChoice};
+use super::provider::{CompletionRequest, HttpTransport, LlmProvider, ToolChoice, default_transport};
 
 pub struct LiteLlmProvider {
     api_key: String,
@@ -15,6 +15,14 @@ pub struct LiteLlmProvider {
 }
 
 impl LiteLlmProvider {
+    pub fn from_api_key(api_key: impl Into<String>) -> Self {
+        Self {
+            api_key: api_key.into(),
+            base_url: "http://localhost:4000".into(),
+            transport: default_transport(),
+        }
+    }
+
     pub fn new(api_key: String, transport: HttpTransport) -> Self {
         Self {
             api_key,
