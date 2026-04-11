@@ -26,6 +26,7 @@ crates/agent/src/
     provider.rs           LlmProvider trait, CompletionRequest, ToolChoice, HttpTransport
     anthropic.rs          AnthropicProvider
     litellm.rs            LiteLlmProvider
+    mistral.rs            MistralProvider
     cost.rs               CostTracker, ModelCosts, ModelUsage
 
   agent/

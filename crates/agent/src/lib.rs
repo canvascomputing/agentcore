@@ -12,7 +12,7 @@ pub use error::{AgenticError, Result};
 
 // Provider and message types
 pub use provider::{
-    AnthropicProvider, CompletionRequest, ContentBlock, CostTracker, HttpTransport, LiteLlmProvider,
+    AnthropicProvider, CompletionRequest, ContentBlock, CostTracker, HttpTransport, LiteLlmProvider, MistralProvider,
     LlmProvider, Message, ModelCosts, ModelResponse, ModelUsage, StopReason, ToolChoice, Usage,
 };
 

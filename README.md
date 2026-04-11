@@ -12,7 +12,7 @@
   building agentic applications
 ```
 
-- **Providers:** Anthropic, OpenAI-compatible (LiteLLM)
+- **Providers:** Anthropic, Mistral, OpenAI-compatible (LiteLLM)
 - **Tools:** read, write, edit, glob, grep, list, bash, tool search, custom
 - **Output:** structured JSON Schema enforcement
 - **Orchestration:** multi-agent spawning
@@ -160,6 +160,7 @@ Built-in: `ReadFileTool`, `WriteFileTool`, `EditFileTool`, `GlobTool`, `GrepTool
 
 ```rust
 let provider = AnthropicProvider::new(api_key, transport);
+let provider = MistralProvider::new(api_key, transport);
 let provider = LiteLlmProvider::new(api_key, transport).base_url("http://localhost:4000".into());
 ```
 
@@ -197,7 +198,19 @@ make litellm  # start LiteLLM proxy
 
 ### Examples
 
-Examples auto-detect the provider: `ANTHROPIC_API_KEY`, `LITELLM_API_URL`, or a running proxy at `localhost:4000`.
+Examples detect the provider based on environment variables:
+
+| Variable | Description |
+|----------|-------------|
+| `ANTHROPIC_API_KEY` | Use Anthropic directly |
+| `ANTHROPIC_BASE_URL` | API URL (default: `https://api.anthropic.com`) |
+| `ANTHROPIC_MODEL` | Model (default: `claude-sonnet-4-20250514`) |
+| `MISTRAL_API_KEY` | Use Mistral directly |
+| `MISTRAL_BASE_URL` | API URL (default: `https://api.mistral.ai`) |
+| `MISTRAL_MODEL` | Model (default: `mistral-medium-2508`) |
+| `LITELLM_API_KEY` | Auth key (optional) |
+| `LITELLM_API_URL` | Use LiteLLM proxy (default: `http://localhost:4000`) |
+| `LITELLM_MODEL` | Model (default: `claude-sonnet-4-20250514`) |
 
 ```bash
 make example name=llm_provider_call           # direct API call
@@ -209,16 +222,11 @@ make example name=code_review                 # code review CLI
 
 ### LiteLLM
 
-| Variable | Description |
-|----------|-------------|
-| `ANTHROPIC_API_KEY` | Use Anthropic directly |
-| `ANTHROPIC_BASE_URL` | API URL (default: `https://api.anthropic.com`) |
-| `ANTHROPIC_MODEL` | Model (default: `claude-sonnet-4-20250514`) |
-| `LITELLM_API_KEY` | Auth key (optional) |
-| `LITELLM_API_URL` | Use LiteLLM proxy (default: `http://localhost:4000`) |
-| `LITELLM_MODEL` | Model (default: `claude-sonnet-4-20250514`) |
+Start a LiteLLM Docker container:
 
 ```bash
-make litellm                     # default: anthropic
-make litellm provider=openai     # uses OPENAI_API_KEY
+make litellm                      # default: anthropic
+make litellm provider=anthropic   # uses ANTHROPIC_API_KEY
+make litellm provider=mistral     # uses MISTRAL_API_KEY
+make litellm provider=openai      # uses OPENAI_API_KEY
 ```

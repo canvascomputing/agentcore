@@ -23,10 +23,14 @@ clean:
 #        make example name=code_review ANTHROPIC_MODEL=claude-haiku-4-5-20251001
 #        make example name=code_review ANTHROPIC_BASE_URL=https://custom.api.com
 export ANTHROPIC_MODEL ?= claude-sonnet-4-20250514
+export MISTRAL_MODEL ?= mistral-medium-2508
 export ANTHROPIC_BASE_URL
 export LITELLM_API_URL
 export LITELLM_API_KEY
 export LITELLM_MODEL
+export MISTRAL_API_KEY
+export MISTRAL_BASE_URL
+export MISTRAL_MODEL
 
 example:
 ifdef name
@@ -48,6 +52,9 @@ provider ?= anthropic
 ifeq ($(provider),anthropic)
   LITELLM_KEY_ENV   := ANTHROPIC_API_KEY
   LITELLM_MODEL_ENV := ANTHROPIC_MODEL
+else ifeq ($(provider),mistral)
+  LITELLM_KEY_ENV   := MISTRAL_API_KEY
+  LITELLM_MODEL_ENV := MISTRAL_MODEL
 else ifeq ($(provider),openai)
   LITELLM_KEY_ENV   := OPENAI_API_KEY
   LITELLM_MODEL_ENV := OPENAI_MODEL

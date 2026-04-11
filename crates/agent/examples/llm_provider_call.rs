@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use agent::{
     AgenticError, AnthropicProvider, CompletionRequest, ContentBlock, CostTracker, HttpTransport,
-    LiteLlmProvider, LlmProvider, Message,
+    LiteLlmProvider, LlmProvider, Message, MistralProvider,
 };
 
 fn build_transport() -> HttpTransport {
@@ -31,6 +31,15 @@ fn build_provider() -> (Arc<dyn LlmProvider>, String) {
         let model = std::env::var("LITELLM_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".into());
         return (Arc::new(LiteLlmProvider::new(key, transport).base_url(url)), model);
     }
+    if let Some(key) = std::env::var("MISTRAL_API_KEY").ok().filter(|k| !k.is_empty()) {
+        let mut p = MistralProvider::new(key, transport);
+        if let Ok(url) = std::env::var("MISTRAL_BASE_URL") {
+            p = p.base_url(url);
+        }
+        let model =
+            std::env::var("MISTRAL_MODEL").unwrap_or_else(|_| "mistral-medium-2508".into());
+        return (Arc::new(p), model);
+    }
     if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
         let mut p = AnthropicProvider::new(key, transport);
         if let Ok(url) = std::env::var("ANTHROPIC_BASE_URL") {
@@ -44,7 +53,7 @@ fn build_provider() -> (Arc<dyn LlmProvider>, String) {
         let model = std::env::var("LITELLM_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".into());
         return (Arc::new(LiteLlmProvider::new(key, transport).base_url("http://localhost:4000".into())), model);
     }
-    let supported = ["ANTHROPIC_API_KEY", "LITELLM_API_URL"];
+    let supported = ["ANTHROPIC_API_KEY", "MISTRAL_API_KEY", "LITELLM_API_URL"];
     eprintln!("Error: Set {}", supported.join(" or "));
     std::process::exit(1);
 }

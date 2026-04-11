@@ -72,6 +72,50 @@ impl CostTracker {
             },
         );
 
+        // Mistral Large
+        pricing.insert(
+            "mistral-large-latest".into(),
+            ModelCosts {
+                input_per_million: 2.0,
+                output_per_million: 6.0,
+                cache_read_per_million: 0.0,
+                cache_write_per_million: 0.0,
+            },
+        );
+
+        // Mistral Small
+        pricing.insert(
+            "mistral-small-latest".into(),
+            ModelCosts {
+                input_per_million: 0.10,
+                output_per_million: 0.30,
+                cache_read_per_million: 0.0,
+                cache_write_per_million: 0.0,
+            },
+        );
+
+        // Codestral
+        pricing.insert(
+            "codestral-latest".into(),
+            ModelCosts {
+                input_per_million: 0.30,
+                output_per_million: 0.90,
+                cache_read_per_million: 0.0,
+                cache_write_per_million: 0.0,
+            },
+        );
+
+        // Mistral Medium
+        pricing.insert(
+            "mistral-medium-2508".into(),
+            ModelCosts {
+                input_per_million: 2.75,
+                output_per_million: 8.10,
+                cache_read_per_million: 0.0,
+                cache_write_per_million: 0.0,
+            },
+        );
+
         Self {
             inner: Arc::new(Mutex::new(CostTrackerInner {
                 pricing,
