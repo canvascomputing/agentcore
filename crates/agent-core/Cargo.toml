@@ -14,13 +14,13 @@ tempfile = "3"
 reqwest = { version = "0.12", features = ["json"] }
 
 [[example]]
-name = "minimal_provider"
+name = "provider"
 
 [[example]]
-name = "minimal_agent"
+name = "agent_tool_use"
 
 [[example]]
-name = "minimal_orchestrator"
+name = "orchestration"
 
 [[example]]
-name = "minimal_persistence"
+name = "persistence"
