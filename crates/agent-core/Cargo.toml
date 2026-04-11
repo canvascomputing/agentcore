@@ -14,13 +14,16 @@ tempfile = "3"
 reqwest = { version = "0.12", features = ["json"] }
 
 [[example]]
-name = "provider"
+name = "llm_provider_call"
 
 [[example]]
-name = "agent_tool_use"
+name = "agent_with_tools"
 
 [[example]]
-name = "orchestration"
+name = "multi_agent_spawn"
 
 [[example]]
-name = "persistence"
+name = "task_and_session_store"
+
+[[example]]
+name = "code_review"
