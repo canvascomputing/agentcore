@@ -12,7 +12,9 @@ use crate::prompt::PromptBuilder;
 use crate::provider::{CompletionRequest, ToolChoice};
 use crate::tool::{ToolCall, ToolContext, ToolRegistry, execute_tool_calls};
 
-use super::context::{EntryType, InvocationContext, TranscriptEntry, now_millis};
+use crate::session::{EntryType, TranscriptEntry};
+
+use super::context::{InvocationContext, now_millis};
 use super::event::Event;
 use super::output::{
     AgentOutput, OutputSchema, StructuredOutputTool, STRUCTURED_OUTPUT_TOOL_NAME,

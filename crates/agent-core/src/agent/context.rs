@@ -7,42 +7,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 use crate::cost::CostTracker;
-use crate::error::Result;
-use crate::message::{Message, Usage};
 use crate::provider::LlmProvider;
+use crate::session::SessionStore;
 
 use super::event::Event;
 use super::queue::CommandQueue;
-
-/// Placeholder for SessionStore (implemented in persistence increment).
-pub struct SessionStore {
-    _private: (),
-}
-
-impl SessionStore {
-    pub fn new() -> Self {
-        Self { _private: () }
-    }
-
-    pub fn record(&mut self, _entry: TranscriptEntry) -> Result<()> {
-        Ok(())
-    }
-}
-
-pub struct TranscriptEntry {
-    pub recorded_at: u64,
-    pub entry_type: EntryType,
-    pub message: Message,
-    pub usage: Option<Usage>,
-    pub model: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub enum EntryType {
-    UserMessage,
-    AssistantMessage,
-    ToolResult,
-}
 
 /// Runtime context passed to Agent::run().
 #[derive(Clone)]

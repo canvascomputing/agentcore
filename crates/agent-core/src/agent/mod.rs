@@ -11,9 +11,7 @@ use std::pin::Pin;
 use crate::error::Result;
 
 pub use builder::AgentBuilder;
-pub use context::{
-    EntryType, InvocationContext, SessionStore, TranscriptEntry, generate_agent_id,
-};
+pub use context::{InvocationContext, generate_agent_id};
 pub use event::Event;
 pub use output::{AgentOutput, OutputSchema, validate_value};
 pub use queue::{CommandQueue, CommandSource, QueuePriority, QueuedCommand};

@@ -47,6 +47,7 @@ impl ToolContext {
             .get(&TypeId::of::<T>())
             .and_then(|arc| arc.downcast_ref::<T>())
     }
+
 }
 
 impl Clone for ToolContext {
