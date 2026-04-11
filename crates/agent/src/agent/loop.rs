@@ -33,13 +33,13 @@ struct LoopState {
 impl AgentLoop {
     pub(crate) async fn execute(&self, ctx: InvocationContext) -> Result<AgentOutput> {
         let mut state = self.init_state(&ctx);
-        self.emit(&ctx, Event::AgentStart { agent: self.name.clone() });
+        self.emit(&ctx, Event::AgentStart { agent_name: self.name.clone() });
 
         loop {
             // Guards: cancellation, turn limit, budget
             self.check_guards(&ctx, &state)?;
             state.turn += 1;
-            self.emit(&ctx, Event::TurnStart { agent: self.name.clone(), turn: state.turn });
+            self.emit(&ctx, Event::TurnStart { agent_name: self.name.clone(), turn: state.turn });
 
             // LLM call
             let response = self.call_llm(&ctx, &state).await?;
@@ -66,6 +66,8 @@ impl AgentLoop {
             state.messages.push(Message::User { content: results });
             self.record_transcript(&ctx, EntryType::ToolResult, &state, None);
             self.drain_command_queue(&ctx, &mut state);
+
+            self.emit(&ctx, Event::TurnEnd { agent_name: self.name.clone(), turn: state.turn });
         }
     }
 
@@ -164,8 +166,8 @@ impl AgentLoop {
     fn record_usage(&self, ctx: &InvocationContext, response: &ModelResponse, state: &mut LoopState) {
         state.total_usage.add(&response.usage);
         ctx.cost_tracker.record_usage(&response.model, &response.usage);
-        self.emit(ctx, Event::Usage {
-            agent: self.name.clone(),
+        self.emit(ctx, Event::TokenUsage {
+            agent_name: self.name.clone(),
             model: response.model.clone(),
             usage: response.usage.clone(),
         });
@@ -179,7 +181,7 @@ impl AgentLoop {
             match block {
                 ContentBlock::Text { text: t } => {
                     text.push_str(t);
-                    self.emit(ctx, Event::Text { agent: self.name.clone(), text: t.clone() });
+                    self.emit(ctx, Event::TextChunk { agent_name: self.name.clone(), content: t.clone() });
                 }
                 ContentBlock::ToolUse { id, name, input } => {
                     tool_calls.push(ToolCall {
@@ -213,7 +215,8 @@ impl AgentLoop {
             return Ok(None); // continue loop
         }
 
-        self.emit(ctx, Event::AgentEnd { agent: self.name.clone(), turns: state.turn });
+        self.emit(ctx, Event::TurnEnd { agent_name: self.name.clone(), turn: state.turn });
+        self.emit(ctx, Event::AgentEnd { agent_name: self.name.clone(), turns: state.turn });
         Ok(Some(AgentOutput {
             content: text,
             usage: state.total_usage.clone(),
@@ -228,10 +231,10 @@ impl AgentLoop {
         tool_calls: &[ToolCall],
     ) -> Vec<ContentBlock> {
         for call in tool_calls {
-            self.emit(ctx, Event::ToolStart {
-                agent: self.name.clone(),
-                tool: call.name.clone(),
-                id: call.id.clone(),
+            self.emit(ctx, Event::ToolCallStart {
+                agent_name: self.name.clone(),
+                tool_name: call.name.clone(),
+                call_id: call.id.clone(),
                 input: call.input.clone(),
             });
             ctx.cost_tracker.record_tool_calls(1);
@@ -249,11 +252,11 @@ impl AgentLoop {
                     .find(|c| c.id == *tool_use_id)
                     .map(|c| c.name.clone())
                     .unwrap_or_default();
-                self.emit(ctx, Event::ToolEnd {
-                    agent: self.name.clone(),
-                    tool: tool_name,
-                    id: tool_use_id.clone(),
-                    result: content.clone(),
+                self.emit(ctx, Event::ToolCallEnd {
+                    agent_name: self.name.clone(),
+                    tool_name,
+                    call_id: tool_use_id.clone(),
+                    output: content.clone(),
                     is_error: *is_error,
                 });
             }

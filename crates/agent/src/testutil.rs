@@ -226,7 +226,7 @@ impl EventCollector {
             .unwrap()
             .iter()
             .filter_map(|e| match e {
-                Event::Text { text, .. } => Some(text.clone()),
+                Event::TextChunk { content, .. } => Some(content.clone()),
                 _ => None,
             })
             .collect()
@@ -238,7 +238,7 @@ impl EventCollector {
             .unwrap()
             .iter()
             .filter_map(|e| match e {
-                Event::ToolStart { tool, .. } => Some(tool.clone()),
+                Event::ToolCallStart { tool_name, .. } => Some(tool_name.clone()),
                 _ => None,
             })
             .collect()
@@ -250,7 +250,7 @@ impl EventCollector {
             .unwrap()
             .iter()
             .filter_map(|e| match e {
-                Event::AgentStart { agent } => Some(agent.clone()),
+                Event::AgentStart { agent_name } => Some(agent_name.clone()),
                 _ => None,
             })
             .collect()
@@ -262,7 +262,7 @@ impl EventCollector {
             .unwrap()
             .iter()
             .filter_map(|e| match e {
-                Event::AgentEnd { agent, turns } => Some((agent.clone(), *turns)),
+                Event::AgentEnd { agent_name, turns } => Some((agent_name.clone(), *turns)),
                 _ => None,
             })
             .collect()

@@ -84,14 +84,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let queue = Arc::new(CommandQueue::new());
 
     let on_event: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(|event| match event {
-        Event::Text { text, agent } => {
-            if agent == "orchestrator" {
+        Event::TextChunk { content: text, agent_name } => {
+            if agent_name == "orchestrator" {
                 print!("{text}");
             }
         }
-        Event::ToolStart { tool, agent, .. } => eprintln!("\n[{agent}] tool: {tool}"),
-        Event::AgentStart { agent } => eprintln!("[{agent}] started"),
-        Event::AgentEnd { agent, turns } => eprintln!("[{agent}] done ({turns} turns)"),
+        Event::ToolCallStart { tool_name: tool, agent_name, .. } => eprintln!("\n[{agent_name}] tool: {tool}"),
+        Event::AgentStart { agent_name: agent } => eprintln!("[{agent}] started"),
+        Event::AgentEnd { agent_name: agent, turns } => eprintln!("[{agent}] done ({turns} turns)"),
         _ => {}
     });
 

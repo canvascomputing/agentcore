@@ -309,10 +309,10 @@ async fn main() {
     state.insert("prompt".into(), serde_json::Value::String(config.prompt.clone()));
 
     let on_event: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(|event| match &event {
-        Event::ToolStart { tool, input, .. } => {
+        Event::ToolCallStart { tool_name: tool, input, .. } => {
             eprintln!("[tool] {tool}({})", serde_json::to_string(input).unwrap_or_default());
         }
-        Event::ToolEnd { tool, is_error, .. } if *is_error => eprintln!("[error] {tool}"),
+        Event::ToolCallEnd { tool_name: tool, is_error, .. } if *is_error => eprintln!("[error] {tool}"),
         _ => {}
     });
 

@@ -87,9 +87,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let cost_tracker = CostTracker::new();
 
     let on_event: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(|event| match event {
-        Event::Text { text, .. } => print!("{text}"),
-        Event::ToolStart { tool, .. } => eprintln!("\n[tool] {tool}"),
-        Event::ToolEnd { result, is_error, .. } => {
+        Event::TextChunk { content: text, .. } => print!("{text}"),
+        Event::ToolCallStart { tool_name: tool, .. } => eprintln!("\n[tool] {tool}"),
+        Event::ToolCallEnd { output: result, is_error, .. } => {
             if is_error {
                 eprintln!("[error] {result}");
             } else {

@@ -116,22 +116,23 @@ output.structured_output    // Some(Value) if output_schema was set
 
 ```rust
 on_event: Arc::new(|event| match &event {
-    Event::Text { text, .. } => print!("{text}"),
-    Event::ToolStart { tool, input, .. } => eprintln!("[{tool}]"),
+    Event::TextChunk { content, .. } => print!("{content}"),
+    Event::ToolCallStart { tool_name, .. } => eprintln!("[{tool_name}]"),
     _ => {}
 })
 ```
 
 | Variant | Fields |
 |---------|--------|
-| `TurnStart` | `agent`, `turn` |
-| `Text` | `agent`, `text` |
-| `ToolStart` | `agent`, `tool`, `id`, `input` |
-| `ToolEnd` | `agent`, `tool`, `id`, `result`, `is_error` |
-| `Usage` | `agent`, `model`, `usage` |
-| `AgentStart` | `agent` |
-| `AgentEnd` | `agent`, `turns` |
-| `Error` | `agent`, `error` |
+| `AgentStart` | `agent_name` |
+| `AgentEnd` | `agent_name`, `turns` |
+| `AgentError` | `agent_name`, `message` |
+| `TurnStart` | `agent_name`, `turn` |
+| `TurnEnd` | `agent_name`, `turn` |
+| `ToolCallStart` | `agent_name`, `tool_name`, `call_id`, `input` |
+| `ToolCallEnd` | `agent_name`, `tool_name`, `call_id`, `output`, `is_error` |
+| `TokenUsage` | `agent_name`, `model`, `usage` |
+| `TextChunk` | `agent_name`, `content` |
 
 ### Tool
 
