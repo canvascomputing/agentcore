@@ -123,7 +123,7 @@ async fn main() {
     let folder_path = std::fs::canonicalize(&config.folder)
         .unwrap_or_else(|_| PathBuf::from(&config.folder));
 
-    eprintln!("Reviewing: {}", folder_path.display());
+    eprintln!("Reviewing: {}\n", folder_path.display());
 
     // Build provider
     let transport = build_transport();
@@ -190,10 +190,22 @@ async fn main() {
     );
 
     let on_event: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(|event| match &event {
-        Event::ToolStart { tool, .. } => eprintln!("[tool] {tool}"),
+        Event::ToolStart { tool, input, .. } => {
+            let args = serde_json::to_string(input).unwrap_or_default();
+            eprintln!("[tool] {tool}({args})");
+        }
         Event::ToolEnd { tool, is_error, .. } if *is_error => eprintln!("[error] {tool}"),
         _ => {}
     });
+
+    let cancelled = Arc::new(AtomicBool::new(false));
+    {
+        let cancelled = cancelled.clone();
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c().await.ok();
+            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+    }
 
     let ctx = InvocationContext {
         input: config.prompt.clone(),
@@ -202,7 +214,7 @@ async fn main() {
         provider,
         cost_tracker: cost_tracker.clone(),
         on_event,
-        cancelled: Arc::new(AtomicBool::new(false)),
+        cancelled,
         session_store: None,
         command_queue: None,
         agent_id: generate_agent_id("code-reviewer"),
@@ -220,11 +232,11 @@ async fn main() {
             };
 
             std::fs::write(&config.output, &json).expect("Failed to write output file");
-            eprintln!("\nReview written to {}", config.output);
+            eprintln!("\nReview written to {}\n", config.output);
             eprintln!("{}", cost_tracker.summary());
         }
         Err(e) => {
-            eprintln!("Error: {e}");
+            eprintln!("\nError: {e}\n");
             eprintln!("{}", cost_tracker.summary());
             std::process::exit(1);
         }

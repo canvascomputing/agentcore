@@ -256,6 +256,7 @@ impl LlmAgent {
                     agent: self.name.clone(),
                     tool: call.name.clone(),
                     id: call.id.clone(),
+                    input: call.input.clone(),
                 });
                 ctx.cost_tracker.record_tool_calls(1);
             }

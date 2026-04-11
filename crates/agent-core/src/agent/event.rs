@@ -4,7 +4,7 @@ use crate::message::Usage;
 pub enum Event {
     TurnStart { agent: String, turn: u32 },
     Text { agent: String, text: String },
-    ToolStart { agent: String, tool: String, id: String },
+    ToolStart { agent: String, tool: String, id: String, input: serde_json::Value },
     ToolEnd { agent: String, tool: String, id: String, result: String, is_error: bool },
     Usage { agent: String, model: String, usage: Usage },
     AgentStart { agent: String },
