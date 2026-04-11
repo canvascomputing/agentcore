@@ -11,7 +11,7 @@ use crate::cost::CostTracker;
 use crate::error::{AgenticError, Result};
 use crate::message::{ContentBlock, ModelResponse, StopReason, Usage};
 use crate::provider::{CompletionRequest, LlmProvider};
-use crate::tool::{Tool, ToolContext, ToolRegistry, ToolResult};
+use crate::tool::{Tool, ToolContext, ToolResult};
 
 /// A mock LLM provider that returns pre-configured responses in order.
 pub struct MockProvider {
@@ -21,7 +21,6 @@ pub struct MockProvider {
 }
 
 impl MockProvider {
-    /// Create with a queue of responses returned in FIFO order.
     pub fn new(responses: Vec<ModelResponse>) -> Self {
         Self {
             responses: Mutex::new(VecDeque::from(responses)),
@@ -30,12 +29,10 @@ impl MockProvider {
         }
     }
 
-    /// Convenience: single text response with end_turn.
     pub fn text(text: &str) -> Self {
         Self::new(vec![text_response(text)])
     }
 
-    /// Convenience: tool_use response followed by end_turn response.
     pub fn tool_then_text(tool_name: &str, input: serde_json::Value, final_text: &str) -> Self {
         Self::new(vec![
             tool_response(tool_name, "tool_call_1", input),
@@ -43,39 +40,14 @@ impl MockProvider {
         ])
     }
 
-    /// Zero responses — `.complete()` returns error immediately.
-    pub fn empty() -> Self {
-        Self::new(vec![])
-    }
-
-    /// Always returns the given error.
-    pub fn error(err: AgenticError) -> Self {
-        Self {
-            responses: Mutex::new(VecDeque::new()),
-            requests: Mutex::new(Vec::new()),
-            error_message: Some(format!("{err}")),
-        }
-    }
-
-    /// Returns a StructuredOutput tool_use response, then a text response.
-    pub fn structured_output(input: serde_json::Value, final_text: &str) -> Self {
-        Self::new(vec![
-            tool_response("structured_output", "so_call_1", input),
-            text_response(final_text),
-        ])
-    }
-
-    /// Number of requests received.
     pub fn request_count(&self) -> usize {
         self.requests.lock().unwrap().len()
     }
 
-    /// The most recent request, if any.
     pub fn last_request(&self) -> Option<CompletionRequest> {
         self.requests.lock().unwrap().last().cloned()
     }
 
-    /// Extract system prompts from all recorded requests.
     pub fn system_prompts(&self) -> Vec<String> {
         self.requests
             .lock()
@@ -106,7 +78,6 @@ impl LlmProvider for MockProvider {
     }
 }
 
-/// Build a simple text-only ModelResponse.
 pub fn text_response(text: &str) -> ModelResponse {
     ModelResponse {
         content: vec![ContentBlock::Text {
@@ -118,7 +89,6 @@ pub fn text_response(text: &str) -> ModelResponse {
     }
 }
 
-/// Build a tool_use ModelResponse.
 pub fn tool_response(tool_name: &str, id: &str, input: serde_json::Value) -> ModelResponse {
     ModelResponse {
         content: vec![ContentBlock::ToolUse {
@@ -136,7 +106,6 @@ pub fn tool_response(tool_name: &str, id: &str, input: serde_json::Value) -> Mod
 // MockTool
 // ---------------------------------------------------------------------------
 
-/// A mock tool for testing agent tool execution.
 pub struct MockTool {
     pub name: String,
     pub read_only: bool,
@@ -154,24 +123,6 @@ impl MockTool {
             is_error: false,
             calls: Mutex::new(Vec::new()),
         }
-    }
-
-    pub fn failing(name: &str, message: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            read_only: false,
-            result: message.to_string(),
-            is_error: true,
-            calls: Mutex::new(Vec::new()),
-        }
-    }
-
-    pub fn call_count(&self) -> usize {
-        self.calls.lock().unwrap().len()
-    }
-
-    pub fn last_input(&self) -> Option<serde_json::Value> {
-        self.calls.lock().unwrap().last().cloned()
     }
 }
 
@@ -202,7 +153,6 @@ impl Tool for MockTool {
     }
 }
 
-/// A mock tool that reports should_defer() = true.
 pub struct DeferredMockTool {
     name: String,
 }
@@ -250,57 +200,10 @@ pub fn test_tool_context() -> ToolContext {
     ToolContext::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
-pub fn test_tool_context_with_registry(registry: Arc<ToolRegistry>) -> ToolContext {
-    ToolContext::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-        .with_registry(registry)
-}
-
-// ---------------------------------------------------------------------------
-// Agent test helpers
-// ---------------------------------------------------------------------------
-
-/// Build a minimal InvocationContext for testing.
-pub fn test_context(provider: Arc<dyn LlmProvider>) -> InvocationContext {
-    InvocationContext {
-        input: String::new(),
-        state: HashMap::new(),
-        working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        provider,
-        cost_tracker: CostTracker::new(),
-        on_event: Arc::new(|_| {}),
-        cancelled: Arc::new(AtomicBool::new(false)),
-        session_store: None,
-        command_queue: None,
-        agent_id: "test".into(),
-    }
-}
-
-/// Build a test context that collects events into a Vec for assertions.
-pub fn test_context_with_events(
-    provider: Arc<dyn LlmProvider>,
-) -> (InvocationContext, Arc<Mutex<Vec<Event>>>) {
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let events_clone = events.clone();
-    let ctx = InvocationContext {
-        input: String::new(),
-        state: HashMap::new(),
-        working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        provider,
-        cost_tracker: CostTracker::new(),
-        on_event: Arc::new(move |e| events_clone.lock().unwrap().push(e)),
-        cancelled: Arc::new(AtomicBool::new(false)),
-        session_store: None,
-        command_queue: None,
-        agent_id: "test".into(),
-    };
-    (ctx, events)
-}
-
 // ---------------------------------------------------------------------------
 // EventCollector
 // ---------------------------------------------------------------------------
 
-/// Collects events emitted during agent execution for test assertions.
 pub struct EventCollector {
     events: Arc<Mutex<Vec<Event>>>,
 }
@@ -315,10 +218,6 @@ impl EventCollector {
     pub fn callback(&self) -> Arc<dyn Fn(Event) + Send + Sync> {
         let events = self.events.clone();
         Arc::new(move |e| events.lock().unwrap().push(e))
-    }
-
-    pub fn all(&self) -> Vec<Event> {
-        self.events.lock().unwrap().clone()
     }
 
     pub fn texts(&self) -> Vec<String> {
@@ -340,20 +239,6 @@ impl EventCollector {
             .iter()
             .filter_map(|e| match e {
                 Event::ToolStart { tool, .. } => Some(tool.clone()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    pub fn tool_ends(&self) -> Vec<(String, bool)> {
-        self.events
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|e| match e {
-                Event::ToolEnd {
-                    tool, is_error, ..
-                } => Some((tool.clone(), *is_error)),
                 _ => None,
             })
             .collect()
@@ -382,29 +267,12 @@ impl EventCollector {
             })
             .collect()
     }
-
-    pub fn errors(&self) -> Vec<String> {
-        self.events
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|e| match e {
-                Event::Error { error, .. } => Some(error.clone()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    pub fn count(&self) -> usize {
-        self.events.lock().unwrap().len()
-    }
 }
 
 // ---------------------------------------------------------------------------
 // TestHarness
 // ---------------------------------------------------------------------------
 
-/// High-level test harness combining MockProvider, EventCollector, and context.
 pub struct TestHarness {
     provider: Arc<MockProvider>,
     events: EventCollector,
@@ -428,11 +296,6 @@ impl TestHarness {
 
     pub fn with_state(mut self, key: &str, value: serde_json::Value) -> Self {
         self.state.insert(key.to_string(), value);
-        self
-    }
-
-    pub fn with_working_dir(mut self, path: PathBuf) -> Self {
-        self.working_directory = path;
         self
     }
 

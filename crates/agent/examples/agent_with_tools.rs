@@ -3,15 +3,15 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use agent_core::{
-    AgenticError, AgentBuilder, AnthropicProvider, CommandQueue, CostTracker, Event, HttpTransport,
-    InvocationContext, SpawnAgentTool, generate_agent_id,
+use agent::{
+    AgenticError, AgentBuilder, AnthropicProvider, CostTracker, Event, HttpTransport,
+    InvocationContext, ToolBuilder, ToolResult, generate_agent_id,
 };
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let api_key =
-        std::env::var("ANTHROPIC_API_KEY").expect("Set ANTHROPIC_API_KEY environment variable");
+    let api_key = std::env::var("ANTHROPIC_API_KEY")
+        .expect("Set ANTHROPIC_API_KEY environment variable");
 
     let transport: HttpTransport = Box::new(|url, headers, body| {
         let url = url.to_string();
@@ -39,50 +39,53 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let provider = Arc::new(AnthropicProvider::new(api_key, transport));
 
-    // Build a specialist sub-agent
-    let researcher = AgentBuilder::new()
-        .name("researcher")
-        .model("claude-haiku-4-5-20251001")
-        .system_prompt(
-            "You are a research assistant. Answer the given question concisely in 1-2 sentences.",
-        )
-        .max_turns(1)
-        .build()?;
+    // Build a simple echo tool
+    let echo_tool = ToolBuilder::new("echo", "Echoes the input text back")
+        .schema(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Text to echo"}
+            },
+            "required": ["text"]
+        }))
+        .read_only(true)
+        .handler(|input, _ctx| {
+            Box::pin(async move {
+                let text = input["text"].as_str().unwrap_or("").to_string();
+                Ok(ToolResult {
+                    content: format!("Echo: {text}"),
+                    is_error: false,
+                })
+            })
+        })
+        .build();
 
-    // Build orchestrator with spawn_agent tool
-    let spawn_tool = SpawnAgentTool::new()
-        .with_sub_agents(vec![researcher])
-        .with_default_model("claude-haiku-4-5-20251001");
-
-    let orchestrator = AgentBuilder::new()
-        .name("orchestrator")
+    let agent = AgentBuilder::new()
+        .name("assistant")
         .model("claude-sonnet-4-20250514")
-        .system_prompt(
-            "You coordinate research tasks. Use spawn_agent with agent: \"researcher\" to delegate questions. \
-             Summarize the results. Be concise.",
-        )
+        .system_prompt("You are a helpful assistant. You have an echo tool available. Be concise.")
         .max_turns(5)
-        .tool(spawn_tool)
+        .tool(echo_tool)
         .build()?;
 
     let cost_tracker = CostTracker::new();
-    let queue = Arc::new(CommandQueue::new());
 
     let on_event: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(|event| match event {
-        Event::Text { text, agent } => {
-            if agent == "orchestrator" {
-                print!("{text}");
+        Event::Text { text, .. } => print!("{text}"),
+        Event::ToolStart { tool, .. } => eprintln!("\n[tool] {tool}"),
+        Event::ToolEnd { result, is_error, .. } => {
+            if is_error {
+                eprintln!("[error] {result}");
+            } else {
+                eprintln!("[result] {result}");
             }
         }
-        Event::ToolStart { tool, agent, .. } => eprintln!("\n[{agent}] tool: {tool}"),
-        Event::AgentStart { agent } => eprintln!("[{agent}] started"),
-        Event::AgentEnd { agent, turns } => eprintln!("[{agent}] done ({turns} turns)"),
+        Event::AgentEnd { turns, .. } => eprintln!("\n[done in {turns} turn(s)]"),
         _ => {}
     });
 
     let ctx = InvocationContext {
-        input: "What is the capital of France? Use the researcher agent to find out, then tell me."
-            .into(),
+        input: "Use the echo tool to echo 'Hello from agent-core!' and then say goodbye.".into(),
         state: HashMap::new(),
         working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         provider,
@@ -90,11 +93,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         on_event,
         cancelled: Arc::new(AtomicBool::new(false)),
         session_store: None,
-        command_queue: Some(queue),
-        agent_id: generate_agent_id("orchestrator"),
+        command_queue: None,
+        agent_id: generate_agent_id("assistant"),
     };
 
-    let output = orchestrator.run(ctx).await?;
+    let output = agent.run(ctx).await?;
 
     println!("\n\n--- Output ---");
     println!("{}", output.content);

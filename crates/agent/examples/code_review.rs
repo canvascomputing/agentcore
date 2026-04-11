@@ -11,7 +11,7 @@ use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use agent_core::{
+use agent::{
     AgentBuilder, AgenticError, AnthropicProvider, CostTracker, Event, GlobTool, GrepTool,
     HttpTransport, InvocationContext, LiteLlmProvider, ListDirectoryTool, LlmProvider,
     ReadFileTool, Result, Tool, ToolContext, ToolResult, generate_agent_id,

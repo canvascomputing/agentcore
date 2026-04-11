@@ -1,4 +1,4 @@
-EXAMPLES_DIR := crates/agent-core/examples
+EXAMPLES_DIR := crates/agent/examples
 
 .PHONY: build test fmt clean example
 
@@ -16,7 +16,7 @@ clean:
 
 example:
 ifdef name
-	cargo run -p agent-core --example $(name) $(ARGS)
+	cargo run -p agent --example $(name) $(ARGS)
 else
 	@echo "Available examples:"
 	@ls $(EXAMPLES_DIR)/*.rs | xargs -n1 basename | sed 's/\.rs$$//' | sed 's/^/  /'

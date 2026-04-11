@@ -1,4 +1,4 @@
-use agent_core::{
+use agent::{
     AgenticError, AnthropicProvider, CompletionRequest, ContentBlock, CostTracker, LlmProvider,
     Message, HttpTransport,
 };

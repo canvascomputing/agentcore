@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-use agent_core::{
+use agent::{
     AgentBuilder, AgenticError, AnthropicProvider, CostTracker, Event, HttpTransport,
     InvocationContext, SessionStore, TaskStore, generate_agent_id, task_create_tool,
     task_list_tool, task_update_tool,
