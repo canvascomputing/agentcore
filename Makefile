@@ -1,14 +1,18 @@
 EXAMPLES_DIR := crates/agent/examples
 
-.PHONY: build test fmt clean update example litellm
+.PHONY: build test test_integration fmt clean update example use-case litellm
 
 # Build the project (warnings are errors)
 build:
 	RUSTFLAGS="-D warnings" cargo build
 
-# Run all tests (warnings are errors)
+# Run unit tests (warnings are errors)
 test:
-	RUSTFLAGS="-D warnings" cargo test
+	RUSTFLAGS="-D warnings" cargo test --lib
+
+# Run integration tests (requires a live LLM provider)
+test_integration:
+	RUSTFLAGS="-D warnings" cargo test --test integration -- --nocapture --test-threads=1
 
 # Format all code
 fmt:
@@ -21,6 +25,19 @@ clean:
 # Update dependencies
 update:
 	cargo update
+
+# Run a use-case binary
+# Usage: make use-case name=project-scanner
+#        make use-case name=project-scanner ARGS="./some-folder"
+use-case:
+ifdef name
+	cargo run -p use-cases --bin $(name) -- $(ARGS)
+else
+	@echo "Available use cases:"
+	@grep -A1 '^\[\[bin\]\]' crates/use-cases/Cargo.toml | grep 'name' | sed 's/.*"\(.*\)"/  \1/'
+	@echo ""
+	@echo "Run with: make use-case name=<use-case>"
+endif
 
 # Override model or base URLs for examples
 # Usage: make example name=code_review

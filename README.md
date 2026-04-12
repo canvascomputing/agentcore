@@ -22,27 +22,28 @@ Build agents that reason, use tools, and manage long-running tasks autonomously.
 - **Memory Layers** for session transcripts and task persistence
 - **Output schemas** for type-safe model responses
 
-## Quick Start
+## Use Cases
 
-```rust
-use agent::{AgentBuilder, AnthropicProvider, InvocationContext, ReadFileTool, GrepTool};
-use std::sync::Arc;
+Ready-to-use CLI tools built with this project.
 
-let provider = Arc::new(AnthropicProvider::from_api_key(api_key));
+> Consider setting your LLM provider's environment variables for key, model or base URL.
 
-let agent = AgentBuilder::new()
-    .name("assistant")
-    .model("claude-sonnet-4-20250514")
-    .system_prompt("You are a helpful coding assistant.")
-    .tool(ReadFileTool)
-    .tool(GrepTool)
-    .build()?;
+### Project Scanner
 
-let mut ctx = InvocationContext::new(provider);
-ctx.prompt = "Find all TODO comments".into();
+Scans a directory and outputs a JSON summary with project description and languages used.
 
-let output = agent.run(ctx).await?;
-println!("{}", output.response_raw);
+```bash
+make use-case name=project-scanner              # scans current directory
+make use-case name=project-scanner -- ./other    # scans a specific folder
+cat project.json
+```
+
+Output:
+```json
+{
+  "summary": "A minimal Rust framework for building agentic LLM applications with tool use",
+  "languages": ["Rust"]
+}
 ```
 
 ## API

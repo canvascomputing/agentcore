@@ -61,9 +61,15 @@ crates/agent/src/
     task.rs               TaskStore (file-based with locking)
 
   testutil.rs             MockProvider, MockTool, TestHarness, EventCollector
+
+crates/use-cases/src/
+  lib.rs                    shared transport/provider utilities
+  cli/
+    project_scanner.rs      project scanning CLI
 ```
 
 Examples are in `crates/agent/examples/`. Run with `make example name=<name>`.
+Use cases are in `crates/use-cases/src/cli/`. Run with `make use-case name=<name>`.
 
 ## Key conventions
 
