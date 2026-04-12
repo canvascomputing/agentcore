@@ -24,12 +24,12 @@ fn build_transport() -> HttpTransport {
     })
 }
 
-fn build_provider() -> (Arc<dyn LlmProvider>, String) {
+fn build_provider() -> Option<(Arc<dyn LlmProvider>, String)> {
     let transport = build_transport();
     if let Ok(url) = std::env::var("LITELLM_API_URL") {
         let key = std::env::var("LITELLM_API_KEY").unwrap_or_else(|_| "unused".into());
         let model = std::env::var("LITELLM_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".into());
-        return (Arc::new(LiteLlmProvider::new(key, transport).base_url(url)), model);
+        return Some((Arc::new(LiteLlmProvider::new(key, transport).base_url(url)), model));
     }
     if let Some(key) = std::env::var("MISTRAL_API_KEY").ok().filter(|k| !k.is_empty()) {
         let mut p = MistralProvider::new(key, transport);
@@ -38,7 +38,7 @@ fn build_provider() -> (Arc<dyn LlmProvider>, String) {
         }
         let model =
             std::env::var("MISTRAL_MODEL").unwrap_or_else(|_| "mistral-medium-2508".into());
-        return (Arc::new(p), model);
+        return Some((Arc::new(p), model));
     }
     if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
         let mut p = AnthropicProvider::new(key, transport);
@@ -46,21 +46,19 @@ fn build_provider() -> (Arc<dyn LlmProvider>, String) {
             p = p.base_url(url);
         }
         let model = std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".into());
-        return (Arc::new(p), model);
+        return Some((Arc::new(p), model));
     }
     if std::net::TcpStream::connect("127.0.0.1:4000").is_ok() {
         let key = std::env::var("LITELLM_API_KEY").unwrap_or_else(|_| "unused".into());
         let model = std::env::var("LITELLM_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".into());
-        return (Arc::new(LiteLlmProvider::new(key, transport).base_url("http://localhost:4000".into())), model);
+        return Some((Arc::new(LiteLlmProvider::new(key, transport).base_url("http://localhost:4000".into())), model));
     }
-    let supported = ["ANTHROPIC_API_KEY", "MISTRAL_API_KEY", "LITELLM_API_URL"];
-    eprintln!("Error: Set {}", supported.join(" or "));
-    std::process::exit(1);
+    return None;
 }
 
-#[tokio::main]
-async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let (provider, model) = build_provider();
+#[tokio::test]
+async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let Some((provider, model)) = build_provider() else { eprintln!("SKIPPED: no provider"); return Ok(()); };
 
     let request = CompletionRequest {
         model: model.clone(),

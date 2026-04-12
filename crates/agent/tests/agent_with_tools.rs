@@ -4,8 +4,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use agent::{
-    AgentBuilder, AgenticError, AnthropicProvider, CommandQueue, Event, HttpTransport,
-    InvocationContext, LiteLlmProvider, LlmProvider, SpawnAgentTool, generate_agent_name,
+    AgentBuilder, AgenticError, AnthropicProvider, Event, HttpTransport,
+    InvocationContext, LiteLlmProvider, LlmProvider, ToolBuilder, ToolResult, generate_agent_name,
 };
 
 fn build_transport() -> HttpTransport {
@@ -27,12 +27,12 @@ fn build_transport() -> HttpTransport {
     })
 }
 
-fn build_provider() -> (Arc<dyn LlmProvider>, String) {
+fn build_provider() -> Option<(Arc<dyn LlmProvider>, String)> {
     let transport = build_transport();
     if let Ok(url) = std::env::var("LITELLM_API_URL") {
         let key = std::env::var("LITELLM_API_KEY").unwrap_or_else(|_| "unused".into());
         let model = std::env::var("LITELLM_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".into());
-        return (Arc::new(LiteLlmProvider::new(key, transport).base_url(url)), model);
+        return Some((Arc::new(LiteLlmProvider::new(key, transport).base_url(url)), model));
     }
     if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
         let mut p = AnthropicProvider::new(key, transport);
@@ -40,74 +40,76 @@ fn build_provider() -> (Arc<dyn LlmProvider>, String) {
             p = p.base_url(url);
         }
         let model = std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".into());
-        return (Arc::new(p), model);
+        return Some((Arc::new(p), model));
     }
     if std::net::TcpStream::connect("127.0.0.1:4000").is_ok() {
         let key = std::env::var("LITELLM_API_KEY").unwrap_or_else(|_| "unused".into());
         let model = std::env::var("LITELLM_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".into());
-        return (Arc::new(LiteLlmProvider::new(key, transport).base_url("http://localhost:4000".into())), model);
+        return Some((Arc::new(LiteLlmProvider::new(key, transport).base_url("http://localhost:4000".into())), model));
     }
-    let supported = ["ANTHROPIC_API_KEY", "LITELLM_API_URL"];
-    eprintln!("Error: Set {}", supported.join(" or "));
-    std::process::exit(1);
+    return None;
 }
 
-#[tokio::main]
-async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let (provider, model) = build_provider();
+#[tokio::test]
+async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let Some((provider, model)) = build_provider() else { eprintln!("SKIPPED: no provider"); return Ok(()); };
 
-    let researcher = AgentBuilder::new()
-        .name("researcher")
+    let echo_tool = ToolBuilder::new("echo", "Echoes the input text back")
+        .schema(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Text to echo"}
+            },
+            "required": ["text"]
+        }))
+        .read_only(true)
+        .handler(|input, _ctx| {
+            Box::pin(async move {
+                let text = input["text"].as_str().unwrap_or("").to_string();
+                Ok(ToolResult {
+                    content: format!("Echo: {text}"),
+                    is_error: false,
+                })
+            })
+        })
+        .build();
+
+    let agent = AgentBuilder::new()
+        .name("assistant")
         .model(&model)
-        .system_prompt(
-            "You are a research assistant. Answer the given question concisely in 1-2 sentences.",
-        )
-        .max_turns(1)
-        .build()?;
-
-    let spawn_tool = SpawnAgentTool::new()
-        .with_sub_agents(vec![researcher])
-        .with_default_model(&model);
-
-    let orchestrator = AgentBuilder::new()
-        .name("orchestrator")
-        .model(&model)
-        .system_prompt(
-            "You coordinate research tasks. Use spawn_agent with agent: \"researcher\" to delegate questions. \
-             Summarize the results. Be concise.",
-        )
+        .system_prompt("You are a helpful assistant. You have an echo tool available. Be concise.")
         .max_turns(5)
-        .tool(spawn_tool)
+        .tool(echo_tool)
         .build()?;
 
-    let queue = Arc::new(CommandQueue::new());
 
     let event_handler: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(|event| match event {
-        Event::TextChunk { content: text, agent_name } => {
-            if agent_name == "orchestrator" {
-                print!("{text}");
+        Event::TextChunk { content: text, .. } => print!("{text}"),
+        Event::ToolCallStart { tool_name: tool, .. } => eprintln!("\n[tool] {tool}"),
+        Event::ToolCallEnd { output: result, is_error, .. } => {
+            if is_error {
+                eprintln!("[error] {result}");
+            } else {
+                eprintln!("[result] {result}");
             }
         }
-        Event::ToolCallStart { tool_name: tool, agent_name, .. } => eprintln!("\n[{agent_name}] tool: {tool}"),
-        Event::AgentStart { agent_name: agent } => eprintln!("[{agent}] started"),
-        Event::AgentEnd { agent_name: agent, turns } => eprintln!("[{agent}] done ({turns} turns)"),
+        Event::AgentEnd { turns, .. } => eprintln!("\n[done in {turns} turn(s)]"),
         _ => {}
     });
 
     let ctx = InvocationContext {
-        prompt: "What is the capital of France? Use the researcher agent to find out, then tell me."
-            .into(),
+        prompt: "Use the echo tool to echo 'Hello from agent!' and then say goodbye.".into(),
         template_variables: HashMap::new(),
         working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         provider,
         event_handler,
         cancel_signal: Arc::new(AtomicBool::new(false)),
         session_store: None,
-        command_queue: Some(queue),
-        agent_name: generate_agent_name("orchestrator"),
+        command_queue: None,
+        agent_name: generate_agent_name("assistant"),
     };
 
-    let output = orchestrator.run(ctx).await?;
+    let output = agent.run(ctx).await?;
 
     println!("\n\n--- Output ---");
     println!("{}", output.response_raw);

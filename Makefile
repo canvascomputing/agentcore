@@ -1,6 +1,4 @@
-EXAMPLES_DIR := crates/agent/examples
-
-.PHONY: build test test_integration fmt clean update example use-case litellm
+.PHONY: build test test_integration fmt clean update use-case litellm
 
 # Build the project (warnings are errors)
 build:
@@ -10,9 +8,9 @@ build:
 test:
 	RUSTFLAGS="-D warnings" cargo test --lib
 
-# Run integration tests (requires a live LLM provider)
+# Run integration tests (requires a live LLM provider, skips if none available)
 test_integration:
-	RUSTFLAGS="-D warnings" cargo test --test integration -- --nocapture --test-threads=1
+	RUSTFLAGS="-D warnings" cargo test --tests -- --nocapture --test-threads=1
 
 # Format all code
 fmt:
@@ -37,30 +35,6 @@ else
 	@grep -A1 '^\[\[bin\]\]' crates/use-cases/Cargo.toml | grep 'name' | sed 's/.*"\(.*\)"/  \1/'
 	@echo ""
 	@echo "Run with: make use-case name=<use-case>"
-endif
-
-# Override model or base URLs for examples
-# Usage: make example name=code_review
-#        make example name=code_review ANTHROPIC_MODEL=claude-haiku-4-5-20251001
-#        make example name=code_review ANTHROPIC_BASE_URL=https://custom.api.com
-export ANTHROPIC_MODEL ?= claude-sonnet-4-20250514
-export MISTRAL_MODEL ?= mistral-medium-2508
-export ANTHROPIC_BASE_URL
-export LITELLM_API_URL
-export LITELLM_API_KEY
-export LITELLM_MODEL
-export MISTRAL_API_KEY
-export MISTRAL_BASE_URL
-export MISTRAL_MODEL
-
-example:
-ifdef name
-	cargo run -p agent --example $(name) $(ARGS)
-else
-	@echo "Available examples:"
-	@ls $(EXAMPLES_DIR)/*.rs | xargs -n1 basename | sed 's/\.rs$$//' | sed 's/^/  /'
-	@echo ""
-	@echo "Run with: make example name=<example>"
 endif
 
 # Start a LiteLLM proxy on localhost:4000
