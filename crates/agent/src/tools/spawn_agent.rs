@@ -107,6 +107,10 @@ impl Tool for SpawnAgentTool {
         "Spawn a sub-agent to handle a task. Can run in foreground (blocking) or background mode."
     }
 
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     fn input_schema(&self) -> Value {
         serde_json::json!({
             "type": "object",

@@ -28,14 +28,12 @@ Ready-to-use CLI tools built with this project.
 
 > Consider setting your LLM provider's environment variables for key, model or base URL.
 
-### Project Scanner
+### [Project Scanner](crates/use-cases/src/project_scanner/)
 
 Scans a directory and outputs a JSON summary with project description and languages used.
 
 ```bash
-make use-case name=project-scanner              # scans current directory
-make use-case name=project-scanner -- ./other    # scans a specific folder
-cat project.json
+make use-case name=project-scanner -- ./
 ```
 
 Output:
@@ -46,12 +44,20 @@ Output:
 }
 ```
 
-### Deep Research
+### [Deep Research](crates/use-cases/src/deep_research/)
 
-Spawns two sub-agents to research pro and con arguments, then synthesizes a structured decision. Requires `BRAVE_API_KEY` for web search.
+Spawns three researcher sub-agents in parallel, then aggregates their findings into a structured decision. Requires `BRAVE_API_KEY` for web search.
 
 ```bash
-make use-case name=deep-research args="Should we use Rust or Go for our backend?"
+make use-case name=deep-research args="What constitutes a good life?"
+```
+
+Output:
+```json
+{
+  "title": "What Constitutes a Good Life: A Multi-Perspective Analysis",
+  "research": "A good life emerges from the convergence of philosophical wisdom, scientific research, and cultural understanding. Key elements include meaningful relationships and social connections, a sense of purpose and personal growth, physical and mental well-being, contributing to something beyond oneself, and living in accordance with personal values. While cultural contexts vary, common themes across traditions emphasize virtue, balance, gratitude, and the cultivation of both inner fulfillment and positive impact on others."
+}
 ```
 
 ## API
