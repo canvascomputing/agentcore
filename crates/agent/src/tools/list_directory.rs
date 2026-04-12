@@ -9,13 +9,19 @@ use crate::tools::tool::{Tool, ToolContext, ToolResult};
 
 pub struct ListDirectoryTool;
 
+const DESCRIPTION: &str = "\
+List the contents of a directory. Returns file and directory names.
+
+- Use this for a quick overview of directory structure.
+- For finding files by pattern across the tree, use glob instead.";
+
 impl Tool for ListDirectoryTool {
     fn name(&self) -> &str {
         "list_directory"
     }
 
     fn description(&self) -> &str {
-        "List files and directories at a given path"
+        DESCRIPTION
     }
 
     fn input_schema(&self) -> Value {

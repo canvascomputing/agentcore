@@ -8,13 +8,22 @@ use crate::tools::tool::{Tool, ToolContext, ToolResult};
 
 pub struct EditFileTool;
 
+const DESCRIPTION: &str = "\
+Edit a file by replacing occurrences of a string.
+
+- You must use read_file at least once before editing a file. Understand the contents before modifying.
+- The edit will FAIL if old_string is not unique in the file. Provide more surrounding context to make it unique, or use replace_all to change every occurrence.
+- When editing, preserve the exact indentation (tabs/spaces) as it appears in the file.
+- ALWAYS prefer editing existing files over creating new ones.
+- Use replace_all for renaming or replacing a string across the entire file.";
+
 impl Tool for EditFileTool {
     fn name(&self) -> &str {
         "edit_file"
     }
 
     fn description(&self) -> &str {
-        "Edit a file by replacing occurrences of a string."
+        DESCRIPTION
     }
 
     fn input_schema(&self) -> Value {

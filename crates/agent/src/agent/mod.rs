@@ -4,7 +4,7 @@ mod context;
 mod event;
 mod r#loop;
 mod output;
-pub mod prompt;
+pub(crate) mod prompts;
 mod queue;
 
 pub use agent::Agent;

@@ -7,10 +7,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{AgenticError, Result};
 
-// ---------------------------------------------------------------------------
-// Data model
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
@@ -41,84 +37,6 @@ pub struct TaskUpdate {
     pub metadata: Option<HashMap<String, serde_json::Value>>,
 }
 
-// ---------------------------------------------------------------------------
-// File locking
-// ---------------------------------------------------------------------------
-
-const MAX_RETRIES: u32 = 30;
-const MIN_BACKOFF_MS: u64 = 5;
-const MAX_BACKOFF_MS: u64 = 100;
-
-/// Execute `f` while holding an exclusive advisory lock.
-fn with_lock<T>(lock_path: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
-    let file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(lock_path)?;
-    let mut backoff_ms = MIN_BACKOFF_MS;
-    for _ in 0..MAX_RETRIES {
-        if try_lock_exclusive(&file)? {
-            let result = f();
-            unlock(&file)?;
-            return result;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
-        backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
-    }
-    Err(AgenticError::Other(format!(
-        "Failed to acquire lock after {MAX_RETRIES} attempts"
-    )))
-}
-
-#[cfg(unix)]
-fn try_lock_exclusive(file: &File) -> Result<bool> {
-    use std::os::unix::io::AsRawFd;
-    let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if ret == 0 {
-        Ok(true)
-    } else {
-        let err = std::io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
-            Ok(false)
-        } else {
-            Err(AgenticError::Io(err))
-        }
-    }
-}
-
-#[cfg(unix)]
-fn unlock(file: &File) -> Result<()> {
-    use std::os::unix::io::AsRawFd;
-    let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
-    if ret == 0 {
-        Ok(())
-    } else {
-        Err(AgenticError::Io(std::io::Error::last_os_error()))
-    }
-}
-
-#[cfg(not(unix))]
-fn try_lock_exclusive(_file: &File) -> Result<bool> {
-    Ok(true) // No-op on non-Unix
-}
-
-#[cfg(not(unix))]
-fn unlock(_file: &File) -> Result<()> {
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// TaskStore
-// ---------------------------------------------------------------------------
-
-fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
 /// Persists tasks to disk as individual JSON files.
 pub struct TaskStore {
     base_dir: PathBuf,
@@ -133,75 +51,8 @@ impl TaskStore {
         }
     }
 
-    fn dir(&self) -> PathBuf {
-        self.base_dir.join("tasks").join(&self.list_id)
-    }
-
-    fn ensure_dir(&self) -> Result<()> {
-        fs::create_dir_all(self.dir())?;
-        Ok(())
-    }
-
-    fn task_path(&self, id: &str) -> PathBuf {
-        self.dir().join(format!("{id}.json"))
-    }
-
-    fn read_task(&self, id: &str) -> Result<Option<Task>> {
-        let path = self.task_path(id);
-        if !path.exists() {
-            return Ok(None);
-        }
-        let content = fs::read_to_string(&path)?;
-        let task: Task = serde_json::from_str(&content)?;
-        Ok(Some(task))
-    }
-
-    fn write_task(&self, task: &Task) -> Result<()> {
-        let path = self.task_path(&task.id);
-        let json = serde_json::to_string_pretty(task)?;
-        fs::write(&path, json)?;
-        Ok(())
-    }
-
-    fn read_high_water_mark(&self) -> u64 {
-        let path = self.dir().join(".highwatermark");
-        fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(0)
-    }
-
-    fn write_high_water_mark(&self, mark: u64) -> Result<()> {
-        let path = self.dir().join(".highwatermark");
-        fs::write(&path, mark.to_string())?;
-        Ok(())
-    }
-
-    fn highest_task_id_on_disk(&self) -> u64 {
-        let dir = self.dir();
-        if !dir.exists() {
-            return 0;
-        }
-        fs::read_dir(&dir)
-            .ok()
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .filter_map(|e| {
-                        let name = e.file_name().to_string_lossy().to_string();
-                        name.strip_suffix(".json")
-                            .and_then(|s| s.parse::<u64>().ok())
-                    })
-                    .max()
-                    .unwrap_or(0)
-            })
-            .unwrap_or(0)
-    }
-
     pub fn create(&self, subject: &str, description: &str) -> Result<Task> {
-        self.ensure_dir()?;
-        let lock_path = self.dir().join(".lock");
-        with_lock(&lock_path, || {
+        self.with_lock(|| {
             let mark = self.read_high_water_mark();
             let from_files = self.highest_task_id_on_disk();
             let next_id = mark.max(from_files) + 1;
@@ -241,23 +92,21 @@ impl TaskStore {
         for entry in fs::read_dir(&dir)? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().to_string();
-            if let Some(id) = name.strip_suffix(".json") {
-                if let Some(task) = self.read_task(id)? {
-                    tasks.push(task);
-                }
+            let Some(id) = name.strip_suffix(".json") else {
+                continue;
+            };
+            if let Some(task) = self.read_task(id)? {
+                tasks.push(task);
             }
         }
-        tasks.sort_by(|a, b| a.id.parse::<u64>().unwrap_or(0).cmp(&b.id.parse::<u64>().unwrap_or(0)));
+
+        tasks.sort_by_key(|t| t.id.parse::<u64>().unwrap_or(0));
         Ok(tasks)
     }
 
     pub fn update(&self, id: &str, update: TaskUpdate) -> Result<Task> {
-        self.ensure_dir()?;
-        let lock_path = self.dir().join(".lock");
-        with_lock(&lock_path, || {
-            let mut task = self
-                .read_task(id)?
-                .ok_or_else(|| AgenticError::Other(format!("Task {id} not found")))?;
+        self.with_lock(|| {
+            let mut task = self.require_task(id)?;
 
             if let Some(status) = update.status {
                 task.status = status;
@@ -282,42 +131,27 @@ impl TaskStore {
     }
 
     pub fn delete(&self, id: &str) -> Result<()> {
-        self.ensure_dir()?;
-        let lock_path = self.dir().join(".lock");
-        with_lock(&lock_path, || {
+        self.with_lock(|| {
             let path = self.task_path(id);
-            if path.exists() {
-                // Remove from all dependency arrays
-                self.remove_from_all_dependencies(id)?;
-                fs::remove_file(&path)?;
+            if !path.exists() {
+                return Ok(());
             }
+            self.remove_from_all_dependencies(id)?;
+            fs::remove_file(&path)?;
             Ok(())
         })
     }
 
     pub fn claim(&self, id: &str, agent_name: &str) -> Result<Task> {
-        self.ensure_dir()?;
-        let lock_path = self.dir().join(".lock");
-        with_lock(&lock_path, || {
-            let mut task = self
-                .read_task(id)?
-                .ok_or_else(|| AgenticError::Other(format!("Task {id} not found")))?;
+        self.with_lock(|| {
+            let mut task = self.require_task(id)?;
 
             if task.status == TaskStatus::Completed {
                 return Err(AgenticError::Other(format!(
                     "Task {id} already completed"
                 )));
             }
-
-            for blocker_id in &task.blocked_by {
-                if let Some(blocker) = self.read_task(blocker_id)? {
-                    if blocker.status != TaskStatus::Completed {
-                        return Err(AgenticError::Other(format!(
-                            "Task {id} blocked by unfinished task {blocker_id}"
-                        )));
-                    }
-                }
-            }
+            self.check_not_blocked(id, &task.blocked_by)?;
 
             task.status = TaskStatus::InProgress;
             task.owner = Some(agent_name.to_string());
@@ -328,15 +162,9 @@ impl TaskStore {
     }
 
     pub fn add_dependency(&self, from: &str, to: &str) -> Result<()> {
-        self.ensure_dir()?;
-        let lock_path = self.dir().join(".lock");
-        with_lock(&lock_path, || {
-            let mut from_task = self
-                .read_task(from)?
-                .ok_or_else(|| AgenticError::Other(format!("Task {from} not found")))?;
-            let mut to_task = self
-                .read_task(to)?
-                .ok_or_else(|| AgenticError::Other(format!("Task {to} not found")))?;
+        self.with_lock(|| {
+            let mut from_task = self.require_task(from)?;
+            let mut to_task = self.require_task(to)?;
 
             if !from_task.blocks.contains(&to.to_string()) {
                 from_task.blocks.push(to.to_string());
@@ -351,31 +179,191 @@ impl TaskStore {
         })
     }
 
+    fn dir(&self) -> PathBuf {
+        self.base_dir.join("tasks").join(&self.list_id)
+    }
+
+    fn task_path(&self, id: &str) -> PathBuf {
+        self.dir().join(format!("{id}.json"))
+    }
+
+    fn with_lock<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        fs::create_dir_all(self.dir())?;
+        let lock_path = self.dir().join(".lock");
+        with_file_lock(&lock_path, f)
+    }
+
+    fn read_task(&self, id: &str) -> Result<Option<Task>> {
+        let path = self.task_path(id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = fs::read_to_string(&path)?;
+        let task: Task = serde_json::from_str(&content)?;
+        Ok(Some(task))
+    }
+
+    fn require_task(&self, id: &str) -> Result<Task> {
+        self.read_task(id)?
+            .ok_or_else(|| AgenticError::Other(format!("Task {id} not found")))
+    }
+
+    fn write_task(&self, task: &Task) -> Result<()> {
+        let json = serde_json::to_string_pretty(task)?;
+        fs::write(self.task_path(&task.id), json)?;
+        Ok(())
+    }
+
+    fn read_high_water_mark(&self) -> u64 {
+        let path = self.dir().join(".highwatermark");
+        fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0)
+    }
+
+    fn write_high_water_mark(&self, mark: u64) -> Result<()> {
+        let path = self.dir().join(".highwatermark");
+        fs::write(&path, mark.to_string())?;
+        Ok(())
+    }
+
+    fn highest_task_id_on_disk(&self) -> u64 {
+        let dir = self.dir();
+        if !dir.exists() {
+            return 0;
+        }
+        fs::read_dir(&dir)
+            .ok()
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter_map(|e| {
+                        let name = e.file_name().to_string_lossy().to_string();
+                        name.strip_suffix(".json")
+                            .and_then(|s| s.parse::<u64>().ok())
+                    })
+                    .max()
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0)
+    }
+
+    fn check_not_blocked(&self, task_id: &str, blocked_by: &[String]) -> Result<()> {
+        for blocker_id in blocked_by {
+            let Some(blocker) = self.read_task(blocker_id)? else {
+                continue;
+            };
+            if blocker.status != TaskStatus::Completed {
+                return Err(AgenticError::Other(format!(
+                    "Task {task_id} blocked by unfinished task {blocker_id}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn remove_from_all_dependencies(&self, deleted_id: &str) -> Result<()> {
         let dir = self.dir();
         if !dir.exists() {
             return Ok(());
         }
+
         for entry in fs::read_dir(&dir)? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().to_string();
-            if let Some(id) = name.strip_suffix(".json") {
-                if id == deleted_id {
-                    continue;
-                }
-                if let Some(mut task) = self.read_task(id)? {
-                    let had_dep = task.blocks.contains(&deleted_id.to_string())
-                        || task.blocked_by.contains(&deleted_id.to_string());
-                    if had_dep {
-                        task.blocks.retain(|b| b != deleted_id);
-                        task.blocked_by.retain(|b| b != deleted_id);
-                        self.write_task(&task)?;
-                    }
-                }
+            let Some(id) = name.strip_suffix(".json") else {
+                continue;
+            };
+            if id == deleted_id {
+                continue;
             }
+            let Some(mut task) = self.read_task(id)? else {
+                continue;
+            };
+
+            let references_deleted = task.blocks.contains(&deleted_id.to_string())
+                || task.blocked_by.contains(&deleted_id.to_string());
+            if !references_deleted {
+                continue;
+            }
+
+            task.blocks.retain(|b| b != deleted_id);
+            task.blocked_by.retain(|b| b != deleted_id);
+            self.write_task(&task)?;
         }
         Ok(())
     }
+}
+
+const MAX_LOCK_RETRIES: u32 = 30;
+const MIN_BACKOFF_MS: u64 = 5;
+const MAX_BACKOFF_MS: u64 = 100;
+
+fn with_file_lock<T>(lock_path: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)?;
+
+    let mut backoff_ms = MIN_BACKOFF_MS;
+    for _ in 0..MAX_LOCK_RETRIES {
+        if try_lock_exclusive(&file)? {
+            let result = f();
+            unlock(&file)?;
+            return result;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
+        backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
+    }
+
+    Err(AgenticError::Other(format!(
+        "Failed to acquire lock after {MAX_LOCK_RETRIES} attempts"
+    )))
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+#[cfg(unix)]
+fn try_lock_exclusive(file: &File) -> Result<bool> {
+    use std::os::unix::io::AsRawFd;
+    let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if ret == 0 {
+        return Ok(true);
+    }
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
+        Ok(false)
+    } else {
+        Err(AgenticError::Io(err))
+    }
+}
+
+#[cfg(unix)]
+fn unlock(file: &File) -> Result<()> {
+    use std::os::unix::io::AsRawFd;
+    let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(AgenticError::Io(std::io::Error::last_os_error()))
+    }
+}
+
+#[cfg(not(unix))]
+fn try_lock_exclusive(_file: &File) -> Result<bool> {
+    Ok(true)
+}
+
+#[cfg(not(unix))]
+fn unlock(_file: &File) -> Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]

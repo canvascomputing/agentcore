@@ -14,9 +14,9 @@ use crate::tools::{ToolCall, ToolContext, ToolRegistry, execute_tool_calls};
 use super::agent::AgentLoop;
 use super::context::{InvocationContext, now_millis};
 use super::event::Event;
-use super::output::{AgentOutput, Statistics, StructuredOutputTool, STRUCTURED_OUTPUT_TOOL_NAME};
-use super::prompt::{self, interpolate};
+use super::output::{AgentOutput, Statistics, StructuredOutputTool};
 use super::queue::QueuePriority;
+use super::prompts::{self as prompts, STRUCTURED_OUTPUT_TOOL_NAME, interpolate};
 
 /// Mutable state carried across turns of the agent loop.
 struct LoopState {
@@ -78,13 +78,17 @@ impl AgentLoop {
 
     fn init_state(&self, ctx: &InvocationContext) -> LoopState {
         let mut system_prompt = interpolate(&self.system_prompt, &ctx.template_variables);
+        for (_, content) in &self.behavior_prompts {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(content);
+        }
         if self.output_schema.is_some() {
-            system_prompt.push_str(prompt::STRUCTURED_OUTPUT_INSTRUCTION);
+            system_prompt.push_str(prompts::STRUCTURED_OUTPUT_INSTRUCTION);
         }
         let (tools, tool_choice) = self.build_tool_config();
 
         let mut messages = Vec::new();
-        if let Some(context_msg) = self.prompt_builder.as_ref().and_then(|pb| pb.build_context_message()) {
+        if let Some(context_msg) = self.context_builder.build_context_message() {
             messages.push(context_msg);
         }
         messages.push(Message::user(ctx.prompt.clone()));
@@ -219,7 +223,7 @@ impl AgentLoop {
             if state.schema_retries > self.max_schema_retries {
                 return Err(AgenticError::SchemaRetryExhausted { retries: self.max_schema_retries });
             }
-            state.messages.push(Message::user(prompt::STRUCTURED_OUTPUT_RETRY));
+            state.messages.push(Message::user(prompts::STRUCTURED_OUTPUT_RETRY));
             return Ok(None); // continue loop
         }
 
@@ -370,7 +374,6 @@ fn extract_discovered_tool_names(content: &str, discovered: &mut HashSet<String>
 mod tests {
     use super::*;
     use crate::agent::{Agent, AgentBuilder, CommandQueue, CommandSource, QueuedCommand};
-    use crate::agent::prompt::PromptBuilder;
     use crate::error::AgenticError;
     use crate::provider::types::ContentBlock;
     use crate::testutil::*;
@@ -790,21 +793,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prompt_builder_injects_context() {
+    async fn user_context_injects_into_messages() {
         let provider = MockProvider::text("ok");
-        let mut pb = PromptBuilder::new("Base.".into());
-        pb.user_context("Project context here".into());
-
         let agent = AgentBuilder::new()
             .name("test").model("mock").system_prompt("System.")
-            .prompt_builder(pb)
+            .user_context("Project context here")
             .build().unwrap();
 
         let harness = TestHarness::new(provider);
         harness.run_agent(agent.as_ref(), "go").await.unwrap();
 
         let req = harness.provider().last_request().unwrap();
-        // First message should be the context message from PromptBuilder
+        // First message should be the context message from ContextBuilder
         let first_msg = &req.messages[0];
         match first_msg {
             Message::User { content } => {

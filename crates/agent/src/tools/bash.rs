@@ -10,13 +10,38 @@ use crate::tools::tool::{Tool, ToolContext, ToolResult};
 /// Shell command execution tool.
 pub struct BashTool;
 
+const DESCRIPTION: &str = "\
+Executes a bash command in the working directory and returns its output.
+
+IMPORTANT: Avoid using this tool when a dedicated tool exists:
+- File search: Use glob (NOT find or ls)
+- Content search: Use grep (NOT grep or rg via bash)
+- Read files: Use read_file (NOT cat/head/tail)
+- Edit files: Use edit_file (NOT sed/awk)
+- Write files: Use write_file (NOT echo/heredoc)
+
+# Instructions
+- Always quote file paths that contain spaces with double quotes.
+- Try to maintain your current working directory by using absolute paths.
+- You may specify an optional timeout in milliseconds (default: 120000, max: 600000).
+
+When issuing multiple commands:
+- If commands are independent, make multiple tool calls in parallel.
+- If commands depend on each other, chain with && in a single call.
+- Do NOT use newlines to separate commands.
+
+# Anti-patterns
+- Do not sleep between commands that can run immediately.
+- Do not retry failing commands in a sleep loop — diagnose the root cause.
+- Do not use interactive flags (-i) as they require input which is not supported.";
+
 impl Tool for BashTool {
     fn name(&self) -> &str {
         "bash"
     }
 
     fn description(&self) -> &str {
-        "Executes a bash command in the working directory and returns its output."
+        DESCRIPTION
     }
 
     fn input_schema(&self) -> Value {

@@ -8,13 +8,20 @@ use crate::tools::tool::{Tool, ToolContext, ToolResult};
 
 pub struct ReadFileTool;
 
+const DESCRIPTION: &str = "\
+Read the contents of a file, optionally returning a specific range of lines.
+
+- Results are returned with line numbers starting at 1.
+- When you already know which part of the file you need, use offset and limit to read only that part. This is important for larger files.
+- This tool can only read files, not directories. To list a directory, use list_directory or bash with ls.";
+
 impl Tool for ReadFileTool {
     fn name(&self) -> &str {
         "read_file"
     }
 
     fn description(&self) -> &str {
-        "Read the contents of a file, optionally returning a specific range of lines."
+        DESCRIPTION
     }
 
     fn input_schema(&self) -> Value {

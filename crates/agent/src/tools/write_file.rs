@@ -8,13 +8,19 @@ use crate::tools::tool::{Tool, ToolContext, ToolResult};
 
 pub struct WriteFileTool;
 
+const DESCRIPTION: &str = "\
+Write content to a file, creating parent directories if needed.
+
+- If this is an existing file, you MUST use read_file first to read its contents.
+- Prefer edit_file for modifying existing files — it only sends the diff. Use write_file for new files or complete rewrites.";
+
 impl Tool for WriteFileTool {
     fn name(&self) -> &str {
         "write_file"
     }
 
     fn description(&self) -> &str {
-        "Write content to a file, creating parent directories if needed."
+        DESCRIPTION
     }
 
     fn input_schema(&self) -> Value {

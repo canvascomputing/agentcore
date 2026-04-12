@@ -25,7 +25,7 @@ pub use tools::{
 };
 
 // Prompt construction
-pub use agent::prompt::{EnvironmentContext, PromptBuilder, PromptSection};
+pub use agent::prompts::{BehaviorPrompt, EnvironmentContext};
 
 // Persistence
 pub use persistence::{

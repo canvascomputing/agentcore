@@ -50,37 +50,6 @@ impl SessionStore {
         }
     }
 
-    fn session_dir(&self) -> PathBuf {
-        self.base_dir
-            .join("sessions")
-            .join(&self.session_id)
-    }
-
-    fn transcript_path(&self) -> PathBuf {
-        self.session_dir().join("transcript.jsonl")
-    }
-
-    fn metadata_path(&self) -> PathBuf {
-        self.session_dir().join("metadata.json")
-    }
-
-    fn ensure_dir(&self) -> Result<()> {
-        fs::create_dir_all(self.session_dir())?;
-        Ok(())
-    }
-
-    fn open_writer(&mut self) -> Result<&mut BufWriter<File>> {
-        if self.writer.is_none() {
-            self.ensure_dir()?;
-            let file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(self.transcript_path())?;
-            self.writer = Some(BufWriter::new(file));
-        }
-        Ok(self.writer.as_mut().unwrap())
-    }
-
     /// Append a message to the transcript.
     pub fn record(&mut self, entry: TranscriptEntry) -> Result<()> {
         let line = serde_json::to_string(&entry)?;
@@ -94,9 +63,7 @@ impl SessionStore {
         if let Some(ref mut writer) = self.writer {
             writer.flush()?;
         }
-        // Update metadata
-        self.write_metadata()?;
-        Ok(())
+        self.write_metadata()
     }
 
     /// Load all entries from a transcript file.
@@ -119,8 +86,7 @@ impl SessionStore {
             if line.trim().is_empty() {
                 continue;
             }
-            let entry: TranscriptEntry = serde_json::from_str(&line)?;
-            entries.push(entry);
+            entries.push(serde_json::from_str(&line)?);
         }
 
         Ok(entries)
@@ -139,56 +105,65 @@ impl SessionStore {
             if !entry.file_type()?.is_dir() {
                 continue;
             }
+
             let session_id = entry.file_name().to_string_lossy().to_string();
-
-            // Try to load metadata.json first
-            let metadata_path = entry.path().join("metadata.json");
-            if metadata_path.exists() {
-                if let Ok(content) = fs::read_to_string(&metadata_path) {
-                    if let Ok(meta) = serde_json::from_str::<SessionMetadata>(&content) {
-                        result.push(meta);
-                        continue;
-                    }
-                }
-            }
-
-            // Fallback: compute from transcript
-            let transcript_path = entry.path().join("transcript.jsonl");
-            if transcript_path.exists() {
-                let entries = Self::load(base_dir, &session_id)?;
-                let created_at = entries.first().map(|e| e.recorded_at).unwrap_or(0);
-                let last_active_at = entries.last().map(|e| e.recorded_at).unwrap_or(0);
-                let message_count = entries.len() as u64;
-                let total_cost_usd = 0.0; // Would need pricing info to compute
-
-                result.push(SessionMetadata {
-                    session_id,
-                    created_at,
-                    last_active_at,
-                    message_count,
-                    total_cost_usd,
-                });
+            if let Some(meta) = Self::load_metadata(&entry.path()) {
+                result.push(meta);
+            } else {
+                let meta = Self::metadata_from_transcript(base_dir, session_id)?;
+                result.push(meta);
             }
         }
 
         Ok(result)
     }
 
-    fn write_metadata(&self) -> Result<()> {
-        let entries = Self::load(&self.base_dir, &self.session_id)?;
-        let created_at = entries.first().map(|e| e.recorded_at).unwrap_or(0);
-        let last_active_at = entries.last().map(|e| e.recorded_at).unwrap_or(0);
-        let message_count = entries.len() as u64;
+    fn session_dir(&self) -> PathBuf {
+        self.base_dir.join("sessions").join(&self.session_id)
+    }
 
-        let metadata = SessionMetadata {
-            session_id: self.session_id.clone(),
-            created_at,
-            last_active_at,
-            message_count,
+    fn transcript_path(&self) -> PathBuf {
+        self.session_dir().join("transcript.jsonl")
+    }
+
+    fn metadata_path(&self) -> PathBuf {
+        self.session_dir().join("metadata.json")
+    }
+
+    fn open_writer(&mut self) -> Result<&mut BufWriter<File>> {
+        if self.writer.is_none() {
+            fs::create_dir_all(self.session_dir())?;
+            let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.transcript_path())?;
+            self.writer = Some(BufWriter::new(file));
+        }
+        Ok(self.writer.as_mut().unwrap())
+    }
+
+    fn load_metadata(session_dir: &Path) -> Option<SessionMetadata> {
+        let content = fs::read_to_string(session_dir.join("metadata.json")).ok()?;
+        serde_json::from_str(&content).ok()
+    }
+
+    fn metadata_from_transcript(base_dir: &Path, session_id: String) -> Result<SessionMetadata> {
+        let entries = Self::load(base_dir, &session_id)?;
+        Ok(SessionMetadata {
+            created_at: entries.first().map(|e| e.recorded_at).unwrap_or(0),
+            last_active_at: entries.last().map(|e| e.recorded_at).unwrap_or(0),
+            message_count: entries.len() as u64,
             total_cost_usd: 0.0,
-        };
+            session_id,
+        })
+    }
 
-        let json = serde_json::to_string_pretty(&metadata)?;
+    fn write_metadata(&self) -> Result<()> {
+        let meta = Self::metadata_from_transcript(
+            &self.base_dir,
+            self.session_id.clone(),
+        )?;
+        let json = serde_json::to_string_pretty(&meta)?;
         fs::write(self.metadata_path(), json)?;
         Ok(())
     }

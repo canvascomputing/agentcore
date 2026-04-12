@@ -16,6 +16,18 @@ pub struct QueuedCommand {
     pub agent_name: Option<String>,
 }
 
+impl QueuedCommand {
+    /// A command with no agent_name is visible to all agents.
+    /// A targeted command is only visible to the named agent.
+    fn is_visible_to(&self, agent_name: Option<&str>) -> bool {
+        match (&self.agent_name, agent_name) {
+            (None, _) => true,
+            (Some(target), Some(name)) => target == name,
+            (Some(_), None) => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum CommandSource {
     UserInput,
@@ -55,27 +67,23 @@ impl CommandQueue {
 
     pub fn dequeue(&self, agent_name: Option<&str>) -> Option<QueuedCommand> {
         let mut queue = self.inner.lock().unwrap();
-        let mut best_idx = None;
-        let mut best_priority = None;
+        let mut best: Option<(usize, QueuePriority)> = None;
 
         for (i, cmd) in queue.iter().enumerate() {
-            let matches = match (&cmd.agent_name, agent_name) {
-                (None, _) => true,
-                (Some(cmd_id), Some(filter_id)) => cmd_id == filter_id,
-                (Some(_), None) => false,
-            };
-            if matches {
-                if best_priority.is_none() || cmd.priority < *best_priority.as_ref().unwrap() {
-                    best_idx = Some(i);
-                    best_priority = Some(cmd.priority.clone());
-                    if cmd.priority == QueuePriority::Now {
-                        break;
-                    }
-                }
+            if !cmd.is_visible_to(agent_name) {
+                continue;
+            }
+            if best.as_ref().is_some_and(|(_, p)| *p <= cmd.priority) {
+                continue;
+            }
+
+            best = Some((i, cmd.priority.clone()));
+            if cmd.priority == QueuePriority::Now {
+                break;
             }
         }
 
-        best_idx.and_then(|i| queue.remove(i))
+        best.and_then(|(i, _)| queue.remove(i))
     }
 
     pub async fn wait_and_dequeue(&self, agent_name: Option<&str>) -> QueuedCommand {

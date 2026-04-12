@@ -12,13 +12,20 @@ pub struct GlobTool;
 
 const MAX_RESULTS: usize = 200;
 
+const DESCRIPTION: &str = "\
+Fast file pattern matching tool that works with any codebase size.
+
+- Returns matching file paths sorted by modification time (newest first).
+- Use this when you need to find files by name or extension patterns.
+- For open-ended searches that may require multiple rounds, use spawn_agent instead.";
+
 impl Tool for GlobTool {
     fn name(&self) -> &str {
         "glob"
     }
 
     fn description(&self) -> &str {
-        "Find files matching a glob pattern"
+        DESCRIPTION
     }
 
     fn input_schema(&self) -> Value {

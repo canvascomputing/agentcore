@@ -23,13 +23,6 @@ pub struct ModelUsage {
     pub request_count: u64,
 }
 
-#[derive(Debug)]
-struct CostTrackerInner {
-    pricing: HashMap<String, ModelCosts>,
-    usage: HashMap<String, ModelUsage>,
-    total_tool_calls: u64,
-}
-
 #[derive(Clone)]
 pub struct CostTracker {
     inner: Arc<Mutex<CostTrackerInner>>,
@@ -37,88 +30,9 @@ pub struct CostTracker {
 
 impl CostTracker {
     pub fn new() -> Self {
-        let mut pricing = HashMap::new();
-
-        // Claude Haiku 4.5
-        pricing.insert(
-            "claude-haiku-4-5-20251001".into(),
-            ModelCosts {
-                input_per_million: 0.80,
-                output_per_million: 4.0,
-                cache_read_per_million: 0.08,
-                cache_write_per_million: 1.0,
-            },
-        );
-
-        // Claude Sonnet 4
-        pricing.insert(
-            "claude-sonnet-4-20250514".into(),
-            ModelCosts {
-                input_per_million: 3.0,
-                output_per_million: 15.0,
-                cache_read_per_million: 0.30,
-                cache_write_per_million: 3.75,
-            },
-        );
-
-        // Claude Opus 4
-        pricing.insert(
-            "claude-opus-4-20250514".into(),
-            ModelCosts {
-                input_per_million: 15.0,
-                output_per_million: 75.0,
-                cache_read_per_million: 1.50,
-                cache_write_per_million: 18.75,
-            },
-        );
-
-        // Mistral Large
-        pricing.insert(
-            "mistral-large-latest".into(),
-            ModelCosts {
-                input_per_million: 2.0,
-                output_per_million: 6.0,
-                cache_read_per_million: 0.0,
-                cache_write_per_million: 0.0,
-            },
-        );
-
-        // Mistral Small
-        pricing.insert(
-            "mistral-small-latest".into(),
-            ModelCosts {
-                input_per_million: 0.10,
-                output_per_million: 0.30,
-                cache_read_per_million: 0.0,
-                cache_write_per_million: 0.0,
-            },
-        );
-
-        // Codestral
-        pricing.insert(
-            "codestral-latest".into(),
-            ModelCosts {
-                input_per_million: 0.30,
-                output_per_million: 0.90,
-                cache_read_per_million: 0.0,
-                cache_write_per_million: 0.0,
-            },
-        );
-
-        // Mistral Medium
-        pricing.insert(
-            "mistral-medium-2508".into(),
-            ModelCosts {
-                input_per_million: 2.75,
-                output_per_million: 8.10,
-                cache_read_per_million: 0.0,
-                cache_write_per_million: 0.0,
-            },
-        );
-
         Self {
             inner: Arc::new(Mutex::new(CostTrackerInner {
-                pricing,
+                pricing: default_pricing(),
                 usage: HashMap::new(),
                 total_tool_calls: 0,
             })),
@@ -126,22 +40,19 @@ impl CostTracker {
     }
 
     pub fn model_pricing(&self, model: &str, costs: ModelCosts) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.pricing.insert(model.to_string(), costs);
+        self.inner.lock().unwrap().pricing.insert(model.to_string(), costs);
     }
 
     pub fn record_usage(&self, model: &str, usage: &TokenUsage) {
         let mut inner = self.inner.lock().unwrap();
 
-        let cost = if let Some(pricing) = inner.pricing.get(model) {
-            (usage.input_tokens as f64 * pricing.input_per_million
-                + usage.output_tokens as f64 * pricing.output_per_million
-                + usage.cache_read_input_tokens as f64 * pricing.cache_read_per_million
-                + usage.cache_creation_input_tokens as f64 * pricing.cache_write_per_million)
+        let cost = inner.pricing.get(model).map_or(0.0, |p| {
+            (usage.input_tokens as f64 * p.input_per_million
+                + usage.output_tokens as f64 * p.output_per_million
+                + usage.cache_read_input_tokens as f64 * p.cache_read_per_million
+                + usage.cache_creation_input_tokens as f64 * p.cache_write_per_million)
                 / 1_000_000.0
-        } else {
-            0.0
-        };
+        });
 
         let entry = inner.usage.entry(model.to_string()).or_default();
         entry.input_tokens += usage.input_tokens;
@@ -153,28 +64,23 @@ impl CostTracker {
     }
 
     pub fn record_tool_calls(&self, count: u64) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.total_tool_calls += count;
+        self.inner.lock().unwrap().total_tool_calls += count;
     }
 
     pub fn total_cost_usd(&self) -> f64 {
-        let inner = self.inner.lock().unwrap();
-        inner.usage.values().map(|u| u.cost_usd).sum()
+        self.inner.lock().unwrap().usage.values().map(|u| u.cost_usd).sum()
     }
 
     pub fn total_requests(&self) -> u64 {
-        let inner = self.inner.lock().unwrap();
-        inner.usage.values().map(|u| u.request_count).sum()
+        self.inner.lock().unwrap().usage.values().map(|u| u.request_count).sum()
     }
 
     pub fn total_tool_calls(&self) -> u64 {
-        let inner = self.inner.lock().unwrap();
-        inner.total_tool_calls
+        self.inner.lock().unwrap().total_tool_calls
     }
 
     pub fn model_usage(&self) -> HashMap<String, ModelUsage> {
-        let inner = self.inner.lock().unwrap();
-        inner.usage.clone()
+        self.inner.lock().unwrap().usage.clone()
     }
 
     pub fn summary(&self) -> String {
@@ -196,6 +102,60 @@ impl CostTracker {
         }
         result
     }
+}
+
+#[derive(Debug)]
+struct CostTrackerInner {
+    pricing: HashMap<String, ModelCosts>,
+    usage: HashMap<String, ModelUsage>,
+    total_tool_calls: u64,
+}
+
+fn default_pricing() -> HashMap<String, ModelCosts> {
+    HashMap::from([
+        ("claude-haiku-4-5-20251001".into(), ModelCosts {
+            input_per_million: 0.80,
+            output_per_million: 4.0,
+            cache_read_per_million: 0.08,
+            cache_write_per_million: 1.0,
+        }),
+        ("claude-sonnet-4-20250514".into(), ModelCosts {
+            input_per_million: 3.0,
+            output_per_million: 15.0,
+            cache_read_per_million: 0.30,
+            cache_write_per_million: 3.75,
+        }),
+        ("claude-opus-4-20250514".into(), ModelCosts {
+            input_per_million: 15.0,
+            output_per_million: 75.0,
+            cache_read_per_million: 1.50,
+            cache_write_per_million: 18.75,
+        }),
+        ("mistral-large-latest".into(), ModelCosts {
+            input_per_million: 2.0,
+            output_per_million: 6.0,
+            cache_read_per_million: 0.0,
+            cache_write_per_million: 0.0,
+        }),
+        ("mistral-small-latest".into(), ModelCosts {
+            input_per_million: 0.10,
+            output_per_million: 0.30,
+            cache_read_per_million: 0.0,
+            cache_write_per_million: 0.0,
+        }),
+        ("codestral-latest".into(), ModelCosts {
+            input_per_million: 0.30,
+            output_per_million: 0.90,
+            cache_read_per_million: 0.0,
+            cache_write_per_million: 0.0,
+        }),
+        ("mistral-medium-2508".into(), ModelCosts {
+            input_per_million: 2.75,
+            output_per_million: 8.10,
+            cache_read_per_million: 0.0,
+            cache_write_per_million: 0.0,
+        }),
+    ])
 }
 
 fn format_tokens(count: u64) -> String {

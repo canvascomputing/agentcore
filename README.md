@@ -126,6 +126,34 @@ let agent = AgentBuilder::new()
     .build()?;
 ```
 
+Agents include default behavior prompts for task execution, tool usage, action safety, and output efficiency. Replace any default with `behavior_prompt()`:
+
+```rust
+use agent::BehaviorPrompt;
+
+let agent = AgentBuilder::new()
+    .name("assistant")
+    .model("claude-sonnet-4-20250514")
+    .system_prompt("You are helpful.")
+    .behavior_prompt(BehaviorPrompt::TaskExecution, "- Follow instructions exactly.")
+    .build()?;
+```
+
+Add environment context, memory, and instruction files:
+
+```rust
+use agent::EnvironmentContext;
+
+let agent = AgentBuilder::new()
+    .name("assistant")
+    .model("claude-sonnet-4-20250514")
+    .system_prompt("You are helpful.")
+    .environment_context(&EnvironmentContext::collect(&cwd))
+    .instruction_files(&cwd)
+    .memory(&memory_dir)
+    .build()?;
+```
+
 ### InvocationContext
 
 Runtime state for a single agent run.

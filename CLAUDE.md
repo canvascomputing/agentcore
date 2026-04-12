@@ -38,9 +38,8 @@ crates/agent/src/
     event.rs              Event enum
     loop.rs               AgentLoop.execute(), extracted helpers, tests
     output.rs             AgentOutput, OutputSchema, StructuredOutputTool, validate_value
+    prompts.rs            BehaviorPrompt, ContextBuilder, EnvironmentContext, prompt constants
     queue.rs              CommandQueue, QueuePriority, QueuedCommand
-    prompt.rs             PromptBuilder, PromptSection, EnvironmentContext, prompt constants
-    prompt.rs             PromptBuilder, PromptSection, EnvironmentContext
 
   tools/
     mod.rs                BuiltinToolset, re-exports
@@ -80,5 +79,5 @@ Use cases are in `crates/use-cases/src/cli/`. Run with `make use-case name=<name
 - **No ad-hoc changes to critical types without a plan.** These types form the public API and are used across the entire codebase: `Agent`, `InvocationContext`, `ToolContext`, `Event`, `Tool` trait, `AgentBuilder`, `CompletionRequest`, `AgentOutput`. Propose changes in a plan first.
 - **Tools capture dependencies at construction time** via closures or struct fields. Do not use type-erased extension bags on context objects.
 - **`tools/tool.rs` vs `tools/`**: `tool.rs` defines the trait and infrastructure (Tool, ToolRegistry, ToolBuilder, execute_tool_calls). Other files in `tools/` are concrete implementations.
-- **`agent/` vs `provider/` vs `persistence/`**: `agent/` contains the agent loop, builder, context, events, output, and prompt. `provider/` contains LLM communication and cost tracking. `persistence/` contains disk storage.
+- **`agent/` vs `provider/` vs `persistence/`**: `agent/` contains the agent loop, builder, context, events, output, and prompts (behavior defaults, constants). `provider/` contains LLM communication and cost tracking. `persistence/` contains disk storage. Tool descriptions live in their respective tool files.
 - **Tests live inline** in each module as `#[cfg(test)] mod tests`. Use `MockProvider` and `TestHarness` from `testutil.rs`.

@@ -9,13 +9,16 @@ use crate::tools::tool::{Tool, ToolContext, ToolResult};
 /// Tool that searches the tool registry by query string.
 pub struct ToolSearchTool;
 
+const DESCRIPTION: &str = "\
+Search for available tools by name or keyword. Returns tool names, descriptions, and input schemas.";
+
 impl Tool for ToolSearchTool {
     fn name(&self) -> &str {
         "tool_search"
     }
 
     fn description(&self) -> &str {
-        "Searches for available tools by name or keyword."
+        DESCRIPTION
     }
 
     fn input_schema(&self) -> Value {

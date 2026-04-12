@@ -98,13 +98,35 @@ impl SpawnAgentTool {
     }
 }
 
+const DESCRIPTION: &str = "\
+Spawn a sub-agent to handle a task. Can run in foreground (blocking) or background mode.
+
+# Writing the prompt
+Brief the agent like a smart colleague who just walked into the room — it hasn't seen \
+this conversation, doesn't know what you've tried, doesn't understand why this matters.
+- Explain what you're trying to accomplish and why.
+- Describe what you've already learned or ruled out.
+- Give enough context that the agent can make judgment calls.
+
+IMPORTANT: Never delegate understanding. Don't write \"based on your findings, do the task.\" \
+Write prompts that prove you understood the problem and what specifically needs to happen.
+
+# When NOT to use
+- To read a specific file — use read_file instead.
+- To search for a pattern — use grep instead.
+- For any task a single tool call can accomplish.
+
+# Foreground vs background
+- Foreground (default): blocks until the agent completes. Use when you need results before proceeding.
+- Background: returns immediately with an agent ID. Use when you have independent work to do in parallel.";
+
 impl Tool for SpawnAgentTool {
     fn name(&self) -> &str {
         "spawn_agent"
     }
 
     fn description(&self) -> &str {
-        "Spawn a sub-agent to handle a task. Can run in foreground (blocking) or background mode."
+        DESCRIPTION
     }
 
     fn is_read_only(&self) -> bool {

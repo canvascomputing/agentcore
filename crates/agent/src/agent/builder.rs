@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::error::{AgenticError, Result};
-use crate::agent::prompt::PromptBuilder;
+use super::prompts::{BehaviorPrompt, ContextBuilder, EnvironmentContext};
 use crate::tools::{Tool, ToolRegistry};
 
 use super::agent::{Agent, AgentLoop};
@@ -19,13 +19,19 @@ pub struct AgentBuilder {
     max_budget: Option<f64>,
     output_schema: Option<OutputSchema>,
     max_schema_retries: u32,
-    prompt_builder: Option<PromptBuilder>,
+    behavior_prompts: Vec<(BehaviorPrompt, String)>,
+    context_builder: ContextBuilder,
     tools: ToolRegistry,
     sub_agents: Vec<Arc<dyn Agent>>,
 }
 
 impl AgentBuilder {
     pub fn new() -> Self {
+        let behavior_prompts = BehaviorPrompt::all()
+            .iter()
+            .map(|kind| (*kind, kind.default_content().to_string()))
+            .collect();
+
         Self {
             name: None,
             description: String::new(),
@@ -36,7 +42,8 @@ impl AgentBuilder {
             max_budget: None,
             output_schema: None,
             max_schema_retries: 3,
-            prompt_builder: None,
+            behavior_prompts,
+            context_builder: ContextBuilder::new(),
             tools: ToolRegistry::new(),
             sub_agents: Vec::new(),
         }
@@ -92,8 +99,30 @@ impl AgentBuilder {
         self
     }
 
-    pub fn prompt_builder(mut self, pb: PromptBuilder) -> Self {
-        self.prompt_builder = Some(pb);
+    pub fn behavior_prompt(mut self, kind: BehaviorPrompt, content: impl Into<String>) -> Self {
+        if let Some(entry) = self.behavior_prompts.iter_mut().find(|(k, _)| *k == kind) {
+            entry.1 = content.into();
+        }
+        self
+    }
+
+    pub fn environment_context(mut self, env: &EnvironmentContext) -> Self {
+        self.context_builder.environment_context(env);
+        self
+    }
+
+    pub fn instruction_files(mut self, cwd: &std::path::Path) -> Self {
+        self.context_builder.instruction_files(cwd).ok();
+        self
+    }
+
+    pub fn memory(mut self, memory_dir: &std::path::Path) -> Self {
+        self.context_builder.memory(memory_dir).ok();
+        self
+    }
+
+    pub fn user_context(mut self, context: impl Into<String>) -> Self {
+        self.context_builder.user_context(context.into());
         self
     }
 
@@ -120,7 +149,8 @@ impl AgentBuilder {
             max_budget: self.max_budget,
             output_schema: self.output_schema,
             max_schema_retries: self.max_schema_retries,
-            prompt_builder: self.prompt_builder,
+            behavior_prompts: self.behavior_prompts,
+            context_builder: self.context_builder,
             tools: self.tools,
             sub_agents: self.sub_agents,
         }))

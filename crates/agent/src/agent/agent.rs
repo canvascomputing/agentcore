@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::error::Result;
-use crate::agent::prompt::PromptBuilder;
+use super::prompts::{BehaviorPrompt, ContextBuilder};
 use crate::tools::ToolRegistry;
 
 use super::context::InvocationContext;
@@ -32,7 +32,8 @@ pub(crate) struct AgentLoop {
     pub(crate) max_budget: Option<f64>,
     pub(crate) output_schema: Option<OutputSchema>,
     pub(crate) max_schema_retries: u32,
-    pub(crate) prompt_builder: Option<PromptBuilder>,
+    pub(crate) behavior_prompts: Vec<(BehaviorPrompt, String)>,
+    pub(crate) context_builder: ContextBuilder,
     pub(crate) tools: ToolRegistry,
     #[allow(dead_code)]
     pub(crate) sub_agents: Vec<Arc<dyn Agent>>,
