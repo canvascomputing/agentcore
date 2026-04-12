@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::agent::{Agent, AgentBuilder, AgentOutput, InvocationContext};
 use crate::error::{AgenticError, Result};
-use crate::provider::types::TokenUsage;
+
 use crate::tools::tool::{Tool, ToolContext, ToolResult};
 
 #[derive(Deserialize)]
@@ -70,7 +70,7 @@ impl SpawnAgentTool {
         let child_ctx = ctx.child(&input.description).with_input(&input.prompt);
 
         if input.background.unwrap_or(false) {
-            let agent_id = child_ctx.agent_id.clone();
+            let agent_id = child_ctx.agent_name.clone();
             let agent_id_for_msg = agent_id.clone();
             let queue = ctx.command_queue.clone();
             let description = input.description.clone();
@@ -90,7 +90,7 @@ impl SpawnAgentTool {
                     "Background agent '{}' started (id: {agent_id_for_msg})",
                     description
                 ),
-                ..AgentOutput::empty(TokenUsage::default())
+                ..AgentOutput::empty()
             })
         } else {
             agent.run(child_ctx).await

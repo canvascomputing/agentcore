@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use agent::{
-    AgenticError, AnthropicProvider, CompletionRequest, ContentBlock, CostTracker, HttpTransport,
+    AgenticError, AnthropicProvider, CompletionRequest, ContentBlock, HttpTransport,
     LiteLlmProvider, LlmProvider, Message, MistralProvider,
 };
 
@@ -89,9 +89,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         response.usage.input_tokens, response.usage.output_tokens
     );
 
-    let tracker = CostTracker::new();
-    tracker.record_usage(&response.model, &response.usage);
-    println!("\n{}", tracker.summary());
+
+    println!("\nTokens: {} in, {} out",
+        response.usage.input_tokens, response.usage.output_tokens);
 
     Ok(())
 }

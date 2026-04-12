@@ -7,7 +7,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use crate::agent::{Agent, AgentOutput, Event, InvocationContext};
-use crate::provider::cost::CostTracker;
 use crate::error::{AgenticError, Result};
 use crate::provider::types::{ContentBlock, ModelResponse, StopReason, TokenUsage};
 use crate::provider::{CompletionRequest, LlmProvider};
@@ -276,7 +275,6 @@ impl EventCollector {
 pub struct TestHarness {
     provider: Arc<MockProvider>,
     events: EventCollector,
-    cost_tracker: CostTracker,
     template_variables: HashMap<String, serde_json::Value>,
     working_directory: PathBuf,
     cancel_signal: Arc<AtomicBool>,
@@ -287,7 +285,6 @@ impl TestHarness {
         Self {
             provider: Arc::new(provider),
             events: EventCollector::new(),
-            cost_tracker: CostTracker::new(),
             template_variables: HashMap::new(),
             working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             cancel_signal: Arc::new(AtomicBool::new(false)),
@@ -305,12 +302,11 @@ impl TestHarness {
             template_variables: self.template_variables.clone(),
             working_directory: self.working_directory.clone(),
             provider: self.provider.clone(),
-            cost_tracker: self.cost_tracker.clone(),
             event_handler: self.events.callback(),
             cancel_signal: self.cancel_signal.clone(),
             session_store: None,
             command_queue: None,
-            agent_id: "test".into(),
+            agent_name: "test".into(),
         }
     }
 

@@ -10,5 +10,6 @@ pub enum Event {
     ToolCallStart { agent_name: String, tool_name: String, call_id: String, input: serde_json::Value },
     ToolCallEnd { agent_name: String, tool_name: String, call_id: String, output: String, is_error: bool },
     TokenUsage { agent_name: String, model: String, usage: TokenUsage },
+    BudgetUsage { agent_name: String, spent: f64, limit: Option<f64> },
     TextChunk { agent_name: String, content: String },
 }

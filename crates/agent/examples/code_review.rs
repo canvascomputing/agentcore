@@ -12,9 +12,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use agent::{
-    AgentBuilder, AgenticError, AnthropicProvider, CostTracker, Event, GlobTool, GrepTool,
+    AgentBuilder, AgenticError, AnthropicProvider, Event, GlobTool, GrepTool,
     HttpTransport, InvocationContext, LiteLlmProvider, ListDirectoryTool, LlmProvider,
-    ReadFileTool, Result, Tool, ToolContext, ToolResult, generate_agent_id,
+    ReadFileTool, Result, Tool, ToolContext, ToolResult, generate_agent_name,
 };
 
 // ---------------------------------------------------------------------------
@@ -302,7 +302,6 @@ async fn main() {
         .build()
         .expect("Failed to build agent");
 
-    let cost_tracker = CostTracker::new();
 
     let mut state = HashMap::new();
     state.insert("folder_path".into(), serde_json::Value::String(folder.display().to_string()));
@@ -330,12 +329,11 @@ async fn main() {
         template_variables: state,
         working_directory: folder,
         provider,
-        cost_tracker: cost_tracker.clone(),
         event_handler,
         cancel_signal,
         session_store: None,
         command_queue: None,
-        agent_id: generate_agent_id("code-reviewer"),
+        agent_name: generate_agent_name("code-reviewer"),
     };
 
     match agent.run(ctx).await {
@@ -347,11 +345,10 @@ async fn main() {
             };
             std::fs::write(&config.output, &json).expect("Failed to write output file");
             eprintln!("\nReview written to {}\n", config.output);
-            eprintln!("{}", cost_tracker.summary());
+            eprintln!("Cost: ${:.4}", output.statistics.costs);
         }
         Err(e) => {
             eprintln!("\nError: {e}\n");
-            eprintln!("{}", cost_tracker.summary());
             std::process::exit(1);
         }
     }

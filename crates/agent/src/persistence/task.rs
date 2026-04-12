@@ -295,7 +295,7 @@ impl TaskStore {
         })
     }
 
-    pub fn claim(&self, id: &str, agent_id: &str) -> Result<Task> {
+    pub fn claim(&self, id: &str, agent_name: &str) -> Result<Task> {
         self.ensure_dir()?;
         let lock_path = self.dir().join(".lock");
         with_lock(&lock_path, || {
@@ -320,7 +320,7 @@ impl TaskStore {
             }
 
             task.status = TaskStatus::InProgress;
-            task.owner = Some(agent_id.to_string());
+            task.owner = Some(agent_name.to_string());
             task.updated_at = now_millis();
             self.write_task(&task)?;
             Ok(task)

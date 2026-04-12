@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::error::{AgenticError, Result};
 use crate::persistence::session::{EntryType, TranscriptEntry};
+use crate::provider::cost::CostTracker;
 use crate::provider::types::{ContentBlock, Message, ModelResponse, StopReason, TokenUsage};
 use crate::provider::{CompletionRequest, ToolChoice};
 use crate::tools::{ToolCall, ToolContext, ToolRegistry, execute_tool_calls};
@@ -13,7 +14,7 @@ use crate::tools::{ToolCall, ToolContext, ToolRegistry, execute_tool_calls};
 use super::agent::AgentLoop;
 use super::context::{InvocationContext, now_millis};
 use super::event::Event;
-use super::output::{AgentOutput, StructuredOutputTool, STRUCTURED_OUTPUT_TOOL_NAME};
+use super::output::{AgentOutput, Statistics, StructuredOutputTool, STRUCTURED_OUTPUT_TOOL_NAME};
 use super::prompt::{self, interpolate};
 use super::queue::QueuePriority;
 
@@ -21,6 +22,8 @@ use super::queue::QueuePriority;
 struct LoopState {
     messages: Vec<Message>,
     total_usage: TokenUsage,
+    cost_tracker: CostTracker,
+    tool_call_count: u64,
     structured_output: Option<Value>,
     schema_retries: u32,
     discovered_tools: HashSet<String>,
@@ -59,7 +62,7 @@ impl AgentLoop {
             }
 
             // Execute tools and collect results
-            let results = self.execute_tools(&ctx, &state, &tool_calls).await;
+            let results = self.execute_tools(&ctx, &mut state, &tool_calls).await;
             self.extract_discoveries(&tool_calls, &results, &mut state);
 
             // Add tool results to conversation
@@ -116,6 +119,8 @@ impl AgentLoop {
         LoopState {
             messages,
             total_usage: TokenUsage::default(),
+            cost_tracker: CostTracker::new(),
+            tool_call_count: 0,
             structured_output: None,
             schema_retries: 0,
             discovered_tools: HashSet::new(),
@@ -136,9 +141,9 @@ impl AgentLoop {
             }
         }
         if let Some(limit) = self.max_budget {
-            if ctx.cost_tracker.total_cost_usd() >= limit {
+            if state.cost_tracker.total_cost_usd() >= limit {
                 return Err(AgenticError::BudgetExceeded {
-                    spent: ctx.cost_tracker.total_cost_usd(),
+                    spent: state.cost_tracker.total_cost_usd(),
                     limit,
                 });
             }
@@ -165,11 +170,16 @@ impl AgentLoop {
 
     fn record_usage(&self, ctx: &InvocationContext, response: &ModelResponse, state: &mut LoopState) {
         state.total_usage.add(&response.usage);
-        ctx.cost_tracker.record_usage(&response.model, &response.usage);
+        state.cost_tracker.record_usage(&response.model, &response.usage);
         self.emit(ctx, Event::TokenUsage {
             agent_name: self.name.clone(),
             model: response.model.clone(),
             usage: response.usage.clone(),
+        });
+        self.emit(ctx, Event::BudgetUsage {
+            agent_name: self.name.clone(),
+            spent: state.cost_tracker.total_cost_usd(),
+            limit: self.max_budget,
         });
     }
 
@@ -220,14 +230,23 @@ impl AgentLoop {
         Ok(Some(AgentOutput {
             response: state.structured_output.take(),
             response_raw: text,
-            token_usage: state.total_usage.clone(),
+            statistics: Statistics {
+                costs: state.cost_tracker.total_cost_usd(),
+                input_tokens: state.total_usage.input_tokens,
+                output_tokens: state.total_usage.output_tokens,
+                cache_read_tokens: state.total_usage.cache_read_input_tokens,
+                cache_write_tokens: state.total_usage.cache_creation_input_tokens,
+                requests: state.cost_tracker.total_requests(),
+                tool_calls: state.tool_call_count,
+                turns: state.turn,
+            },
         }))
     }
 
     async fn execute_tools(
         &self,
         ctx: &InvocationContext,
-        state: &LoopState,
+        state: &mut LoopState,
         tool_calls: &[ToolCall],
     ) -> Vec<ContentBlock> {
         for call in tool_calls {
@@ -237,7 +256,7 @@ impl AgentLoop {
                 call_id: call.id.clone(),
                 input: call.input.clone(),
             });
-            ctx.cost_tracker.record_tool_calls(1);
+            state.tool_call_count += 1;
         }
 
         let mut tool_ctx = ToolContext::new(ctx.working_directory.clone())
@@ -307,7 +326,7 @@ impl AgentLoop {
 
     fn drain_command_queue(&self, ctx: &InvocationContext, state: &mut LoopState) {
         let Some(ref queue) = ctx.command_queue else { return };
-        while let Some(cmd) = queue.dequeue(Some(&ctx.agent_id)) {
+        while let Some(cmd) = queue.dequeue(Some(&ctx.agent_name)) {
             match cmd.priority {
                 QueuePriority::Now | QueuePriority::Next => {
                     state.messages.push(Message::User {
@@ -491,13 +510,13 @@ mod tests {
             content: "extra instruction".into(),
             priority: QueuePriority::Next,
             source: CommandSource::UserInput,
-            agent_id: Some("test".into()),
+            agent_name: Some("test".into()),
         });
 
         let harness = TestHarness::new(provider);
         let mut ctx = harness.build_context("start");
         ctx.command_queue = Some(queue);
-        ctx.agent_id = "test".into();
+        ctx.agent_name = "test".into();
 
         let output = agent.run(ctx).await.unwrap();
         assert_eq!(output.response_raw, "final");
@@ -529,13 +548,13 @@ mod tests {
             content: "later task".into(),
             priority: QueuePriority::Later,
             source: CommandSource::TaskNotification { task_id: "42".into() },
-            agent_id: Some("test".into()),
+            agent_name: Some("test".into()),
         });
 
         let harness = TestHarness::new(provider);
         let mut ctx = harness.build_context("start");
         ctx.command_queue = Some(queue.clone());
-        ctx.agent_id = "test".into();
+        ctx.agent_name = "test".into();
 
         agent.run(ctx).await.unwrap();
 
@@ -758,8 +777,8 @@ mod tests {
 
         let harness = TestHarness::new(provider);
         let output = harness.run_agent(agent.as_ref(), "go").await.unwrap();
-        assert_eq!(output.token_usage.input_tokens, 300);
-        assert_eq!(output.token_usage.output_tokens, 130);
+        assert_eq!(output.statistics.input_tokens, 300);
+        assert_eq!(output.statistics.output_tokens, 130);
     }
 
     #[tokio::test]

@@ -13,7 +13,7 @@ pub struct QueuedCommand {
     pub content: String,
     pub priority: QueuePriority,
     pub source: CommandSource,
-    pub agent_id: Option<String>,
+    pub agent_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,17 +49,17 @@ impl CommandQueue {
             source: CommandSource::TaskNotification {
                 task_id: task_id.to_string(),
             },
-            agent_id: None,
+            agent_name: None,
         });
     }
 
-    pub fn dequeue(&self, agent_id: Option<&str>) -> Option<QueuedCommand> {
+    pub fn dequeue(&self, agent_name: Option<&str>) -> Option<QueuedCommand> {
         let mut queue = self.inner.lock().unwrap();
         let mut best_idx = None;
         let mut best_priority = None;
 
         for (i, cmd) in queue.iter().enumerate() {
-            let matches = match (&cmd.agent_id, agent_id) {
+            let matches = match (&cmd.agent_name, agent_name) {
                 (None, _) => true,
                 (Some(cmd_id), Some(filter_id)) => cmd_id == filter_id,
                 (Some(_), None) => false,
@@ -78,9 +78,9 @@ impl CommandQueue {
         best_idx.and_then(|i| queue.remove(i))
     }
 
-    pub async fn wait_and_dequeue(&self, agent_id: Option<&str>) -> QueuedCommand {
+    pub async fn wait_and_dequeue(&self, agent_name: Option<&str>) -> QueuedCommand {
         loop {
-            if let Some(cmd) = self.dequeue(agent_id) {
+            if let Some(cmd) = self.dequeue(agent_name) {
                 return cmd;
             }
             self.notify.notified().await;

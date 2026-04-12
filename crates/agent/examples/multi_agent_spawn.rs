@@ -4,8 +4,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use agent::{
-    AgentBuilder, AgenticError, AnthropicProvider, CommandQueue, CostTracker, Event, HttpTransport,
-    InvocationContext, LiteLlmProvider, LlmProvider, SpawnAgentTool, generate_agent_id,
+    AgentBuilder, AgenticError, AnthropicProvider, CommandQueue, Event, HttpTransport,
+    InvocationContext, LiteLlmProvider, LlmProvider, SpawnAgentTool, generate_agent_name,
 };
 
 fn build_transport() -> HttpTransport {
@@ -80,7 +80,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .tool(spawn_tool)
         .build()?;
 
-    let cost_tracker = CostTracker::new();
     let queue = Arc::new(CommandQueue::new());
 
     let event_handler: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(|event| match event {
@@ -101,12 +100,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         template_variables: HashMap::new(),
         working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         provider,
-        cost_tracker: cost_tracker.clone(),
         event_handler,
         cancel_signal: Arc::new(AtomicBool::new(false)),
         session_store: None,
         command_queue: Some(queue),
-        agent_id: generate_agent_id("orchestrator"),
+        agent_name: generate_agent_name("orchestrator"),
     };
 
     let output = orchestrator.run(ctx).await?;
@@ -114,7 +112,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!("\n\n--- Output ---");
     println!("{}", output.response_raw);
     println!("\n--- Cost ---");
-    println!("{}", cost_tracker.summary());
+    println!("Cost: ${:.4}", output.statistics.costs);
 
     Ok(())
 }

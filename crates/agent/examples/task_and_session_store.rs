@@ -8,8 +8,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use agent::{
-    AgentBuilder, AgenticError, AnthropicProvider, CostTracker, Event, HttpTransport,
-    InvocationContext, LiteLlmProvider, LlmProvider, SessionStore, TaskStore, generate_agent_id,
+    AgentBuilder, AgenticError, AnthropicProvider, Event, HttpTransport,
+    InvocationContext, LiteLlmProvider, LlmProvider, SessionStore, TaskStore, generate_agent_name,
     task_create_tool, task_list_tool, task_update_tool,
 };
 
@@ -79,7 +79,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .tool(task_list_tool(task_store.clone()))
         .build()?;
 
-    let cost_tracker = CostTracker::new();
 
     let event_handler: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(|event| match &event {
         Event::TextChunk { content: text, .. } => print!("{text}"),
@@ -103,15 +102,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         template_variables: HashMap::new(),
         working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         provider,
-        cost_tracker: cost_tracker.clone(),
         event_handler,
         cancel_signal: Arc::new(AtomicBool::new(false)),
         session_store: Some(Arc::new(Mutex::new(session_store))),
         command_queue: None,
-        agent_id: generate_agent_id("planner"),
+        agent_name: generate_agent_name("planner"),
     };
 
-    let _output = agent.run(ctx).await?;
+    let output = agent.run(ctx).await?;
 
     println!("\n\n--- Verification ---");
 
@@ -126,7 +124,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!("Transcript entries: {}", entries.len());
 
     println!("\n--- Cost ---");
-    println!("{}", cost_tracker.summary());
+    println!("Cost: ${:.4}", output.statistics.costs);
 
     Ok(())
 }

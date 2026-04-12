@@ -12,8 +12,8 @@ pub use error::{AgenticError, Result};
 
 // Provider and message types
 pub use provider::{
-    AnthropicProvider, CompletionRequest, ContentBlock, CostTracker, HttpTransport, LiteLlmProvider, MistralProvider,
-    LlmProvider, Message, ModelCosts, ModelResponse, ModelUsage, StopReason, TokenUsage, ToolChoice,
+    AnthropicProvider, CompletionRequest, ContentBlock, HttpTransport, LiteLlmProvider, MistralProvider,
+    LlmProvider, Message, ModelResponse, StopReason, TokenUsage, ToolChoice,
 };
 
 // Tool infrastructure and built-in tools
@@ -36,5 +36,5 @@ pub use persistence::{
 // Agent
 pub use agent::{
     Agent, AgentBuilder, AgentOutput, CommandQueue, CommandSource, Event, InvocationContext,
-    OutputSchema, QueuePriority, QueuedCommand, generate_agent_id, validate_value,
+    OutputSchema, QueuePriority, QueuedCommand, Statistics, generate_agent_name, validate_value,
 };

@@ -6,7 +6,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use crate::provider::cost::CostTracker;
 use crate::provider::LlmProvider;
 use crate::persistence::session::SessionStore;
 
@@ -17,7 +16,7 @@ use super::queue::CommandQueue;
 #[derive(Clone)]
 pub struct InvocationContext {
     // Lifecycle
-    pub agent_id: String,
+    pub agent_name: String,
     pub event_handler: Arc<dyn Fn(Event) + Send + Sync>,
     pub cancel_signal: Arc<AtomicBool>,
 
@@ -28,7 +27,6 @@ pub struct InvocationContext {
 
     // LLM
     pub provider: Arc<dyn LlmProvider>,
-    pub cost_tracker: CostTracker,
 
     // Optional persistence
     pub session_store: Option<Arc<Mutex<SessionStore>>>,
@@ -38,22 +36,21 @@ pub struct InvocationContext {
 impl InvocationContext {
     pub fn new(provider: Arc<dyn LlmProvider>) -> Self {
         Self {
-            agent_id: generate_agent_id("agent"),
+            agent_name: generate_agent_name("agent"),
             event_handler: Arc::new(|_| {}),
             cancel_signal: Arc::new(AtomicBool::new(false)),
             prompt: String::new(),
             template_variables: HashMap::new(),
             working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             provider,
-            cost_tracker: CostTracker::new(),
             session_store: None,
             command_queue: None,
         }
     }
 
-    pub fn child(&self, agent_name: &str) -> Self {
+    pub fn child(&self, name: &str) -> Self {
         let mut child = self.clone();
-        child.agent_id = generate_agent_id(agent_name);
+        child.agent_name = generate_agent_name(name);
         child
     }
 
@@ -64,7 +61,7 @@ impl InvocationContext {
     }
 }
 
-pub fn generate_agent_id(name: &str) -> String {
+pub fn generate_agent_name(name: &str) -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
