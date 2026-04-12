@@ -2,16 +2,13 @@
 //!
 //! Usage: project-scanner [OPTIONS] [FOLDER]
 
-use std::collections::HashMap;
-use std::future::Future;
-use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use std::sync::atomic::AtomicBool;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use agent::{
-    AgentBuilder, AgenticError, Event, GlobTool, InvocationContext, ListDirectoryTool,
-    ReadFileTool, Result, Tool, ToolContext, ToolResult, generate_agent_name,
+    AgentBuilder, Event, GlobTool, InvocationContext, ListDirectoryTool,
+    ReadFileTool, generate_agent_name,
 };
 
 // ---------------------------------------------------------------------------
@@ -22,8 +19,8 @@ const SYSTEM_PROMPT: &str = "\
 You are a project scanner. Analyze the repository at {folder_path}.
 
 Steps:
-1. Use file_stats to get an overview of file types and sizes
-2. Use list_directory to understand the top-level structure
+1. Use list_directory to understand the top-level structure
+2. Use glob to find files by extension and identify languages used
 3. Read key files (README, Cargo.toml, package.json, etc.) to understand the project purpose
 
 Then produce structured output with:
@@ -56,66 +53,71 @@ fn output_schema() -> serde_json::Value {
 
 #[tokio::main]
 async fn main() {
-    let (folder, model_override, output_path, max_cost) = parse_args();
+    let config = parse_args();
     let (provider, default_model) = use_cases::auto_detect_provider();
-    let model = if model_override.is_empty() { default_model } else { model_override };
+    let model = if config.model.is_empty() { default_model } else { config.model };
 
-    eprintln!("Scanning: {}\n", folder.display());
+    eprintln!("Scanning: {}\n", config.folder.display());
 
     let agent = AgentBuilder::new()
         .name("project-scanner")
         .model(&model)
         .system_prompt(SYSTEM_PROMPT)
-        .tool(FileStatsTool)
         .tool(ReadFileTool)
         .tool(ListDirectoryTool)
         .tool(GlobTool)
         .output_schema(output_schema())
-        .max_budget(max_cost)
+        .max_budget(config.max_cost)
         .build()
         .expect("Failed to build agent");
 
     let cancel = Arc::new(AtomicBool::new(false));
-    let c = cancel.clone();
-    tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); c.store(true, std::sync::atomic::Ordering::Relaxed); });
+    let cancel_handle = cancel.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        cancel_handle.store(true, Ordering::Relaxed);
+    });
 
     let ctx = InvocationContext::new(provider)
         .prompt("Scan this project and identify what it does and what languages it uses.")
-        .template_var("folder_path", serde_json::Value::String(folder.display().to_string()))
-        .working_directory(folder)
-        .event_handler(Arc::new(|event| match &event {
-            Event::ToolCallStart { tool_name, input, .. } => {
-                let detail = input["path"].as_str()
-                    .or(input["pattern"].as_str())
-                    .unwrap_or("");
-                if detail.is_empty() {
-                    eprintln!("[tool] {tool_name}");
-                } else {
-                    eprintln!("[tool] {tool_name}: {detail}");
-                }
-            }
-            Event::AgentEnd { turns, .. } => eprintln!("[done] {turns} turns"),
-            _ => {}
-        }))
+        .template_var("folder_path", serde_json::Value::String(config.folder.display().to_string()))
+        .working_directory(config.folder)
+        .event_handler(Arc::new(log_event))
         .cancel_signal(cancel)
         .agent_name(generate_agent_name("project-scanner"));
 
-    match agent.run(ctx).await {
-        Ok(output) => {
-            let json = if let Some(data) = output.response {
-                serde_json::to_string_pretty(&data).unwrap()
-            } else {
-                serde_json::to_string_pretty(
-                    &serde_json::json!({"summary": output.response_raw, "languages": []}),
-                ).unwrap()
-            };
-            std::fs::write(&output_path, &json).expect("Failed to write output file");
-            eprintln!("\nResult written to {output_path}");
-        }
+    let output = match agent.run(ctx).await {
+        Ok(output) => output,
         Err(e) => {
             eprintln!("\nError: {e}");
             std::process::exit(1);
         }
+    };
+
+    let json = match output.response {
+        Some(data) => serde_json::to_string_pretty(&data).unwrap(),
+        None => serde_json::to_string_pretty(
+            &serde_json::json!({"summary": output.response_raw, "languages": []}),
+        ).unwrap(),
+    };
+    std::fs::write(&config.output, &json).expect("Failed to write output file");
+    eprintln!("\nResult written to {}", config.output);
+}
+
+fn log_event(event: Event) {
+    match &event {
+        Event::ToolCallStart { tool_name, input, .. } => {
+            let detail = input["path"].as_str()
+                .or(input["pattern"].as_str())
+                .unwrap_or("");
+            if detail.is_empty() {
+                eprintln!("[tool] {tool_name}");
+            } else {
+                eprintln!("[tool] {tool_name}: {detail}");
+            }
+        }
+        Event::AgentEnd { turns, .. } => eprintln!("[done] {turns} turns"),
+        _ => {}
     }
 }
 
@@ -123,7 +125,14 @@ async fn main() {
 // CLI
 // ---------------------------------------------------------------------------
 
-fn parse_args() -> (PathBuf, String, String, f64) {
+struct CliConfig {
+    folder: PathBuf,
+    model: String,
+    output: String,
+    max_cost: f64,
+}
+
+fn parse_args() -> CliConfig {
     let args: Vec<String> = std::env::args().collect();
     let mut folder = ".".to_string();
     let mut model = String::new();
@@ -154,103 +163,7 @@ fn parse_args() -> (PathBuf, String, String, f64) {
         i += 1;
     }
 
-    let path = std::fs::canonicalize(&folder).unwrap_or_else(|_| PathBuf::from(&folder));
-    (path, model, output, max_cost)
+    let folder = std::fs::canonicalize(&folder).unwrap_or_else(|_| PathBuf::from(&folder));
+    CliConfig { folder, model, output, max_cost }
 }
 
-// ---------------------------------------------------------------------------
-// FileStatsTool — custom tool for directory scanning
-// ---------------------------------------------------------------------------
-
-const SKIP_DIRS: &[&str] = &[".git", "target", "node_modules", "vendor", ".build", "dist"];
-
-struct FileStatsTool;
-
-impl Tool for FileStatsTool {
-    fn name(&self) -> &str { "file_stats" }
-    fn description(&self) -> &str { "List all file extensions in a directory with counts and total sizes." }
-    fn is_read_only(&self) -> bool { true }
-
-    fn input_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string", "description": "Directory to scan (default: '.')" }
-            }
-        })
-    }
-
-    fn call<'a>(
-        &'a self,
-        input: serde_json::Value,
-        ctx: &'a ToolContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
-        Box::pin(async move {
-            let rel_path = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-            let dir = ctx.working_directory.join(rel_path);
-
-            if !dir.is_dir() {
-                return Ok(ToolResult::error(format!("Error: {} is not a directory", dir.display())));
-            }
-
-            let mut stats: HashMap<String, (u64, u64)> = HashMap::new();
-            let mut total_files: u64 = 0;
-            let mut total_bytes: u64 = 0;
-            walk_dir(&dir, &mut stats, &mut total_files, &mut total_bytes)?;
-
-            let mut extensions: Vec<_> = stats.into_iter().collect();
-            extensions.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
-
-            let ext_json: serde_json::Value = extensions
-                .iter()
-                .map(|(ext, (count, bytes))| {
-                    (ext.clone(), serde_json::json!({"count": count, "total_bytes": bytes}))
-                })
-                .collect::<serde_json::Map<String, serde_json::Value>>()
-                .into();
-
-            Ok(ToolResult::success(serde_json::to_string_pretty(&serde_json::json!({
-                "extensions": ext_json,
-                "total_files": total_files,
-                "total_bytes": total_bytes,
-            }))
-            .unwrap()))
-        })
-    }
-}
-
-fn walk_dir(
-    dir: &Path,
-    stats: &mut HashMap<String, (u64, u64)>,
-    total_files: &mut u64,
-    total_bytes: &mut u64,
-) -> Result<()> {
-    let entries = std::fs::read_dir(dir).map_err(|e| AgenticError::Tool {
-        tool_name: "file_stats".into(),
-        message: format!("Failed to read {}: {e}", dir.display()),
-    })?;
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-
-        if path.is_dir() {
-            if !SKIP_DIRS.contains(&name_str.as_ref()) {
-                walk_dir(&path, stats, total_files, total_bytes)?;
-            }
-        } else if path.is_file() {
-            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-            let ext = path
-                .extension()
-                .map(|e| format!(".{}", e.to_string_lossy()))
-                .unwrap_or_else(|| "(no ext)".into());
-            let e = stats.entry(ext).or_insert((0, 0));
-            e.0 += 1;
-            e.1 += size;
-            *total_files += 1;
-            *total_bytes += size;
-        }
-    }
-    Ok(())
-}
