@@ -46,6 +46,14 @@ Output:
 }
 ```
 
+### Deep Research
+
+Spawns two sub-agents to research pro and con arguments, then synthesizes a structured decision. Requires `BRAVE_API_KEY` for web search.
+
+```bash
+make use-case name=deep-research args="Should we use Rust or Go for our backend?"
+```
+
 ## API
 
 Create an `LlmProvider`, define your `Tool`s, wire them into an `AgentBuilder`, call `agent.run()` with an `InvocationContext`, stream `Event`s during execution, and get back an `AgentOutput`.
@@ -177,21 +185,6 @@ AgentBuilder::new()
 output.response.unwrap()["category"]  // "billing"
 ```
 
-### CostTracker
-
-Track spend across all agents. Pre-loaded with Claude pricing.
-
-```rust
-use agent::CostTracker;
-
-let tracker = CostTracker::new();
-tracker.record_usage("claude-sonnet-4-20250514", &usage);
-tracker.total_cost_usd()
-tracker.total_requests()
-tracker.total_tool_calls()
-tracker.summary()
-```
-
 ## Development
 
 ```bash
@@ -203,7 +196,9 @@ make use-case          # list use cases
 make litellm           # start LiteLLM proxy
 ```
 
-Integration tests and use cases auto-detect the provider from environment variables.
+### Environment
+
+Auto-detect the provider from environment variables:
 
 | Variable | Description |
 |----------|-------------|

@@ -65,11 +65,13 @@ crates/agent/src/
 
 crates/use-cases/src/
   lib.rs                    shared transport/provider utilities
-  cli/
-    project_scanner.rs      project scanning CLI
+  project_scanner/
+    main.rs                 project scanning CLI
+  deep_research/
+    main.rs                 multi-agent deep research with web search
 ```
 
-Examples are in `crates/agent/examples/`. Run with `make example name=<name>`.
+Integration tests are in `crates/agent/tests/`. Run with `make test_integration`.
 Use cases are in `crates/use-cases/src/cli/`. Run with `make use-case name=<name>`.
 
 ## Key conventions

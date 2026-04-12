@@ -25,16 +25,16 @@ update:
 	cargo update
 
 # Run a use-case binary
-# Usage: make use-case name=project-scanner
-#        make use-case name=project-scanner ARGS="./some-folder"
+# Usage: make use-case name=deep-research args="Should we use Rust or Go?"
+# Note: use args= not -- to pass arguments
 use-case:
 ifdef name
-	cargo run -p use-cases --bin $(name) -- $(ARGS)
+	cargo run -p use-cases --bin $(name) -- $(args)
 else
 	@echo "Available use cases:"
 	@grep -A1 '^\[\[bin\]\]' crates/use-cases/Cargo.toml | grep 'name' | sed 's/.*"\(.*\)"/  \1/'
 	@echo ""
-	@echo "Run with: make use-case name=<use-case>"
+	@echo "Run with: make use-case name=<name> args=\"...\""
 endif
 
 # Start a LiteLLM proxy on localhost:4000
