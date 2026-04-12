@@ -51,30 +51,21 @@ impl Tool for EditFileTool {
             let path = match input["path"].as_str() {
                 Some(p) => p,
                 None => {
-                    return Ok(ToolResult {
-                        content: "Missing required parameter: path".into(),
-                        is_error: true,
-                    });
+                    return Ok(ToolResult::error("Missing required parameter: path"));
                 }
             };
 
             let old_string = match input["old_string"].as_str() {
                 Some(s) => s,
                 None => {
-                    return Ok(ToolResult {
-                        content: "Missing required parameter: old_string".into(),
-                        is_error: true,
-                    });
+                    return Ok(ToolResult::error("Missing required parameter: old_string"));
                 }
             };
 
             let new_string = match input["new_string"].as_str() {
                 Some(s) => s,
                 None => {
-                    return Ok(ToolResult {
-                        content: "Missing required parameter: new_string".into(),
-                        is_error: true,
-                    });
+                    return Ok(ToolResult::error("Missing required parameter: new_string"));
                 }
             };
 
@@ -85,29 +76,20 @@ impl Tool for EditFileTool {
             let content = match std::fs::read_to_string(&resolved) {
                 Ok(c) => c,
                 Err(e) => {
-                    return Ok(ToolResult {
-                        content: format!("Failed to read file: {e}"),
-                        is_error: true,
-                    });
+                    return Ok(ToolResult::error(format!("Failed to read file: {e}")));
                 }
             };
 
             let count = content.matches(old_string).count();
 
             if count == 0 {
-                return Ok(ToolResult {
-                    content: format!("old_string not found in {path}"),
-                    is_error: true,
-                });
+                return Ok(ToolResult::error(format!("old_string not found in {path}")));
             }
 
             if count > 1 && !replace_all {
-                return Ok(ToolResult {
-                    content: format!(
-                        "Found {count} occurrences of old_string in {path}. Use replace_all to replace all."
-                    ),
-                    is_error: true,
-                });
+                return Ok(ToolResult::error(format!(
+                    "Found {count} occurrences of old_string in {path}. Use replace_all to replace all."
+                )));
             }
 
             let new_content = if replace_all {
@@ -117,14 +99,8 @@ impl Tool for EditFileTool {
             };
 
             match std::fs::write(&resolved, &new_content) {
-                Ok(()) => Ok(ToolResult {
-                    content: format!("Edited {path}: replaced {count} occurrence(s)"),
-                    is_error: false,
-                }),
-                Err(e) => Ok(ToolResult {
-                    content: format!("Failed to write file: {e}"),
-                    is_error: true,
-                }),
+                Ok(()) => Ok(ToolResult::success(format!("Edited {path}: replaced {count} occurrence(s)"))),
+                Err(e) => Ok(ToolResult::error(format!("Failed to write file: {e}"))),
             }
         })
     }

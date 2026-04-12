@@ -67,7 +67,7 @@ impl SpawnAgentTool {
                 .build()?
         };
 
-        let child_ctx = ctx.child(&input.description).with_input(&input.prompt);
+        let child_ctx = ctx.child(&input.description).prompt(&input.prompt);
 
         if input.background.unwrap_or(false) {
             let agent_id = child_ctx.agent_name.clone();
@@ -161,14 +161,8 @@ impl Tool for SpawnAgentTool {
                 .clone();
 
             match self.execute(spawn_input, invocation_ctx).await {
-                Ok(output) => Ok(ToolResult {
-                    content: output.response_raw,
-                    is_error: false,
-                }),
-                Err(e) => Ok(ToolResult {
-                    content: format!("Agent error: {e}"),
-                    is_error: true,
-                }),
+                Ok(output) => Ok(ToolResult::success(output.response_raw)),
+                Err(e) => Ok(ToolResult::error(format!("Agent error: {e}"))),
             }
         })
     }

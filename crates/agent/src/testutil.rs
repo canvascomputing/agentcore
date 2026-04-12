@@ -144,9 +144,10 @@ impl Tool for MockTool {
         _ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
         self.calls.lock().unwrap().push(input);
-        let result = ToolResult {
-            content: self.result.clone(),
-            is_error: self.is_error,
+        let result = if self.is_error {
+            ToolResult::error(self.result.clone())
+        } else {
+            ToolResult::success(self.result.clone())
         };
         Box::pin(async move { Ok(result) })
     }
@@ -182,12 +183,7 @@ impl Tool for DeferredMockTool {
         _input: serde_json::Value,
         _ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
-        Box::pin(async {
-            Ok(ToolResult {
-                content: "deferred result".into(),
-                is_error: false,
-            })
-        })
+        Box::pin(async { Ok(ToolResult::success("deferred result")) })
     }
 }
 
@@ -297,17 +293,13 @@ impl TestHarness {
     }
 
     pub fn build_context(&self, input: &str) -> InvocationContext {
-        InvocationContext {
-            prompt: input.to_string(),
-            template_variables: self.template_variables.clone(),
-            working_directory: self.working_directory.clone(),
-            provider: self.provider.clone(),
-            event_handler: self.events.callback(),
-            cancel_signal: self.cancel_signal.clone(),
-            session_store: None,
-            command_queue: None,
-            agent_name: "test".into(),
-        }
+        InvocationContext::new(self.provider.clone())
+            .prompt(input)
+            .template_variables(self.template_variables.clone())
+            .working_directory(self.working_directory.clone())
+            .event_handler(self.events.callback())
+            .cancel_signal(self.cancel_signal.clone())
+            .agent_name("test")
     }
 
     pub async fn run_agent(&self, agent: &dyn Agent, input: &str) -> Result<AgentOutput> {

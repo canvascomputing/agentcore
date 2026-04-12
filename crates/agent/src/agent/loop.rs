@@ -88,9 +88,7 @@ impl AgentLoop {
             }
         }
 
-        messages.push(Message::User {
-            content: vec![ContentBlock::Text { text: ctx.prompt.clone() }],
-        });
+        messages.push(Message::user(ctx.prompt.clone()));
 
         // Record initial user message
         if let Some(ref store) = ctx.session_store {
@@ -219,9 +217,7 @@ impl AgentLoop {
             if state.schema_retries > self.max_schema_retries {
                 return Err(AgenticError::SchemaRetryExhausted { retries: self.max_schema_retries });
             }
-            state.messages.push(Message::User {
-                content: vec![ContentBlock::Text { text: prompt::STRUCTURED_OUTPUT_RETRY.into() }],
-            });
+            state.messages.push(Message::user(prompt::STRUCTURED_OUTPUT_RETRY));
             return Ok(None); // continue loop
         }
 
@@ -329,9 +325,7 @@ impl AgentLoop {
         while let Some(cmd) = queue.dequeue(Some(&ctx.agent_name)) {
             match cmd.priority {
                 QueuePriority::Now | QueuePriority::Next => {
-                    state.messages.push(Message::User {
-                        content: vec![ContentBlock::Text { text: cmd.content }],
-                    });
+                    state.messages.push(Message::user(cmd.content));
                 }
                 QueuePriority::Later => {
                     queue.enqueue(cmd);

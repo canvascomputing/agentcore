@@ -74,7 +74,7 @@ let tool = ToolBuilder::new("greet", "Say hello")
     .schema(json!({...}))
     .read_only(true)
     .handler(|input, ctx| Box::pin(async move {
-        Ok(ToolResult { content: "Hello!".into(), is_error: false })
+        Ok(ToolResult::success("Hello!"))
     }))
     .build();
 ```
@@ -114,35 +114,22 @@ let agent = AgentBuilder::new()
 
 ### InvocationContext
 
-Runtime state for a single agent run. Only `provider` is required.
+Runtime state for a single agent run.
 
 ```rust
 use agent::InvocationContext;
 
-let mut ctx = InvocationContext::new(provider);
-ctx.prompt = "Find all TODOs".into();
-```
+let ctx = InvocationContext::new(provider)
+    .prompt("Find all TODOs");
 
-Optional overrides:
-
-```rust
-// values for {key} placeholders in system_prompt
-ctx.template_variables.insert("topic".into(), json!("rust"));
-
-// base path for file tools
-ctx.working_directory = PathBuf::from("./src");
-
-// stream events (text chunks, tool calls, errors)
-ctx.event_handler = Arc::new(|e| { ... });
-
-// gracefully stop the agent loop
-ctx.cancel_signal = Arc::new(AtomicBool::new(false));
-
-// persist conversation transcripts to disk
-ctx.session_store = Some(Arc::new(Mutex::new(store)));
-
-// receive notifications from background sub-agents
-ctx.command_queue = Some(Arc::new(CommandQueue::new()));
+let ctx = InvocationContext::new(provider)
+    .prompt("Analyze {topic}")
+    .template_var("topic", json!("rust"))
+    .working_directory(PathBuf::from("./src"))
+    .event_handler(Arc::new(|e| { /* ... */ }))
+    .cancel_signal(cancel)
+    .session_store(Arc::new(Mutex::new(store)))
+    .command_queue(Arc::new(CommandQueue::new()));
 ```
 
 ### Event
@@ -169,13 +156,11 @@ ctx.event_handler = Arc::new(|event| match &event {
 The result of `agent.run()` — text, structured data, and token usage.
 
 ```rust
-use agent::AgentOutput;
+let output = agent.run(ctx).await?;
 
-let output: AgentOutput = agent.run(ctx).await?;
-output.response_raw
-output.response
-output.token_usage.input_tokens
-output.token_usage.output_tokens
+println!("{}", output.response_raw);           // free-form LLM text
+println!("{:?}", output.response);             // Some(Value) if output_schema was set
+println!("{}", output.statistics.input_tokens); // accumulated token counts
 ```
 
 With `.output_schema()`, the agent returns validated JSON in `response`:
@@ -210,16 +195,15 @@ tracker.summary()
 ## Development
 
 ```bash
-make          # build
-make test     # test
-make fmt      # format
-make example  # list and run examples
-make litellm  # start LiteLLM proxy
+make                   # build
+make test              # unit tests
+make test_integration  # integration tests (requires LLM provider)
+make fmt               # format
+make use-case          # list use cases
+make litellm           # start LiteLLM proxy
 ```
 
-### Examples
-
-Examples detect the provider based on environment variables:
+Integration tests and use cases auto-detect the provider from environment variables.
 
 | Variable | Description |
 |----------|-------------|
@@ -232,22 +216,3 @@ Examples detect the provider based on environment variables:
 | `LITELLM_API_KEY` | Auth key (optional) |
 | `LITELLM_API_URL` | Use LiteLLM proxy (default: `http://localhost:4000`) |
 | `LITELLM_MODEL` | Model (default: `claude-sonnet-4-20250514`) |
-
-```bash
-make example name=llm_provider_call
-make example name=agent_with_tools
-make example name=multi_agent_spawn
-make example name=task_and_session_store
-make example name=code_review
-```
-
-### LiteLLM
-
-Start a LiteLLM Docker container:
-
-```bash
-make litellm # default: anthropic
-make litellm provider=anthropic
-make litellm provider=mistral
-make litellm provider=openai
-```

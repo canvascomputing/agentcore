@@ -11,6 +11,20 @@ pub enum Message {
     Assistant { content: Vec<ContentBlock> },
 }
 
+impl Message {
+    pub fn user(text: impl Into<String>) -> Self {
+        Self::User {
+            content: vec![ContentBlock::Text { text: text.into() }],
+        }
+    }
+
+    pub fn system(text: impl Into<String>) -> Self {
+        Self::System {
+            content: text.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ContentBlock {

@@ -61,15 +61,9 @@ impl Tool for ListDirectoryTool {
                             }
                         })
                         .collect();
-                    Ok(ToolResult {
-                        content: lines.join("\n"),
-                        is_error: false,
-                    })
+                    Ok(ToolResult::success(lines.join("\n")))
                 }
-                Err(e) => Ok(ToolResult {
-                    content: format!("Error listing directory: {e}"),
-                    is_error: true,
-                }),
+                Err(e) => Ok(ToolResult::error(format!("Error listing directory: {e}"))),
             }
         })
     }

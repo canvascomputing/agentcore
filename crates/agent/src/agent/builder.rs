@@ -87,6 +87,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn max_schema_retries(mut self, retries: u32) -> Self {
+        self.max_schema_retries = retries;
+        self
+    }
+
     pub fn prompt_builder(mut self, pb: PromptBuilder) -> Self {
         self.prompt_builder = Some(pb);
         self

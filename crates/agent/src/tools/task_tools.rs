@@ -20,10 +20,7 @@ pub fn task_create_tool(store: Arc<Mutex<TaskStore>>) -> impl Tool {
                 let subject = input["subject"].as_str().unwrap_or("");
                 let description = input["description"].as_str().unwrap_or("");
                 let task = store.lock().unwrap().create(subject, description)?;
-                Ok(ToolResult {
-                    content: serde_json::to_string_pretty(&task)?,
-                    is_error: false,
-                })
+                Ok(ToolResult::success(serde_json::to_string_pretty(&task)?))
             })
         })
         .build()
@@ -38,10 +35,7 @@ pub fn task_list_tool(store: Arc<Mutex<TaskStore>>) -> impl Tool {
             let store = store.clone();
             Box::pin(async move {
                 let tasks = store.lock().unwrap().list()?;
-                Ok(ToolResult {
-                    content: serde_json::to_string_pretty(&tasks)?,
-                    is_error: false,
-                })
+                Ok(ToolResult::success(serde_json::to_string_pretty(&tasks)?))
             })
         })
         .build()
@@ -81,10 +75,7 @@ pub fn task_update_tool(store: Arc<Mutex<TaskStore>>) -> impl Tool {
                     ..Default::default()
                 },
             )?;
-            Ok(ToolResult {
-                content: serde_json::to_string_pretty(&task)?,
-                is_error: false,
-            })
+            Ok(ToolResult::success(serde_json::to_string_pretty(&task)?))
         })
     })
     .build()
@@ -106,14 +97,8 @@ pub fn task_get_tool(store: Arc<Mutex<TaskStore>>) -> impl Tool {
             Box::pin(async move {
                 let id = input["id"].as_str().unwrap_or("");
                 match store.lock().unwrap().get(id)? {
-                    Some(t) => Ok(ToolResult {
-                        content: serde_json::to_string_pretty(&t)?,
-                        is_error: false,
-                    }),
-                    None => Ok(ToolResult {
-                        content: format!("Task {id} not found"),
-                        is_error: true,
-                    }),
+                    Some(t) => Ok(ToolResult::success(serde_json::to_string_pretty(&t)?)),
+                    None => Ok(ToolResult::error(format!("Task {id} not found"))),
                 }
             })
         })

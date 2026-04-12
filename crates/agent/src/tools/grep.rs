@@ -71,10 +71,7 @@ impl Tool for GrepTool {
             let pattern = match input["pattern"].as_str() {
                 Some(p) => p.to_string(),
                 None => {
-                    return Ok(ToolResult {
-                        content: "Missing required parameter: pattern".to_string(),
-                        is_error: true,
-                    });
+                    return Ok(ToolResult::error("Missing required parameter: pattern"));
                 }
             };
             let base_str = input["path"].as_str().unwrap_or(".");
@@ -142,10 +139,7 @@ impl Tool for GrepTool {
                         }
                     }
 
-                    Ok(ToolResult {
-                        content: output_lines.join("\n"),
-                        is_error: false,
-                    })
+                    Ok(ToolResult::success(output_lines.join("\n")))
                 }
                 "count" => {
                     let mut file_counts: Vec<(String, usize)> = Vec::new();
@@ -185,10 +179,7 @@ impl Tool for GrepTool {
                         .map(|(f, c)| format!("{f}: {c} matches"))
                         .collect();
 
-                    Ok(ToolResult {
-                        content: lines.join("\n"),
-                        is_error: false,
-                    })
+                    Ok(ToolResult::success(lines.join("\n")))
                 }
                 // "files" mode (default)
                 _ => {
@@ -222,10 +213,7 @@ impl Tool for GrepTool {
                         }
                     }
 
-                    Ok(ToolResult {
-                        content: matched_files.join("\n"),
-                        is_error: false,
-                    })
+                    Ok(ToolResult::success(matched_files.join("\n")))
                 }
             }
         })

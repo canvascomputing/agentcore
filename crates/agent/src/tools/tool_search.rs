@@ -48,30 +48,21 @@ impl Tool for ToolSearchTool {
             let query = match input.get("query").and_then(|v| v.as_str()) {
                 Some(q) => q,
                 None => {
-                    return Ok(ToolResult {
-                        content: "Missing required field: query".to_string(),
-                        is_error: true,
-                    });
+                    return Ok(ToolResult::error("Missing required field: query"));
                 }
             };
 
             let registry = match ctx.tool_registry.as_ref() {
                 Some(r) => r,
                 None => {
-                    return Ok(ToolResult {
-                        content: "No tool registry available".to_string(),
-                        is_error: true,
-                    });
+                    return Ok(ToolResult::error("No tool registry available"));
                 }
             };
 
             let results = registry.search(query);
 
             if results.is_empty() {
-                return Ok(ToolResult {
-                    content: format!("No tools found matching '{query}'."),
-                    is_error: false,
-                });
+                return Ok(ToolResult::success(format!("No tools found matching '{query}'.")));
             }
 
             let count = results.len();
@@ -89,10 +80,7 @@ impl Tool for ToolSearchTool {
                 content.push_str("\n```\n\n---\n\n");
             }
 
-            Ok(ToolResult {
-                content,
-                is_error: false,
-            })
+            Ok(ToolResult::success(content))
         })
     }
 }

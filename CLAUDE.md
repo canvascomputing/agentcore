@@ -6,7 +6,8 @@
 
 ```bash
 make          # build (warnings are errors)
-make test     # run tests (warnings are errors)
+make test              # run unit tests (warnings are errors)
+make test_integration  # run integration tests (requires LLM provider)
 make fmt      # format code
 make clean    # clean build artifacts
 ```

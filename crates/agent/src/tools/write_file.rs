@@ -43,20 +43,14 @@ impl Tool for WriteFileTool {
             let path = match input["path"].as_str() {
                 Some(p) => p,
                 None => {
-                    return Ok(ToolResult {
-                        content: "Missing required parameter: path".into(),
-                        is_error: true,
-                    });
+                    return Ok(ToolResult::error("Missing required parameter: path"));
                 }
             };
 
             let content = match input["content"].as_str() {
                 Some(c) => c,
                 None => {
-                    return Ok(ToolResult {
-                        content: "Missing required parameter: content".into(),
-                        is_error: true,
-                    });
+                    return Ok(ToolResult::error("Missing required parameter: content"));
                 }
             };
 
@@ -64,22 +58,13 @@ impl Tool for WriteFileTool {
 
             if let Some(parent) = resolved.parent() {
                 if let Err(e) = std::fs::create_dir_all(parent) {
-                    return Ok(ToolResult {
-                        content: format!("Failed to create parent directories: {e}"),
-                        is_error: true,
-                    });
+                    return Ok(ToolResult::error(format!("Failed to create parent directories: {e}")));
                 }
             }
 
             match std::fs::write(&resolved, content) {
-                Ok(()) => Ok(ToolResult {
-                    content: format!("File written: {path}"),
-                    is_error: false,
-                }),
-                Err(e) => Ok(ToolResult {
-                    content: format!("Failed to write file: {e}"),
-                    is_error: true,
-                }),
+                Ok(()) => Ok(ToolResult::success(format!("File written: {path}"))),
+                Err(e) => Ok(ToolResult::error(format!("Failed to write file: {e}"))),
             }
         })
     }

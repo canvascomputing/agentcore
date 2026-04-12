@@ -93,6 +93,16 @@ pub struct ToolResult {
     pub is_error: bool,
 }
 
+impl ToolResult {
+    pub fn success(content: impl Into<String>) -> Self {
+        Self { content: content.into(), is_error: false }
+    }
+
+    pub fn error(content: impl Into<String>) -> Self {
+        Self { content: content.into(), is_error: true }
+    }
+}
+
 /// A search result from ToolRegistry::search().
 #[derive(Debug, Clone)]
 pub struct ToolSearchResult {
@@ -449,15 +459,9 @@ pub async fn execute_tool_calls(
                         let result = match tool_arc {
                             Some(t) => match t.call(input, &ctx).await {
                                 Ok(r) => r,
-                                Err(e) => ToolResult {
-                                    content: format!("Tool error: {e}"),
-                                    is_error: true,
-                                },
+                                Err(e) => ToolResult::error(format!("Tool error: {e}")),
                             },
-                            None => ToolResult {
-                                content: format!("Unknown tool: {call_name}"),
-                                is_error: true,
-                            },
+                            None => ToolResult::error(format!("Unknown tool: {call_name}")),
                         };
                         (call_id, result)
                     });
@@ -477,15 +481,9 @@ pub async fn execute_tool_calls(
                 let result = match registry.get(&call.name) {
                     Some(tool) => match tool.call(call.input.clone(), ctx).await {
                         Ok(r) => r,
-                        Err(e) => ToolResult {
-                            content: format!("Tool error: {e}"),
-                            is_error: true,
-                        },
+                        Err(e) => ToolResult::error(format!("Tool error: {e}")),
                     },
-                    None => ToolResult {
-                        content: format!("Unknown tool: {}", call.name),
-                        is_error: true,
-                    },
+                    None => ToolResult::error(format!("Unknown tool: {}", call.name)),
                 };
                 results.push(ContentBlock::ToolResult {
                     tool_use_id: call.id.clone(),
@@ -672,10 +670,7 @@ mod tests {
             .handler(|input, _ctx| {
                 Box::pin(async move {
                     let text = input["text"].as_str().unwrap_or("").to_string();
-                    Ok(ToolResult {
-                        content: text,
-                        is_error: false,
-                    })
+                    Ok(ToolResult::success(text))
                 })
             })
             .build();
@@ -690,7 +685,7 @@ mod tests {
             .should_defer(true)
             .search_hints(vec!["analyze".into(), "inspect".into()])
             .handler(|_input, _ctx| {
-                Box::pin(async { Ok(ToolResult { content: "ok".into(), is_error: false }) })
+                Box::pin(async { Ok(ToolResult::success("ok")) })
             })
             .build();
 

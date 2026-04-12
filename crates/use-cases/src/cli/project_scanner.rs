@@ -75,28 +75,21 @@ async fn main() {
         .build()
         .expect("Failed to build agent");
 
-    let mut vars = HashMap::new();
-    vars.insert("folder_path".into(), serde_json::Value::String(folder.display().to_string()));
-
     let cancel = Arc::new(AtomicBool::new(false));
     let c = cancel.clone();
     tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); c.store(true, std::sync::atomic::Ordering::Relaxed); });
 
-    let ctx = InvocationContext {
-        prompt: "Scan this project and identify what it does and what languages it uses.".into(),
-        template_variables: vars,
-        working_directory: folder,
-        provider,
-        event_handler: Arc::new(|event| {
+    let ctx = InvocationContext::new(provider)
+        .prompt("Scan this project and identify what it does and what languages it uses.")
+        .template_var("folder_path", serde_json::Value::String(folder.display().to_string()))
+        .working_directory(folder)
+        .event_handler(Arc::new(|event| {
             if let Event::ToolCallStart { tool_name, .. } = &event {
                 eprintln!("[tool] {tool_name}");
             }
-        }),
-        cancel_signal: cancel,
-        session_store: None,
-        command_queue: None,
-        agent_name: generate_agent_name("project-scanner"),
-    };
+        }))
+        .cancel_signal(cancel)
+        .agent_name(generate_agent_name("project-scanner"));
 
     match agent.run(ctx).await {
         Ok(output) => {
@@ -188,10 +181,7 @@ impl Tool for FileStatsTool {
             let dir = ctx.working_directory.join(rel_path);
 
             if !dir.is_dir() {
-                return Ok(ToolResult {
-                    content: format!("Error: {} is not a directory", dir.display()),
-                    is_error: true,
-                });
+                return Ok(ToolResult::error(format!("Error: {} is not a directory", dir.display())));
             }
 
             let mut stats: HashMap<String, (u64, u64)> = HashMap::new();
@@ -210,15 +200,12 @@ impl Tool for FileStatsTool {
                 .collect::<serde_json::Map<String, serde_json::Value>>()
                 .into();
 
-            Ok(ToolResult {
-                content: serde_json::to_string_pretty(&serde_json::json!({
-                    "extensions": ext_json,
-                    "total_files": total_files,
-                    "total_bytes": total_bytes,
-                }))
-                .unwrap(),
-                is_error: false,
-            })
+            Ok(ToolResult::success(serde_json::to_string_pretty(&serde_json::json!({
+                "extensions": ext_json,
+                "total_files": total_files,
+                "total_bytes": total_bytes,
+            }))
+            .unwrap()))
         })
     }
 }

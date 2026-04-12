@@ -51,10 +51,7 @@ impl Tool for ReadFileTool {
             let path = match input["path"].as_str() {
                 Some(p) => p,
                 None => {
-                    return Ok(ToolResult {
-                        content: "Missing required parameter: path".into(),
-                        is_error: true,
-                    });
+                    return Ok(ToolResult::error("Missing required parameter: path"));
                 }
             };
 
@@ -63,10 +60,7 @@ impl Tool for ReadFileTool {
             let content = match std::fs::read_to_string(&resolved) {
                 Ok(c) => c,
                 Err(e) => {
-                    return Ok(ToolResult {
-                        content: format!("Failed to read file: {e}"),
-                        is_error: true,
-                    });
+                    return Ok(ToolResult::error(format!("Failed to read file: {e}")));
                 }
             };
 
@@ -90,10 +84,7 @@ impl Tool for ReadFileTool {
                 result.push_str(&format!("{line_num}\t{line}"));
             }
 
-            Ok(ToolResult {
-                content: result,
-                is_error: false,
-            })
+            Ok(ToolResult::success(result))
         })
     }
 }

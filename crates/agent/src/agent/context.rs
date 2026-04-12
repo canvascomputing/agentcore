@@ -48,15 +48,54 @@ impl InvocationContext {
         }
     }
 
+    pub fn prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.prompt = prompt.into();
+        self
+    }
+
+    pub fn working_directory(mut self, dir: PathBuf) -> Self {
+        self.working_directory = dir;
+        self
+    }
+
+    pub fn template_variables(mut self, vars: HashMap<String, Value>) -> Self {
+        self.template_variables = vars;
+        self
+    }
+
+    pub fn template_var(mut self, key: impl Into<String>, value: Value) -> Self {
+        self.template_variables.insert(key.into(), value);
+        self
+    }
+
+    pub fn event_handler(mut self, handler: Arc<dyn Fn(Event) + Send + Sync>) -> Self {
+        self.event_handler = handler;
+        self
+    }
+
+    pub fn cancel_signal(mut self, signal: Arc<AtomicBool>) -> Self {
+        self.cancel_signal = signal;
+        self
+    }
+
+    pub fn session_store(mut self, store: Arc<Mutex<SessionStore>>) -> Self {
+        self.session_store = Some(store);
+        self
+    }
+
+    pub fn command_queue(mut self, queue: Arc<CommandQueue>) -> Self {
+        self.command_queue = Some(queue);
+        self
+    }
+
+    pub fn agent_name(mut self, name: impl Into<String>) -> Self {
+        self.agent_name = name.into();
+        self
+    }
+
     pub fn child(&self, name: &str) -> Self {
         let mut child = self.clone();
         child.agent_name = generate_agent_name(name);
-        child
-    }
-
-    pub fn with_input(&self, input: impl Into<String>) -> Self {
-        let mut child = self.clone();
-        child.prompt = input.into();
         child
     }
 }

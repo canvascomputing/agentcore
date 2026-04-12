@@ -49,10 +49,7 @@ impl Tool for BashTool {
             let command = match input.get("command").and_then(|v| v.as_str()) {
                 Some(cmd) => cmd,
                 None => {
-                    return Ok(ToolResult {
-                        content: "Missing required field: command".to_string(),
-                        is_error: true,
-                    });
+                    return Ok(ToolResult::error("Missing required field: command"));
                 }
             };
 
@@ -74,14 +71,8 @@ impl Tool for BashTool {
             .await;
 
             match result {
-                Err(_) => Ok(ToolResult {
-                    content: format!("Command timed out after {timeout_ms}ms"),
-                    is_error: true,
-                }),
-                Ok(Err(e)) => Ok(ToolResult {
-                    content: format!("Failed to execute command: {e}"),
-                    is_error: true,
-                }),
+                Err(_) => Ok(ToolResult::error(format!("Command timed out after {timeout_ms}ms"))),
+                Ok(Err(e)) => Ok(ToolResult::error(format!("Failed to execute command: {e}"))),
                 Ok(Ok(output)) => {
                     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();

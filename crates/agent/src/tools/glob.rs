@@ -51,10 +51,7 @@ impl Tool for GlobTool {
             let pattern = match input["pattern"].as_str() {
                 Some(p) => p,
                 None => {
-                    return Ok(ToolResult {
-                        content: "Missing required parameter: pattern".to_string(),
-                        is_error: true,
-                    });
+                    return Ok(ToolResult::error("Missing required parameter: pattern"));
                 }
             };
             let base_str = input["path"].as_str().unwrap_or(".");
@@ -81,10 +78,7 @@ impl Tool for GlobTool {
                 })
                 .collect();
 
-            Ok(ToolResult {
-                content: lines.join("\n"),
-                is_error: false,
-            })
+            Ok(ToolResult::success(lines.join("\n")))
         })
     }
 }
