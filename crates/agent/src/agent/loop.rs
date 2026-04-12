@@ -77,44 +77,18 @@ impl AgentLoop {
     }
 
     fn init_state(&self, ctx: &InvocationContext) -> LoopState {
-        let mut messages = Vec::new();
         let mut system_prompt = interpolate(&self.system_prompt, &ctx.template_variables);
-
         if self.output_schema.is_some() {
             system_prompt.push_str(prompt::STRUCTURED_OUTPUT_INSTRUCTION);
         }
+        let (tools, tool_choice) = self.build_tool_config();
 
-        if let Some(ref pb) = self.prompt_builder {
-            if let Some(context_msg) = pb.build_context_message() {
-                messages.push(context_msg);
-            }
+        let mut messages = Vec::new();
+        if let Some(context_msg) = self.prompt_builder.as_ref().and_then(|pb| pb.build_context_message()) {
+            messages.push(context_msg);
         }
-
         messages.push(Message::user(ctx.prompt.clone()));
-
-        // Record initial user message
-        if let Some(ref store) = ctx.session_store {
-            store.lock().unwrap().record(TranscriptEntry {
-                recorded_at: now_millis(),
-                entry_type: EntryType::UserMessage,
-                message: messages.last().unwrap().clone(),
-                usage: None,
-                model: None,
-            }).ok();
-        }
-
-        let (tools, tool_choice) = if let Some(ref schema) = self.output_schema {
-            let mut tools = self.tools.clone();
-            tools.register(StructuredOutputTool::new(schema.clone()));
-            let choice = if self.tools.is_empty() {
-                Some(ToolChoice::Specific { name: STRUCTURED_OUTPUT_TOOL_NAME.into() })
-            } else {
-                None
-            };
-            (tools, choice)
-        } else {
-            (self.tools.clone(), None)
-        };
+        self.record_initial_message(ctx, &messages);
 
         LoopState {
             messages,
@@ -131,31 +105,57 @@ impl AgentLoop {
         }
     }
 
+    fn record_initial_message(&self, ctx: &InvocationContext, messages: &[Message]) {
+        let Some(ref store) = ctx.session_store else { return };
+        let Some(message) = messages.last() else { return };
+        store.lock().unwrap().record(TranscriptEntry {
+            recorded_at: now_millis(),
+            entry_type: EntryType::UserMessage,
+            message: message.clone(),
+            usage: None,
+            model: None,
+        }).ok();
+    }
+
+    fn build_tool_config(&self) -> (ToolRegistry, Option<ToolChoice>) {
+        let Some(ref schema) = self.output_schema else {
+            return (self.tools.clone(), None);
+        };
+
+        let mut tools = self.tools.clone();
+        tools.register(StructuredOutputTool::new(schema.clone()));
+
+        let tool_choice = if self.tools.is_empty() {
+            Some(ToolChoice::Specific { name: STRUCTURED_OUTPUT_TOOL_NAME.into() })
+        } else {
+            None
+        };
+
+        (tools, tool_choice)
+    }
+
     fn check_guards(&self, ctx: &InvocationContext, state: &LoopState) -> Result<()> {
         if ctx.cancel_signal.load(Ordering::Relaxed) {
             return Err(AgenticError::Aborted);
         }
-        if let Some(max) = self.max_turns {
-            if state.turn >= max {
-                return Err(AgenticError::MaxTurnsExceeded(max));
-            }
+        if self.max_turns.is_some_and(|max| state.turn >= max) {
+            return Err(AgenticError::MaxTurnsExceeded(self.max_turns.unwrap()));
         }
-        if let Some(limit) = self.max_budget {
-            if state.cost_tracker.total_cost_usd() >= limit {
-                return Err(AgenticError::BudgetExceeded {
-                    spent: state.cost_tracker.total_cost_usd(),
-                    limit,
-                });
-            }
+        if self.max_budget.is_some_and(|limit| state.cost_tracker.total_cost_usd() >= limit) {
+            return Err(AgenticError::BudgetExceeded {
+                spent: state.cost_tracker.total_cost_usd(),
+                limit: self.max_budget.unwrap(),
+            });
         }
         Ok(())
     }
 
     async fn call_llm(&self, ctx: &InvocationContext, state: &LoopState) -> Result<ModelResponse> {
-        let tool_defs = if state.tools.has_deferred_tools() {
-            state.tools.definitions_filtered(&state.discovered_tools)
+        let tools = &state.tools;
+        let tool_defs = if tools.has_deferred_tools() {
+            tools.definitions_filtered(&state.discovered_tools)
         } else {
-            state.tools.definitions()
+            tools.definitions()
         };
 
         ctx.provider.complete(CompletionRequest {
@@ -189,9 +189,9 @@ impl AgentLoop {
 
         for block in &response.content {
             match block {
-                ContentBlock::Text { text: t } => {
-                    text.push_str(t);
-                    self.emit(ctx, Event::TextChunk { agent_name: self.name.clone(), content: t.clone() });
+                ContentBlock::Text { text: chunk } => {
+                    text.push_str(chunk);
+                    self.emit(ctx, Event::TextChunk { agent_name: self.name.clone(), content: chunk.clone() });
                 }
                 ContentBlock::ToolUse { id, name, input } => {
                     tool_calls.push(ToolCall {
@@ -247,6 +247,7 @@ impl AgentLoop {
         state: &mut LoopState,
         tool_calls: &[ToolCall],
     ) -> Vec<ContentBlock> {
+        state.tool_call_count += tool_calls.len() as u64;
         for call in tool_calls {
             self.emit(ctx, Event::ToolCallStart {
                 agent_name: self.name.clone(),
@@ -254,7 +255,6 @@ impl AgentLoop {
                 call_id: call.id.clone(),
                 input: call.input.clone(),
             });
-            state.tool_call_count += 1;
         }
 
         let mut tool_ctx = ToolContext::new(ctx.working_directory.clone())
@@ -262,24 +262,28 @@ impl AgentLoop {
         tool_ctx.set_extension(ctx.clone());
         let results = execute_tool_calls(tool_calls, &state.tools, &tool_ctx).await;
 
-        for block in &results {
-            if let ContentBlock::ToolResult { tool_use_id, content, is_error } = block {
-                let tool_name = tool_calls
-                    .iter()
-                    .find(|c| c.id == *tool_use_id)
-                    .map(|c| c.name.clone())
-                    .unwrap_or_default();
-                self.emit(ctx, Event::ToolCallEnd {
-                    agent_name: self.name.clone(),
-                    tool_name,
-                    call_id: tool_use_id.clone(),
-                    output: content.clone(),
-                    is_error: *is_error,
-                });
-            }
-        }
-
+        self.emit_tool_results(ctx, tool_calls, &results);
         results
+    }
+
+    fn emit_tool_results(&self, ctx: &InvocationContext, tool_calls: &[ToolCall], results: &[ContentBlock]) {
+        for block in results {
+            let ContentBlock::ToolResult { tool_use_id, content, is_error } = block else {
+                continue;
+            };
+            let tool_name = tool_calls
+                .iter()
+                .find(|c| c.id == *tool_use_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
+            self.emit(ctx, Event::ToolCallEnd {
+                agent_name: self.name.clone(),
+                tool_name,
+                call_id: tool_use_id.clone(),
+                output: content.clone(),
+                is_error: *is_error,
+            });
+        }
     }
 
     fn extract_discoveries(
@@ -289,17 +293,17 @@ impl AgentLoop {
         state: &mut LoopState,
     ) {
         for call in tool_calls {
-            if call.name == "tool_search" {
-                for block in results {
-                    if let ContentBlock::ToolResult { tool_use_id, content, is_error: false } = block {
-                        if *tool_use_id == call.id {
-                            extract_discovered_tool_names(content, &mut state.discovered_tools);
-                        }
-                    }
-                }
-            }
             if call.name == STRUCTURED_OUTPUT_TOOL_NAME {
                 state.structured_output = Some(call.input.clone());
+                continue;
+            }
+            if call.name != "tool_search" {
+                continue;
+            }
+
+            let search_output = find_tool_result(results, &call.id);
+            if let Some(content) = search_output {
+                extract_discovered_tool_names(content, &mut state.discovered_tools);
             }
         }
     }
@@ -340,6 +344,14 @@ impl AgentLoop {
     fn emit(&self, ctx: &InvocationContext, event: Event) {
         (ctx.event_handler)(event);
     }
+}
+
+fn find_tool_result<'a>(results: &'a [ContentBlock], call_id: &str) -> Option<&'a str> {
+    results.iter().find_map(|block| match block {
+        ContentBlock::ToolResult { tool_use_id, content, is_error: false }
+            if *tool_use_id == call_id => Some(content.as_str()),
+        _ => None,
+    })
 }
 
 /// Extract tool names from tool_search result content.
