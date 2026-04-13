@@ -1,4 +1,4 @@
-.PHONY: build test test_integration fmt clean update use-case litellm
+.PHONY: build test test_integration fmt clean update use-case litellm bump publish
 
 # Build the project (warnings are errors)
 build:
@@ -36,6 +36,25 @@ else
 	@echo ""
 	@echo "Run with: make use-case name=<name> args=\"...\""
 endif
+
+# Bump version: make bump part=patch (default), minor, or major
+part ?= patch
+bump:
+	@current=$$(grep '^version' crates/agentcore/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
+	IFS='.' read -r major minor patch <<< "$$current"; \
+	case "$(part)" in \
+		major) major=$$((major + 1)); minor=0; patch=0;; \
+		minor) minor=$$((minor + 1)); patch=0;; \
+		patch) patch=$$((patch + 1));; \
+		*) echo "Unknown part: $(part). Use major, minor, or patch."; exit 1;; \
+	esac; \
+	new="$$major.$$minor.$$patch"; \
+	sed -i '' "s/^version = \"$$current\"/version = \"$$new\"/" crates/agentcore/Cargo.toml; \
+	echo "$$current → $$new"
+
+# Publish to crates.io: make publish
+publish: test
+	cargo publish -p agentcore
 
 # Start a LiteLLM proxy on localhost:4000
 # Forwards the provider's API key from your environment (never leaked in commands)

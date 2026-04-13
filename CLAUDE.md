@@ -11,6 +11,8 @@ make test              # run unit tests (warnings are errors)
 make test_integration  # run integration tests (requires LLM provider)
 make fmt      # format code
 make clean    # clean build artifacts
+make bump              # bump patch version (part=minor or part=major)
+make publish           # publish to crates.io (runs tests first)
 ```
 
 All code must compile with zero warnings (`RUSTFLAGS="-D warnings"`).

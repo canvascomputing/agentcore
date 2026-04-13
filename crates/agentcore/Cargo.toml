@@ -1,10 +1,11 @@
 [package]
 name = "agentcore"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "A minimal Rust crate that gives any application agentic capabilities."
 repository = "https://github.com/canvascomputing/agentcore"
+readme = "../../README.md"
 keywords = ["agent", "llm", "ai", "tools", "agentic"]
 categories = ["api-bindings", "asynchronous"]
 

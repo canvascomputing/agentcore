@@ -280,6 +280,8 @@ make test              # unit tests
 make test_integration  # integration tests (requires LLM provider)
 make fmt               # format code
 make use-case          # list use cases
+make bump              # bump patch version (part=minor or part=major)
+make publish           # publish to crates.io (runs tests first)
 make litellm           # start LiteLLM proxy
 ```
 
