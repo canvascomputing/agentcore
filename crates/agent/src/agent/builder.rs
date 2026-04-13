@@ -45,8 +45,7 @@ pub struct AgentBuilder {
     working_directory: PathBuf,
     event_handler: Arc<dyn Fn(Event) + Send + Sync>,
     cancel_signal: Arc<AtomicBool>,
-    session_store: Option<Arc<Mutex<SessionStore>>>,
-    command_queue: Option<Arc<CommandQueue>>,
+    session_dir: Option<PathBuf>,
 }
 
 impl AgentBuilder {
@@ -77,8 +76,7 @@ impl AgentBuilder {
             working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             event_handler: Arc::new(|_| {}),
             cancel_signal: Arc::new(AtomicBool::new(false)),
-            session_store: None,
-            command_queue: None,
+            session_dir: None,
         }
     }
 
@@ -142,21 +140,7 @@ impl AgentBuilder {
         self
     }
 
-    pub fn environment_context(mut self, env: &EnvironmentContext) -> Self {
-        self.context_builder.environment_context(env);
-        self
-    }
-
-    pub fn instruction_files(mut self, cwd: &std::path::Path) -> Self {
-        self.context_builder.instruction_files(cwd).ok();
-        self
-    }
-
-    pub fn memory(mut self, memory_dir: &std::path::Path) -> Self {
-        self.context_builder.memory(memory_dir).ok();
-        self
-    }
-
+    /// Inject arbitrary context into the agent's first message.
     pub fn user_context(mut self, context: impl Into<String>) -> Self {
         self.context_builder.user_context(context.into());
         self
@@ -212,13 +196,9 @@ impl AgentBuilder {
         self
     }
 
-    pub fn session_store(mut self, store: Arc<Mutex<SessionStore>>) -> Self {
-        self.session_store = Some(store);
-        self
-    }
-
-    pub fn command_queue(mut self, queue: Arc<CommandQueue>) -> Self {
-        self.command_queue = Some(queue);
+    /// Enable session transcript persistence to the given directory.
+    pub fn session_dir(mut self, dir: PathBuf) -> Self {
+        self.session_dir = Some(dir);
         self
     }
 
@@ -249,7 +229,7 @@ impl AgentBuilder {
     }
 
     /// Build the agent and run it. Requires `.provider()` and `.prompt()`.
-    pub async fn run(self) -> Result<AgentOutput> {
+    pub async fn run(mut self) -> Result<AgentOutput> {
         let provider = self
             .provider
             .clone()
@@ -261,33 +241,33 @@ impl AgentBuilder {
             ));
         }
 
+        // Auto-collect environment from working directory
+        let env = EnvironmentContext::collect(&self.working_directory);
+        self.context_builder.environment_context(&env);
+
         let resolved_model = self.model.resolve(&String::new());
         let prompt = self.prompt.clone();
         let template_variables = self.template_variables.clone();
         let working_directory = self.working_directory.clone();
         let event_handler = self.event_handler.clone();
         let cancel_signal = self.cancel_signal.clone();
-        let session_store = self.session_store.clone();
-        let command_queue = self.command_queue.clone();
+        let session_dir = self.session_dir.clone();
 
         let agent = self.build()?;
 
-        let ctx = InvocationContext::new(provider)
+        let mut ctx = InvocationContext::new(provider)
             .prompt(prompt)
             .template_variables(template_variables)
             .working_directory(working_directory)
             .event_handler(event_handler)
             .cancel_signal(cancel_signal)
-            .model(resolved_model);
+            .model(resolved_model)
+            .command_queue(Arc::new(CommandQueue::new()));
 
-        let ctx = match session_store {
-            Some(s) => ctx.session_store(s),
-            None => ctx,
-        };
-        let ctx = match command_queue {
-            Some(q) => ctx.command_queue(q),
-            None => ctx,
-        };
+        if let Some(dir) = session_dir {
+            let store = SessionStore::new(&dir, &generate_agent_name("session"));
+            ctx = ctx.session_store(Arc::new(Mutex::new(store)));
+        }
 
         agent.run(ctx).await
     }

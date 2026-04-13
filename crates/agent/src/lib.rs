@@ -2,7 +2,7 @@ pub mod error;
 pub mod provider;
 pub mod tools;
 pub mod agent;
-pub mod persistence;
+pub(crate) mod persistence;
 
 #[cfg(test)]
 pub(crate) mod testutil;
@@ -25,17 +25,8 @@ pub use tools::{
     task_create_tool, task_get_tool, task_list_tool, task_update_tool,
 };
 
-// Prompt construction
-pub use agent::prompts::{BehaviorPrompt, EnvironmentContext};
-
-// Persistence
-pub use persistence::{
-    EntryType, SessionMetadata, SessionStore, Task, TaskStatus, TaskStore, TaskUpdate,
-    TranscriptEntry,
-};
-
 // Agent
 pub use agent::{
-    Agent, AgentBuilder, AgentOutput, CommandQueue, CommandSource, Event,
-    OutputSchema, QueuePriority, QueuedCommand, Statistics, validate_value,
+    Agent, AgentBuilder, AgentOutput, BehaviorPrompt, Event,
+    OutputSchema, Statistics, validate_value,
 };

@@ -434,7 +434,8 @@ fn extract_discovered_tool_names(content: &str, discovered: &mut HashSet<String>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{Agent, AgentBuilder, CommandQueue, CommandSource, QueuedCommand};
+    use crate::agent::{Agent, AgentBuilder};
+    use crate::agent::queue::{CommandQueue, CommandSource, QueuePriority, QueuedCommand};
     use crate::error::AgenticError;
     use crate::provider::types::ContentBlock;
     use crate::testutil::*;

@@ -219,7 +219,7 @@ impl Tool for SpawnAgentTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::CommandQueue;
+    use crate::agent::queue::CommandQueue;
     use crate::testutil::*;
     use std::sync::Arc;
 

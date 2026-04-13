@@ -5,11 +5,11 @@ mod event;
 mod r#loop;
 mod output;
 pub(crate) mod prompts;
-mod queue;
+pub(crate) mod queue;
 
 pub use r#trait::Agent;
 pub use builder::AgentBuilder;
 pub(crate) use context::InvocationContext;
 pub use event::Event;
 pub use output::{AgentOutput, OutputSchema, Statistics, validate_value};
-pub use queue::{CommandQueue, CommandSource, QueuePriority, QueuedCommand};
+pub use prompts::BehaviorPrompt;

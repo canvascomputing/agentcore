@@ -135,6 +135,8 @@ AgentBuilder::new()
     .system_prompt("Analyze {project}")
     .template_var("project", json!("my-app"))
     .working_directory(PathBuf::from("./src"))
+    .user_context("Additional context injected into the prompt")
+    .session_dir(PathBuf::from("./sessions"))  // persist transcripts to disk
 ```
 
 #### Sub-agents
@@ -169,20 +171,6 @@ AgentBuilder::new()
     .cancel_signal(cancel) // Arc<AtomicBool> for external abort
 ```
 
-#### Context
-
-Add environment info, memory, instruction files, or arbitrary context to the agent's context window:
-
-```rust
-use agent::EnvironmentContext;
-
-AgentBuilder::new()
-    .environment_context(&EnvironmentContext::collect(&cwd))
-    .instruction_files(&cwd)     // loads INSTRUCTIONS.md from cwd to root
-    .memory(&memory_dir)         // loads MEMORY.md
-    .user_context("extra info")  // arbitrary context string
-```
-
 #### Behavior prompts
 
 Agents include defaults for task execution, tool usage, action safety, and output efficiency. Override any:
@@ -192,16 +180,6 @@ use agent::BehaviorPrompt;
 
 AgentBuilder::new()
     .behavior_prompt(BehaviorPrompt::TaskExecution, "Follow instructions exactly.")
-```
-
-#### Persistence
-
-Attach session transcripts or a command queue:
-
-```rust
-AgentBuilder::new()
-    .session_store(Arc::new(Mutex::new(store)))
-    .command_queue(Arc::new(CommandQueue::new()))
 ```
 
 ### Event
