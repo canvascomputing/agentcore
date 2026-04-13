@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use agent::{
-    AgentBuilder, Event, GlobTool, InvocationContext, ListDirectoryTool,
-    ReadFileTool, generate_agent_name,
+    AgentBuilder, Event, GlobTool, ListDirectoryTool,
+    ReadFileTool,
 };
 
 // ---------------------------------------------------------------------------
@@ -59,7 +59,14 @@ async fn main() {
 
     eprintln!("Scanning: {}\n", config.folder.display());
 
-    let agent = AgentBuilder::new()
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_handle = cancel.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        cancel_handle.store(true, Ordering::Relaxed);
+    });
+
+    let output = match AgentBuilder::new()
         .name("project-scanner")
         .model(&model)
         .system_prompt(SYSTEM_PROMPT)
@@ -68,26 +75,15 @@ async fn main() {
         .tool(GlobTool)
         .output_schema(output_schema())
         .max_budget(config.max_cost)
-        .build()
-        .expect("Failed to build agent");
-
-    let cancel = Arc::new(AtomicBool::new(false));
-    let cancel_handle = cancel.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        cancel_handle.store(true, Ordering::Relaxed);
-    });
-
-    let ctx = InvocationContext::new(provider)
+        .provider(provider)
         .prompt("Scan this project and identify what it does and what languages it uses.")
         .template_var("folder_path", serde_json::Value::String(config.folder.display().to_string()))
         .working_directory(config.folder)
         .event_handler(Arc::new(log_event))
         .cancel_signal(cancel)
-        .agent_name(generate_agent_name("project-scanner"))
-        .model(&model);
-
-    let output = match agent.run(ctx).await {
+        .run()
+        .await
+    {
         Ok(output) => output,
         Err(e) => {
             eprintln!("\nError: {e}");

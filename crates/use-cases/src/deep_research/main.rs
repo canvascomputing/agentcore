@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use agent::{
-    AgentBuilder, AgenticError, Event, InvocationContext, SpawnAgentTool, ToolBuilder, ToolResult,
+    AgentBuilder, AgenticError, Event, SpawnAgentTool, ToolBuilder, ToolResult,
 };
 
 // ---------------------------------------------------------------------------
@@ -40,23 +40,20 @@ async fn main() {
         })
         .collect();
 
-    let report_writer = AgentBuilder::new()
+    let output = match AgentBuilder::new()
         .name("report_writer")
         .model(&model)
         .system_prompt(REPORT_WRITER_PROMPT)
         .tool(SpawnAgentTool::new().with_sub_agents(researchers).with_default_model(&model))
         .output_schema(output_schema())
         .max_turns(10)
-        .build()
-        .expect("Failed to build report_writer");
-
-    let mut ctx = InvocationContext::new(provider);
-    ctx.prompt = question;
-    ctx.model = model.clone();
-    ctx.event_handler = Arc::new(|event| log_event(&event));
-    ctx.cancel_signal = setup_cancel_signal();
-
-    let output = match report_writer.run(ctx).await {
+        .provider(provider)
+        .prompt(question)
+        .event_handler(Arc::new(|event| log_event(&event)))
+        .cancel_signal(setup_cancel_signal())
+        .run()
+        .await
+    {
         Ok(output) => output,
         Err(e) => {
             eprintln!("\nError: {e}");

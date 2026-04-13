@@ -36,6 +36,6 @@ pub use persistence::{
 
 // Agent
 pub use agent::{
-    Agent, AgentBuilder, AgentOutput, CommandQueue, CommandSource, Event, InvocationContext,
-    OutputSchema, QueuePriority, QueuedCommand, Statistics, generate_agent_name, validate_value,
+    Agent, AgentBuilder, AgentOutput, CommandQueue, CommandSource, Event,
+    OutputSchema, QueuePriority, QueuedCommand, Statistics, validate_value,
 };

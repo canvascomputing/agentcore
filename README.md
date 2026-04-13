@@ -57,135 +57,42 @@ Output:
 }
 ```
 
+## Quick Start
+
+```rust
+use std::sync::Arc;
+use agent::{AgentBuilder, AnthropicProvider, Event, ReadFileTool, GlobTool};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let provider = Arc::new(AnthropicProvider::from_api_key(
+        std::env::var("ANTHROPIC_API_KEY")?,
+    ));
+
+    let output = AgentBuilder::new()
+        .model("claude-sonnet-4-20250514")
+        .system_prompt("You are a helpful assistant that reads and explains code.")
+        .tool(ReadFileTool)
+        .tool(GlobTool)
+        .provider(provider)
+        .prompt("Find all Rust source files and describe what this project does.")
+        .event_handler(Arc::new(|event| match &event {
+            Event::RequestStart { model, .. } => eprintln!("[requesting {model}...]"),
+            Event::ToolCallStart { tool_name, .. } => eprintln!("[tool] {tool_name}"),
+            Event::AgentEnd { turns, .. } => eprintln!("[done in {turns} turns]"),
+            _ => {}
+        }))
+        .run()
+        .await?;
+
+    eprintln!("\n\nDone in {} turns, ${:.4}", output.statistics.turns, output.statistics.costs);
+    Ok(())
+}
+```
+
 ## API
 
-Create an `LlmProvider`, define your `Tool`s, wire them into an `AgentBuilder`, call `agent.run()` with an `InvocationContext`, stream `Event`s during execution, and get back an `AgentOutput`.
-
-### AgentBuilder
-
-Configure an agent with a model, prompt, tools, and guardrails.
-
-```rust
-use agent::AgentBuilder;
-
-let agent = AgentBuilder::new()
-    .name("assistant")
-    .model("claude-sonnet-4-20250514")
-    .system_prompt("Help with {topic}")   // {key} replaced from template_variables
-    .tool(ReadFileTool)
-    .tool(GrepTool)
-    .max_turns(10)
-    .max_budget(1.0)                      // USD spend limit
-    .output_schema(json!({...}))          // force structured JSON response
-    .sub_agent(researcher)                // available to SpawnAgentTool
-    .build()?;
-
-let explorer = AgentBuilder::new()
-    .name("explorer")
-    .model("claude-haiku-4-5-20251001")   // fast model for search
-    .system_prompt("Search the codebase.")
-    .read_only()                          // minimal prompts, lower max_tokens
-    .build()?;
-
-let child = AgentBuilder::new()
-    .name("child")                        // no .model() — inherits from parent
-    .system_prompt("Help the parent.")
-    .build()?;
-```
-
-Agents include default behavior prompts for task execution, tool usage, action safety, and output efficiency. Replace any default with `behavior_prompt()`:
-
-```rust
-use agent::BehaviorPrompt;
-
-let agent = AgentBuilder::new()
-    .name("assistant")
-    .model("claude-sonnet-4-20250514")
-    .system_prompt("You are helpful.")
-    .behavior_prompt(BehaviorPrompt::TaskExecution, "- Follow instructions exactly.")
-    .build()?;
-```
-
-Add environment context, memory, and instruction files:
-
-```rust
-use agent::EnvironmentContext;
-
-let agent = AgentBuilder::new()
-    .name("assistant")
-    .model("claude-sonnet-4-20250514")
-    .system_prompt("You are helpful.")
-    .environment_context(&EnvironmentContext::collect(&cwd))
-    .instruction_files(&cwd)
-    .memory(&memory_dir)
-    .build()?;
-```
-
-### InvocationContext
-
-Runtime state for a single agent run. Pass it to `agent.run(ctx)`.
-
-```rust
-use agent::InvocationContext;
-
-let ctx = InvocationContext::new(provider)
-    .prompt("Find all TODOs");
-
-let ctx = InvocationContext::new(provider)
-    .prompt("Analyze {topic}")
-    .template_var("topic", json!("rust"))
-    .model("claude-sonnet-4-20250514")           // sub-agents using inherit_model() resolve to this
-    .working_directory(PathBuf::from("./src"))
-    .event_handler(Arc::new(|e| { /* ... */ }))
-    .cancel_signal(cancel)
-    .session_store(Arc::new(Mutex::new(store)))
-    .command_queue(Arc::new(CommandQueue::new()));
-```
-
-### AgentOutput
-
-The result of `agent.run()` — text, structured data, and token usage.
-
-```rust
-let output = agent.run(ctx).await?;
-
-println!("{}", output.response_raw);           // free-form LLM text
-println!("{:?}", output.response);             // Some(Value) if output_schema was set
-println!("{}", output.statistics.input_tokens); // accumulated token counts
-```
-
-With `.output_schema()`, the agent returns validated JSON in `response`:
-
-```rust
-AgentBuilder::new()
-    .output_schema(json!({
-        "type": "object",
-        "properties": { "category": { "type": "string" } },
-        "required": ["category"]
-    }))
-    ...
-
-output.response.unwrap()["category"]  // "billing"
-```
-
-### Event
-
-Lifecycle and progress notifications emitted during execution.
-
-```rust
-use agent::Event;
-
-ctx.event_handler = Arc::new(|event| match &event {
-    Event::TextChunk { content, .. } => print!("{content}"),
-    Event::RequestStart { agent_name, model } => eprintln!("{agent_name} calling {model}..."),
-    Event::RequestEnd { agent_name, .. } => eprintln!("{agent_name} response received"),
-    Event::ToolCallStart { tool_name, input, .. } => eprintln!("[{tool_name}] {input}"),
-    Event::ToolCallEnd { tool_name, is_error, .. } if *is_error => eprintln!("[error] {tool_name}"),
-    Event::AgentEnd { agent_name, turns } => eprintln!("{agent_name} done in {turns} turns"),
-    Event::TokenUsage { model, usage, .. } => eprintln!("{model}: {} tokens", usage.input_tokens),
-    _ => {}
-});
-```
+Configure an `AgentBuilder` with a provider, model, tools, and prompt, then call `.run()` to get an `AgentOutput`. Stream `Event`s during execution.
 
 ### LlmProvider
 
@@ -202,7 +109,118 @@ let client = reqwest::Client::new();                        // share a connectio
 let provider = AnthropicProvider::new(key, client);
 ```
 
-### Tool
+### AgentBuilder
+
+One builder for everything — agent definition, runtime context, and execution.
+
+```rust
+use agent::AgentBuilder;
+
+let output = AgentBuilder::new()
+    .model("claude-sonnet-4-20250514")
+    .system_prompt("You are a helpful assistant.")
+    .tool(ReadFileTool)
+    .provider(provider)
+    .prompt("What does src/main.rs do?")
+    .run()
+    .await?;
+```
+
+`system_prompt` defines who the agent is (same every run). `prompt` is the task (changes per run). Use `{key}` placeholders in the system prompt and fill them with `template_var`:
+
+```rust
+AgentBuilder::new()
+    .name("scanner")                      // agent identity (auto-generated if omitted)
+    .description("Scans projects")        // human-readable description
+    .system_prompt("Analyze {project}")
+    .template_var("project", json!("my-app"))
+    .working_directory(PathBuf::from("./src"))
+```
+
+#### Sub-agents
+
+Use `.build()` to get `Arc<dyn Agent>` for registration as a sub-agent. Without `.model()`, a sub-agent inherits its parent's model at runtime. Clone the builder to create multiple similar agents:
+
+```rust
+let researcher_base = AgentBuilder::new()
+    .model("claude-haiku-4-5-20251001")
+    .system_prompt("Research this topic.")
+    .tool(brave_search_tool())
+    .read_only()                          // minimal prompts, lower max_tokens
+    .max_turns(3);
+
+let r1 = researcher_base.clone().name("researcher_1").build()?;
+let r2 = researcher_base.clone().name("researcher_2").build()?;
+
+let output = AgentBuilder::new()
+    .name("orchestrator")
+    .system_prompt("Coordinate research.")
+    .sub_agent(r1)
+    .sub_agent(r2)
+```
+
+#### Guardrails
+
+```rust
+AgentBuilder::new()
+    .max_turns(10)         // stop after N agentic turns
+    .max_budget(1.0)       // USD spend limit
+    .max_tokens(4096)      // max output tokens per request
+    .cancel_signal(cancel) // Arc<AtomicBool> for external abort
+```
+
+#### Context
+
+Add environment info, memory, instruction files, or arbitrary context to the agent's context window:
+
+```rust
+use agent::EnvironmentContext;
+
+AgentBuilder::new()
+    .environment_context(&EnvironmentContext::collect(&cwd))
+    .instruction_files(&cwd)     // loads INSTRUCTIONS.md from cwd to root
+    .memory(&memory_dir)         // loads MEMORY.md
+    .user_context("extra info")  // arbitrary context string
+```
+
+#### Behavior prompts
+
+Agents include defaults for task execution, tool usage, action safety, and output efficiency. Override any:
+
+```rust
+use agent::BehaviorPrompt;
+
+AgentBuilder::new()
+    .behavior_prompt(BehaviorPrompt::TaskExecution, "Follow instructions exactly.")
+```
+
+#### Persistence
+
+Attach session transcripts or a command queue:
+
+```rust
+AgentBuilder::new()
+    .session_store(Arc::new(Mutex::new(store)))
+    .command_queue(Arc::new(CommandQueue::new()))
+```
+
+### Event
+
+Emitted via `.event_handler()` during execution.
+
+| Event | Description |
+|-------|-------------|
+| `AgentStart` | Agent begins execution |
+| `AgentEnd` | Agent finishes with turn count |
+| `AgentError` | Agent encountered an error |
+| `TurnStart` / `TurnEnd` | Turn boundaries |
+| `RequestStart` / `RequestEnd` | LLM request lifecycle |
+| `TextChunk` | Streamed text token |
+| `ToolCallStart` / `ToolCallEnd` | Tool execution lifecycle |
+| `TokenUsage` | Token counts for a request |
+| `BudgetUsage` | Cost tracking update |
+
+### Tools
 
 Define what the agent can do. Read-only tools run concurrently.
 
@@ -226,6 +244,36 @@ Built-in tools:
 - `BashTool` — shell command execution
 - `ToolSearchTool` — discover available tools by keyword
 - `SpawnAgentTool` — delegate work to a sub-agent
+
+### AgentOutput
+
+The result of `.run()`.
+
+```rust
+output.response_raw            // free-form LLM text
+output.statistics.costs        // total USD spent
+output.statistics.input_tokens // total input tokens
+output.statistics.output_tokens// total output tokens
+output.statistics.requests     // number of LLM calls
+output.statistics.tool_calls   // number of tool executions
+output.statistics.turns        // number of agentic turns
+```
+
+With `.output_schema()`, the agent returns validated JSON in `output.response`:
+
+```rust
+let output = AgentBuilder::new()
+    .output_schema(json!({
+        "type": "object",
+        "properties": { "category": { "type": "string" } },
+        "required": ["category"]
+    }))
+    .max_schema_retries(3)  // retry if agent doesn't comply (default: 3)
+
+    .run().await?;
+
+output.response.unwrap()["category"]  // "billing"
+```
 
 ## Development
 

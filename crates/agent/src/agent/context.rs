@@ -110,7 +110,7 @@ impl InvocationContext {
     }
 }
 
-pub fn generate_agent_name(name: &str) -> String {
+pub(crate) fn generate_agent_name(name: &str) -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

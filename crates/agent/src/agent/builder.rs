@@ -1,20 +1,29 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
 use crate::error::{AgenticError, Result};
+use crate::provider::LlmProvider;
 use crate::provider::model::ModelSpec;
+use crate::persistence::session::SessionStore;
+use super::context::{InvocationContext, generate_agent_name};
+use super::event::Event;
+use super::output::{AgentOutput, OutputSchema};
 use super::prompts::{BehaviorPrompt, ContextBuilder, EnvironmentContext};
-use crate::tools::{Tool, ToolRegistry};
-
-use super::r#trait::Agent;
+use super::queue::CommandQueue;
 use super::r#loop::AgentLoop;
-use super::output::OutputSchema;
+use super::r#trait::Agent;
+use crate::tools::{Tool, ToolRegistry};
 
 const DEFAULT_MAX_TOKENS: u32 = 4096;
 const READ_ONLY_MAX_TOKENS: u32 = DEFAULT_MAX_TOKENS / 2;
 
+#[derive(Clone)]
 pub struct AgentBuilder {
+    // Agent definition
     name: Option<String>,
     description: String,
     model: ModelSpec,
@@ -28,6 +37,16 @@ pub struct AgentBuilder {
     context_builder: ContextBuilder,
     tools: ToolRegistry,
     sub_agents: Vec<Arc<dyn Agent>>,
+
+    // Runtime context
+    provider: Option<Arc<dyn LlmProvider>>,
+    prompt: String,
+    template_variables: HashMap<String, Value>,
+    working_directory: PathBuf,
+    event_handler: Arc<dyn Fn(Event) + Send + Sync>,
+    cancel_signal: Arc<AtomicBool>,
+    session_store: Option<Arc<Mutex<SessionStore>>>,
+    command_queue: Option<Arc<CommandQueue>>,
 }
 
 impl AgentBuilder {
@@ -51,8 +70,19 @@ impl AgentBuilder {
             context_builder: ContextBuilder::new(),
             tools: ToolRegistry::new(),
             sub_agents: Vec::new(),
+
+            provider: None,
+            prompt: String::new(),
+            template_variables: HashMap::new(),
+            working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            event_handler: Arc::new(|_| {}),
+            cancel_signal: Arc::new(AtomicBool::new(false)),
+            session_store: None,
+            command_queue: None,
         }
     }
+
+    // --- Agent definition ---
 
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
@@ -138,7 +168,6 @@ impl AgentBuilder {
     }
 
     /// Configure for read-only operation with minimal prompt overhead.
-    /// Clears behavior prompts and context, lowers max_tokens.
     pub fn read_only(mut self) -> Self {
         self.max_tokens = READ_ONLY_MAX_TOKENS;
         self.behavior_prompts.clear();
@@ -146,10 +175,61 @@ impl AgentBuilder {
         self
     }
 
+    // --- Runtime context ---
+
+    pub fn provider(mut self, provider: Arc<dyn LlmProvider>) -> Self {
+        self.provider = Some(provider);
+        self
+    }
+
+    pub fn prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.prompt = prompt.into();
+        self
+    }
+
+    pub fn template_var(mut self, key: impl Into<String>, value: Value) -> Self {
+        self.template_variables.insert(key.into(), value);
+        self
+    }
+
+    pub fn template_variables(mut self, vars: HashMap<String, Value>) -> Self {
+        self.template_variables = vars;
+        self
+    }
+
+    pub fn working_directory(mut self, dir: PathBuf) -> Self {
+        self.working_directory = dir;
+        self
+    }
+
+    pub fn event_handler(mut self, handler: Arc<dyn Fn(Event) + Send + Sync>) -> Self {
+        self.event_handler = handler;
+        self
+    }
+
+    pub fn cancel_signal(mut self, signal: Arc<AtomicBool>) -> Self {
+        self.cancel_signal = signal;
+        self
+    }
+
+    pub fn session_store(mut self, store: Arc<Mutex<SessionStore>>) -> Self {
+        self.session_store = Some(store);
+        self
+    }
+
+    pub fn command_queue(mut self, queue: Arc<CommandQueue>) -> Self {
+        self.command_queue = Some(queue);
+        self
+    }
+
+    // --- Build & Run ---
+
+    /// Build the agent without running it. Use when you need `Arc<dyn Agent>`
+    /// (e.g., to register as a sub-agent).
     pub fn build(self) -> Result<Arc<dyn Agent>> {
         let name = self
             .name
-            .ok_or_else(|| AgenticError::Other("AgentBuilder requires a name".into()))?;
+            .unwrap_or_else(|| generate_agent_name("agent"));
 
         Ok(Arc::new(AgentLoop {
             name,
@@ -166,5 +246,49 @@ impl AgentBuilder {
             tools: self.tools,
             sub_agents: self.sub_agents,
         }))
+    }
+
+    /// Build the agent and run it. Requires `.provider()` and `.prompt()`.
+    pub async fn run(self) -> Result<AgentOutput> {
+        let provider = self
+            .provider
+            .clone()
+            .ok_or_else(|| AgenticError::Other("AgentBuilder::run() requires a provider".into()))?;
+
+        if self.prompt.is_empty() {
+            return Err(AgenticError::Other(
+                "AgentBuilder::run() requires a prompt".into(),
+            ));
+        }
+
+        let resolved_model = self.model.resolve(&String::new());
+        let prompt = self.prompt.clone();
+        let template_variables = self.template_variables.clone();
+        let working_directory = self.working_directory.clone();
+        let event_handler = self.event_handler.clone();
+        let cancel_signal = self.cancel_signal.clone();
+        let session_store = self.session_store.clone();
+        let command_queue = self.command_queue.clone();
+
+        let agent = self.build()?;
+
+        let ctx = InvocationContext::new(provider)
+            .prompt(prompt)
+            .template_variables(template_variables)
+            .working_directory(working_directory)
+            .event_handler(event_handler)
+            .cancel_signal(cancel_signal)
+            .model(resolved_model);
+
+        let ctx = match session_store {
+            Some(s) => ctx.session_store(s),
+            None => ctx,
+        };
+        let ctx = match command_queue {
+            Some(q) => ctx.command_queue(q),
+            None => ctx,
+        };
+
+        agent.run(ctx).await
     }
 }

@@ -149,6 +149,7 @@ impl EnvironmentContext {
 
 /// Builds the context user message (memory, instructions, environment).
 /// Not public — callers use `AgentBuilder` methods instead.
+#[derive(Clone)]
 pub(crate) struct ContextBuilder {
     sections: Vec<(String, String)>,
     user_context_blocks: Vec<String>,
