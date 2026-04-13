@@ -130,12 +130,12 @@ let output = AgentBuilder::new()
 
 #### Prompt types
 
-| Prompt | Purpose | Sent as |
-|--------|---------|---------|
-| `instruction_prompt` | The task for this run (required for `.run()`) | First user message |
-| `context_prompt` | Additional context alongside the instruction (optional) | User message before instruction |
-| `behavior_prompt` | How the agent behaves — [defaults provided](#behavior-prompts) | Appended to system message |
-| `identity_prompt` | Who the agent is — persistent across runs | System message |
+| Prompt | Purpose |
+|--------|---------|
+| `instruction_prompt` | The task for this run (required for `.run()`) |
+| `context_prompt` | Additional context alongside the instruction |
+| `behavior_prompt` | How the agent behaves — [defaults provided](#behavior-prompts) |
+| `identity_prompt` | Who the agent is — persistent across runs |
 
 Use `{key}` placeholders in the identity prompt and fill them with `template_variable` (or `template_variables`).
 
