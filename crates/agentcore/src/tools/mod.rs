@@ -8,6 +8,7 @@ mod read_file;
 pub mod spawn_agent;
 pub mod task_tools;
 mod tool_search;
+mod web_fetch;
 mod write_file;
 
 // Re-export tool infrastructure
@@ -26,6 +27,7 @@ pub use read_file::ReadFileTool;
 pub use spawn_agent::SpawnAgentTool;
 pub use task_tools::TaskTool;
 pub use tool_search::ToolSearchTool;
+pub use web_fetch::WebFetchTool;
 pub use write_file::WriteFileTool;
 
 /// Built-in toolset providing file operations, search, directory listing,
@@ -43,6 +45,7 @@ impl Toolset for BuiltinToolset {
             Box::new(ListDirectoryTool),
             Box::new(BashTool),
             Box::new(ToolSearchTool),
+            Box::new(WebFetchTool),
         ]
     }
 }

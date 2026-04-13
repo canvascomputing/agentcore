@@ -260,6 +260,7 @@ Built-in tools:
 | `ToolSearchTool` | Discover available tools by keyword |
 | `SpawnAgentTool` | Delegate work to a sub-agent |
 | `TaskTool` | Persistent task management (create, update, list, get) |
+| `WebFetchTool` | Fetch a URL and return its content as text |
 
 ### AgentOutput
 

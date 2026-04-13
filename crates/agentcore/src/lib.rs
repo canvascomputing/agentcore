@@ -21,7 +21,7 @@ pub use provider::{
 pub use tools::{
     BashTool, BuiltinToolset, EditFileTool, GlobTool, GrepTool, ListDirectoryTool, ReadFileTool,
     SpawnAgentTool, TaskTool, Tool, ToolBuilder, ToolCall, ToolContext, ToolDefinition, ToolRegistry,
-    ToolResult, ToolSearchResult, ToolSearchTool, Toolset, WriteFileTool, execute_tool_calls,
+    ToolResult, ToolSearchResult, ToolSearchTool, Toolset, WebFetchTool, WriteFileTool, execute_tool_calls,
 };
 
 // Agent
