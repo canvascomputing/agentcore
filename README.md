@@ -1,27 +1,62 @@
-<div align="center">
+<p align="center">
+  <img src="logo.png" width="200" />
+</p>
 
-# 🤖 `agent`
+<h1 align="center">agent</h1>
 
-```
-                             __   
-    .---.-.-----.-----.-----|  |_ 
-    |  _  |  _  |  -__|     |   _|
-    |___._|___  |_____|__|__|____|
-          |_____|                 
+<p align="center">
+  <strong>A minimal Rust crate that gives any application agentic capabilities.</strong>
+</p>
 
-  A minimal Rust crate that gives any
-  application agentic capabilities.
-```
+<p align="center">Every agentic application, like OpenClaw or Claude Code, reimplements the same core functionality. This crate extracts that shared foundation into a minimal, dependency-light library.</p>
 
-</div>
+<p align="center">
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#use-cases">Use Cases</a> •
+  <a href="#api">API</a> •
+  <a href="#development">Development</a>
+</p>
 
 <p align="center"><code>Agentic execution loop</code> · <code>Basic tool implementations</code> · <code>Sub-agent orchestration</code> · <code>Anthropic, Mistral, OpenAI integration</code> · <code>Schema-based output</code> · <code>Cost tracking</code></p>
 
+---
+
+## Quick Start
+
+```rust
+use std::sync::Arc;
+use agent::{AgentBuilder, AnthropicProvider, Event, ReadFileTool, GlobTool};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let provider = Arc::new(AnthropicProvider::from_api_key(
+        std::env::var("ANTHROPIC_API_KEY")?,
+    ));
+
+    let output = AgentBuilder::new()
+        .provider(provider)
+        .model("claude-sonnet-4-20250514")
+        .identity_prompt("You are a helpful assistant that reads and explains code.")
+        .instruction_prompt("Find all Rust source files and describe what this project does.")
+        .tool(ReadFileTool)
+        .tool(GlobTool)
+        .event_handler(Arc::new(|event| match &event {
+            Event::RequestStart { model, .. } => eprintln!("[requesting {model}...]"),
+            Event::ToolCallStart { tool_name, .. } => eprintln!("[tool] {tool_name}"),
+            Event::AgentEnd { turns, .. } => eprintln!("[done in {turns} turns]"),
+            _ => {}
+        }))
+        .run()
+        .await?;
+
+    eprintln!("\n\nDone in {} turns, ${:.4}", output.statistics.turns, output.statistics.costs);
+    Ok(())
+}
+```
+
 ## Use Cases
 
-Every agentic application, like OpenClaw or Claude Code, reimplements the same core functionality. This crate extracts that shared foundation into a minimal, dependency-light library.
-
-Here are example applications built with this project.
+Example applications built with this project.
 
 > Consider setting your LLM provider's environment variables for key, model or base URL.
 
@@ -54,39 +89,6 @@ Output:
 {
   "title": "What Constitutes a Good Life: A Multi-Perspective Analysis",
   "research": "A good life emerges from the convergence of philosophical wisdom, scientific research, and cultural understanding. Key elements include meaningful relationships and social connections, a sense of purpose and personal growth, physical and mental well-being, contributing to something beyond oneself, and living in accordance with personal values. While cultural contexts vary, common themes across traditions emphasize virtue, balance, gratitude, and the cultivation of both inner fulfillment and positive impact on others."
-}
-```
-
-## Quick Start
-
-```rust
-use std::sync::Arc;
-use agent::{AgentBuilder, AnthropicProvider, Event, ReadFileTool, GlobTool};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let provider = Arc::new(AnthropicProvider::from_api_key(
-        std::env::var("ANTHROPIC_API_KEY")?,
-    ));
-
-    let output = AgentBuilder::new()
-        .provider(provider)
-        .model("claude-sonnet-4-20250514")
-        .identity_prompt("You are a helpful assistant that reads and explains code.")
-        .instruction_prompt("Find all Rust source files and describe what this project does.")
-        .tool(ReadFileTool)
-        .tool(GlobTool)
-        .event_handler(Arc::new(|event| match &event {
-            Event::RequestStart { model, .. } => eprintln!("[requesting {model}...]"),
-            Event::ToolCallStart { tool_name, .. } => eprintln!("[tool] {tool_name}"),
-            Event::AgentEnd { turns, .. } => eprintln!("[done in {turns} turns]"),
-            _ => {}
-        }))
-        .run()
-        .await?;
-
-    eprintln!("\n\nDone in {} turns, ${:.4}", output.statistics.turns, output.statistics.costs);
-    Ok(())
 }
 ```
 
