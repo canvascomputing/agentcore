@@ -26,6 +26,6 @@ pub use tools::{
 
 // Agent
 pub use agent::{
-    Agent, AgentBuilder, AgentOutput, BehaviorPrompt, CommandQueue, Event,
+    Agent, AgentBuilder, AgentOutput, BehaviorPrompt, Event,
     OutputSchema, Statistics, validate_value,
 };
