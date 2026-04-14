@@ -19,13 +19,13 @@ pub use provider::{
 
 // Tool infrastructure and built-in tools
 pub use tools::{
-    BashTool, BuiltinToolset, EditFileTool, GlobTool, GrepTool, ListDirectoryTool, ReadFileTool,
+    BashSingleTool, BashTool, BuiltinToolset, EditFileTool, GlobTool, GrepTool, ListDirectoryTool, ReadFileTool,
     SpawnAgentTool, TaskTool, Tool, ToolBuilder, ToolCall, ToolContext, ToolDefinition, ToolRegistry,
     ToolResult, ToolSearchResult, ToolSearchTool, Toolset, WebFetchTool, WriteFileTool, execute_tool_calls,
 };
 
 // Agent
 pub use agent::{
-    Agent, AgentBuilder, AgentOutput, BehaviorPrompt, Event,
+    Agent, AgentBuilder, AgentOutput, BehaviorPrompt, CommandQueue, Event,
     OutputSchema, Statistics, validate_value,
 };

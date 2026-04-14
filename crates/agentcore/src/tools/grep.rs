@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::error::Result;
 use crate::tools::tool::{Tool, ToolContext, ToolResult};
+use crate::tools::util::glob_match;
 
 pub struct GrepTool;
 
@@ -77,158 +78,149 @@ impl Tool for GrepTool {
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
         Box::pin(async move {
             let pattern = match input["pattern"].as_str() {
-                Some(p) => p.to_string(),
-                None => {
-                    return Ok(ToolResult::error("Missing required parameter: pattern"));
-                }
+                Some(p) => p,
+                None => return Ok(ToolResult::error("Missing required parameter: pattern")),
             };
-            let base_str = input["path"].as_str().unwrap_or(".");
-            let base = ctx.working_directory.join(base_str);
+
+            let base = ctx.working_directory.join(input["path"].as_str().unwrap_or("."));
             let glob_filter = input["glob"].as_str().map(|s| s.to_string());
             let output_mode = input["output_mode"].as_str().unwrap_or("files");
-            let context_lines = input["context_lines"].as_u64().map(|n| n as usize);
+            let context_lines = input["context_lines"].as_u64().unwrap_or(0) as usize;
             let case_insensitive = input["case_insensitive"].as_bool().unwrap_or(false);
             let max_results = input["max_results"].as_u64().unwrap_or(DEFAULT_MAX_RESULTS) as usize;
 
-            let search_pattern = if case_insensitive {
-                pattern.to_lowercase()
-            } else {
-                pattern.clone()
+            let needle = if case_insensitive { pattern.to_lowercase() } else { pattern.to_string() };
+
+            let mut files = Vec::new();
+            collect_files(&base, &glob_filter, &mut files);
+
+            let result = match output_mode {
+                "content" => search_content(&files, &base, &needle, case_insensitive, context_lines, max_results),
+                "count" => search_count(&files, &base, &needle, case_insensitive, max_results),
+                _ => search_files(&files, &base, &needle, case_insensitive, max_results),
             };
 
-            let mut files_to_search = Vec::new();
-            collect_files(&base, &glob_filter, &mut files_to_search);
-
-            match output_mode {
-                "content" => {
-                    let mut output_lines = Vec::new();
-                    let mut count = 0usize;
-
-                    'outer: for file_path in &files_to_search {
-                        let content = match std::fs::read_to_string(file_path) {
-                            Ok(c) => c,
-                            Err(_) => continue,
-                        };
-                        let lines: Vec<&str> = content.lines().collect();
-                        let rel = file_path
-                            .strip_prefix(&base)
-                            .unwrap_or(file_path)
-                            .to_string_lossy();
-
-                        // Find matching line indices
-                        let mut match_indices = Vec::new();
-                        for (i, line) in lines.iter().enumerate() {
-                            let haystack = if case_insensitive {
-                                line.to_lowercase()
-                            } else {
-                                line.to_string()
-                            };
-                            if haystack.contains(&search_pattern) {
-                                match_indices.push(i);
-                            }
-                        }
-
-                        // Build output with context
-                        let mut emitted = std::collections::BTreeSet::new();
-                        for &idx in &match_indices {
-                            let ctx_n = context_lines.unwrap_or(0);
-                            let start = idx.saturating_sub(ctx_n);
-                            let end = (idx + ctx_n + 1).min(lines.len());
-                            for li in start..end {
-                                if emitted.insert(li) {
-                                    output_lines
-                                        .push(format!("{}:{}: {}", rel, li + 1, lines[li]));
-                                    count += 1;
-                                    if count >= max_results {
-                                        break 'outer;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Ok(ToolResult::success(output_lines.join("\n")))
-                }
-                "count" => {
-                    let mut file_counts: Vec<(String, usize)> = Vec::new();
-
-                    for file_path in &files_to_search {
-                        let content = match std::fs::read_to_string(file_path) {
-                            Ok(c) => c,
-                            Err(_) => continue,
-                        };
-                        let rel = file_path
-                            .strip_prefix(&base)
-                            .unwrap_or(file_path)
-                            .to_string_lossy()
-                            .to_string();
-
-                        let mut n = 0usize;
-                        for line in content.lines() {
-                            let haystack = if case_insensitive {
-                                line.to_lowercase()
-                            } else {
-                                line.to_string()
-                            };
-                            if haystack.contains(&search_pattern) {
-                                n += 1;
-                            }
-                        }
-                        if n > 0 {
-                            file_counts.push((rel, n));
-                        }
-                        if file_counts.len() >= max_results {
-                            break;
-                        }
-                    }
-
-                    let lines: Vec<String> = file_counts
-                        .iter()
-                        .map(|(f, c)| format!("{f}: {c} matches"))
-                        .collect();
-
-                    Ok(ToolResult::success(lines.join("\n")))
-                }
-                // "files" mode (default)
-                _ => {
-                    let mut matched_files = Vec::new();
-
-                    for file_path in &files_to_search {
-                        let content = match std::fs::read_to_string(file_path) {
-                            Ok(c) => c,
-                            Err(_) => continue,
-                        };
-
-                        let found = content.lines().any(|line| {
-                            let haystack = if case_insensitive {
-                                line.to_lowercase()
-                            } else {
-                                line.to_string()
-                            };
-                            haystack.contains(&search_pattern)
-                        });
-
-                        if found {
-                            let rel = file_path
-                                .strip_prefix(&base)
-                                .unwrap_or(file_path)
-                                .to_string_lossy()
-                                .to_string();
-                            matched_files.push(rel);
-                            if matched_files.len() >= max_results {
-                                break;
-                            }
-                        }
-                    }
-
-                    Ok(ToolResult::success(matched_files.join("\n")))
-                }
-            }
+            Ok(ToolResult::success(result))
         })
     }
 }
 
-/// Recursively collect files, skipping ignored directories and applying glob filter.
+// --- Search modes ---
+
+fn search_content(
+    files: &[PathBuf],
+    base: &Path,
+    needle: &str,
+    case_insensitive: bool,
+    context_lines: usize,
+    max_results: usize,
+) -> String {
+    let mut output = Vec::new();
+
+    'outer: for file_path in files {
+        let content = match std::fs::read_to_string(file_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let lines: Vec<&str> = content.lines().collect();
+        let rel = relative_path(file_path, base);
+
+        let match_indices: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line_matches(line, needle, case_insensitive))
+            .map(|(i, _)| i)
+            .collect();
+
+        let mut emitted = std::collections::BTreeSet::new();
+        for &idx in &match_indices {
+            let start = idx.saturating_sub(context_lines);
+            let end = (idx + context_lines + 1).min(lines.len());
+            for li in start..end {
+                if !emitted.insert(li) {
+                    continue;
+                }
+                output.push(format!("{}:{}: {}", rel, li + 1, lines[li]));
+                if output.len() >= max_results {
+                    break 'outer;
+                }
+            }
+        }
+    }
+
+    output.join("\n")
+}
+
+fn search_count(
+    files: &[PathBuf],
+    base: &Path,
+    needle: &str,
+    case_insensitive: bool,
+    max_results: usize,
+) -> String {
+    let mut counts = Vec::new();
+
+    for file_path in files {
+        let content = match std::fs::read_to_string(file_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let n = content.lines().filter(|line| line_matches(line, needle, case_insensitive)).count();
+        if n > 0 {
+            counts.push(format!("{}: {n} matches", relative_path(file_path, base)));
+        }
+        if counts.len() >= max_results {
+            break;
+        }
+    }
+
+    counts.join("\n")
+}
+
+fn search_files(
+    files: &[PathBuf],
+    base: &Path,
+    needle: &str,
+    case_insensitive: bool,
+    max_results: usize,
+) -> String {
+    let mut matched = Vec::new();
+
+    for file_path in files {
+        let content = match std::fs::read_to_string(file_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        if content.lines().any(|line| line_matches(line, needle, case_insensitive)) {
+            matched.push(relative_path(file_path, base));
+            if matched.len() >= max_results {
+                break;
+            }
+        }
+    }
+
+    matched.join("\n")
+}
+
+// --- Helpers ---
+
+fn line_matches(line: &str, needle: &str, case_insensitive: bool) -> bool {
+    if case_insensitive {
+        line.to_lowercase().contains(needle)
+    } else {
+        line.contains(needle)
+    }
+}
+
+fn relative_path(path: &Path, base: &Path) -> String {
+    path.strip_prefix(base)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .to_string()
+}
+
 fn collect_files(dir: &Path, glob_filter: &Option<String>, results: &mut Vec<PathBuf>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -240,56 +232,18 @@ fn collect_files(dir: &Path, glob_filter: &Option<String>, results: &mut Vec<Pat
         let name = entry.file_name().to_string_lossy().to_string();
 
         if path.is_dir() {
-            if SKIP_DIRS.contains(&name.as_str()) {
+            if !SKIP_DIRS.contains(&name.as_str()) {
+                collect_files(&path, glob_filter, results);
+            }
+            continue;
+        }
+
+        if let Some(ref filter) = glob_filter {
+            if !glob_match(filter, &name) {
                 continue;
             }
-            collect_files(&path, glob_filter, results);
-        } else {
-            if let Some(ref filter) = glob_filter {
-                if !simple_glob_match(filter, &name) {
-                    continue;
-                }
-            }
-            // Skip binary-looking files by checking if the file can be read as text
-            results.push(path);
         }
-    }
-}
-
-/// Simple glob matching for file name filters (e.g. "*.rs", "*.txt").
-/// Supports `*` (any chars) and `?` (single char) within a single filename segment.
-fn simple_glob_match(pattern: &str, name: &str) -> bool {
-    seg_match(pattern.as_bytes(), name.as_bytes())
-}
-
-fn seg_match(pat: &[u8], txt: &[u8]) -> bool {
-    if pat.is_empty() {
-        return txt.is_empty();
-    }
-    match pat[0] {
-        b'*' => {
-            if seg_match(&pat[1..], txt) {
-                return true;
-            }
-            if !txt.is_empty() && seg_match(pat, &txt[1..]) {
-                return true;
-            }
-            false
-        }
-        b'?' => {
-            if txt.is_empty() {
-                false
-            } else {
-                seg_match(&pat[1..], &txt[1..])
-            }
-        }
-        c => {
-            if txt.is_empty() || txt[0] != c {
-                false
-            } else {
-                seg_match(&pat[1..], &txt[1..])
-            }
-        }
+        results.push(path);
     }
 }
 

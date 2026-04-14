@@ -54,6 +54,8 @@ crates/agentcore/src/
     grep.rs               GrepTool
     list_directory.rs     ListDirectoryTool
     bash.rs               BashTool
+    bash_single.rs        BashSingleTool (pattern-restricted bash)
+    util.rs               glob_match, run_shell_command, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS
     tool_search.rs        ToolSearchTool
     spawn_agent.rs        SpawnAgentTool
     task_tools.rs         TaskTool
@@ -73,7 +75,7 @@ crates/use-cases/src/
     main.rs                 multi-agent deep research with web search
 ```
 
-Integration tests are in `crates/agentcore/tests/`. Run with `make test_integration`.
+Integration tests are in `crates/agentcore/tests/`. Shared helpers (provider setup, event handler, JSON output) are in `tests/common/mod.rs`. Run with `make test_integration`.
 Use cases are in `crates/use-cases/src/cli/`. Run with `make use-case name=<name>`.
 
 ## Key conventions

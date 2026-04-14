@@ -1,5 +1,6 @@
 pub mod tool;
 mod bash;
+mod bash_single;
 mod edit_file;
 mod glob;
 mod grep;
@@ -8,6 +9,7 @@ mod read_file;
 pub mod spawn_agent;
 pub mod task_tools;
 mod tool_search;
+pub(crate) mod util;
 mod web_fetch;
 mod write_file;
 
@@ -19,6 +21,7 @@ pub use tool::{
 
 // Re-export built-in tools
 pub use bash::BashTool;
+pub use bash_single::BashSingleTool;
 pub use edit_file::EditFileTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;

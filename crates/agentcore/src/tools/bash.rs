@@ -1,16 +1,18 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::error::Result;
 use crate::tools::tool::{Tool, ToolContext, ToolResult};
+use crate::tools::util::{run_shell_command, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS};
 
 /// Shell command execution tool.
 pub struct BashTool;
 
-const DESCRIPTION: &str = "\
+fn description() -> String {
+    format!(
+        "\
 Executes a bash command in the working directory and returns its output.
 
 IMPORTANT: Avoid using this tool when a dedicated tool exists:
@@ -23,7 +25,7 @@ IMPORTANT: Avoid using this tool when a dedicated tool exists:
 # Instructions
 - Always quote file paths that contain spaces with double quotes.
 - Try to maintain your current working directory by using absolute paths.
-- You may specify an optional timeout in milliseconds (default: 120000, max: 600000).
+- You may specify an optional timeout in milliseconds (default: {DEFAULT_TIMEOUT_MS}, max: {MAX_TIMEOUT_MS}).
 
 When issuing multiple commands:
 - If commands are independent, make multiple tool calls in parallel.
@@ -33,7 +35,13 @@ When issuing multiple commands:
 # Anti-patterns
 - Do not sleep between commands that can run immediately.
 - Do not retry failing commands in a sleep loop — diagnose the root cause.
-- Do not use interactive flags (-i) as they require input which is not supported.";
+- Do not use interactive flags (-i) as they require input which is not supported."
+    )
+}
+
+fn timeout_description() -> String {
+    format!("Optional timeout in milliseconds (default: {DEFAULT_TIMEOUT_MS})")
+}
 
 impl Tool for BashTool {
     fn name(&self) -> &str {
@@ -41,7 +49,8 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        DESCRIPTION
+        // Leak a static reference; this tool is created once and lives for the program's lifetime.
+        Box::leak(description().into_boxed_str())
     }
 
     fn input_schema(&self) -> Value {
@@ -54,7 +63,7 @@ impl Tool for BashTool {
                 },
                 "timeout_ms": {
                     "type": "integer",
-                    "description": "Optional timeout in milliseconds (default: 120000)"
+                    "description": timeout_description()
                 }
             },
             "required": ["command"]
@@ -81,38 +90,9 @@ impl Tool for BashTool {
             let timeout_ms = input
                 .get("timeout_ms")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(120_000);
+                .unwrap_or(DEFAULT_TIMEOUT_MS);
 
-            let timeout_duration = Duration::from_millis(timeout_ms);
-
-            let result = tokio::time::timeout(
-                timeout_duration,
-                tokio::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(command)
-                    .current_dir(&ctx.working_directory)
-                    .output(),
-            )
-            .await;
-
-            match result {
-                Err(_) => Ok(ToolResult::error(format!("Command timed out after {timeout_ms}ms"))),
-                Ok(Err(e)) => Ok(ToolResult::error(format!("Failed to execute command: {e}"))),
-                Ok(Ok(output)) => {
-                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-                    let mut content = stdout;
-                    if !stderr.is_empty() {
-                        content.push_str("\n--- stderr ---\n");
-                        content.push_str(&stderr);
-                    }
-
-                    let is_error = !output.status.success();
-
-                    Ok(ToolResult { content, is_error })
-                }
-            }
+            Ok(run_shell_command(command, &ctx.working_directory, timeout_ms).await)
         })
     }
 }
