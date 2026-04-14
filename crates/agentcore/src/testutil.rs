@@ -221,7 +221,7 @@ impl EventCollector {
             .unwrap()
             .iter()
             .filter_map(|e| match e {
-                Event::TextChunk { content, .. } => Some(content.clone()),
+                Event::ResponseTextChunk { content, .. } => Some(content.clone()),
                 _ => None,
             })
             .collect()

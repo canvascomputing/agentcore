@@ -238,7 +238,7 @@ Emitted via `AgentBuilder.event_handler()` during execution.
 | `AgentError` | Agent encountered an error |
 | `TurnStart` / `TurnEnd` | Turn boundaries |
 | `RequestStart` / `RequestEnd` | LLM request lifecycle |
-| `TextChunk` | Streamed text token |
+| `ResponseTextChunk` | Streamed text token |
 | `ToolCallStart` / `ToolCallEnd` | Tool execution lifecycle |
 | `TokenUsage` | Token counts for a request |
 

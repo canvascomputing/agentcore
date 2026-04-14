@@ -10,7 +10,7 @@ pub enum Event {
     ToolCallStart { agent_name: String, tool_name: String, call_id: String, input: serde_json::Value },
     ToolCallEnd { agent_name: String, tool_name: String, call_id: String, output: String, is_error: bool },
     TokenUsage { agent_name: String, model: String, usage: TokenUsage },
-    TextChunk { agent_name: String, content: String },
+    ResponseTextChunk { agent_name: String, content: String },
     RequestStart { agent_name: String, model: String },
     RequestEnd { agent_name: String, model: String },
 }

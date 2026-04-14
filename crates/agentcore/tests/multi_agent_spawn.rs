@@ -9,7 +9,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let (provider, model) = common::build_provider();
 
     let event_handler = Arc::new(|event: Event| match event {
-        Event::TextChunk { content, agent_name } => {
+        Event::ResponseTextChunk { content, agent_name } => {
             if agent_name == "orchestrator" {
                 print!("{content}")
             }

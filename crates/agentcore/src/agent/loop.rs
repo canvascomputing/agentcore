@@ -211,7 +211,7 @@ impl AgentLoop {
         let agent_name = self.name.clone();
         let on_event = Arc::new(move |event: StreamEvent| {
             if let StreamEvent::TextDelta { text, .. } = &event {
-                event_handler(Event::TextChunk {
+                event_handler(Event::ResponseTextChunk {
                     agent_name: agent_name.clone(),
                     content: text.clone(),
                 });
@@ -239,7 +239,7 @@ impl AgentLoop {
             match block {
                 ContentBlock::Text { text: chunk } => {
                     text.push_str(chunk);
-                    self.emit(ctx, Event::TextChunk { agent_name: self.name.clone(), content: chunk.clone() });
+                    self.emit(ctx, Event::ResponseTextChunk { agent_name: self.name.clone(), content: chunk.clone() });
                 }
                 ContentBlock::ToolUse { id, name, input } => {
                     tool_calls.push(ToolCall {
