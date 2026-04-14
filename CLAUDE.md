@@ -41,7 +41,7 @@ crates/agentcore/src/
     context.rs            InvocationContext (internal)
     event.rs              Event enum
     output.rs             AgentOutput, OutputSchema, StructuredOutputTool, validate_value
-    prompts.rs            BehaviorPrompt, ContextBuilder, EnvironmentContext (all internal except BehaviorPrompt)
+    prompts.rs            BehaviorPrompt (TaskExecution, ToolUsage, SafetyConcerns, Communication), ContextBuilder, EnvironmentContext
     queue.rs              CommandQueue, QueuePriority, QueuedCommand (internal)
 
   tools/

@@ -205,15 +205,15 @@ Agents ship with default behavior prompts appended to the identity prompt. Overr
 |---------|-----------------|
 | `TaskExecution` | Read before modifying, don't add unrequested features, diagnose failures |
 | `ToolUsage` | Use dedicated tools over bash, parallelize independent calls |
-| `ActionSafety` | Consider reversibility, confirm destructive operations |
-| `OutputEfficiency` | Be concise, lead with the answer, skip filler |
+| `SafetyConcerns` | Consider reversibility and impact, prefer reversible operations |
+| `Communication` | Be direct, concise, lead with the answer |
 
 ```rust
 use agentcore::BehaviorPrompt;
 
 AgentBuilder::new()
     .behavior_prompt(BehaviorPrompt::TaskExecution, "Follow instructions exactly.")
-    .behavior_prompt(BehaviorPrompt::OutputEfficiency, "Always respond in JSON.")
+    .behavior_prompt(BehaviorPrompt::Communication, "Always respond in JSON.")
 ```
 
 #### Sessions

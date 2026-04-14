@@ -14,23 +14,30 @@ use crate::provider::types::{ContentBlock, Message};
 // Behavior prompts
 // ---------------------------------------------------------------------------
 
-/// Behavioral directives that govern how an agent operates.
-/// Each variant has a default that can be replaced via `AgentBuilder::behavior_prompt()`.
+/// Behavioral directives injected into the system prompt of every LLM request.
+///
+/// All four variants are always present. Each has a sensible default that can be
+/// replaced via [`AgentBuilder::behavior_prompt()`]. They appear in the system
+/// prompt after the identity prompt, in the order listed here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BehaviorPrompt {
+    /// How the agent approaches work.
     TaskExecution,
+    /// When to use which tool.
     ToolUsage,
-    ActionSafety,
-    OutputEfficiency,
+    /// Awareness of consequences before acting.
+    SafetyConcerns,
+    /// How the agent structures its output.
+    Communication,
 }
 
 impl BehaviorPrompt {
     pub fn default_content(&self) -> &'static str {
         match self {
-            Self::TaskExecution => DEFAULT_DOING_TASKS,
-            Self::ToolUsage => DEFAULT_USING_TOOLS,
-            Self::ActionSafety => DEFAULT_ACTIONS_CARE,
-            Self::OutputEfficiency => DEFAULT_OUTPUT_EFFICIENCY,
+            Self::TaskExecution => DEFAULT_TASK_EXECUTION,
+            Self::ToolUsage => DEFAULT_TOOL_USAGE,
+            Self::SafetyConcerns => DEFAULT_SAFETY_CONCERNS,
+            Self::Communication => DEFAULT_COMMUNICATION_STYLE,
         }
     }
 
@@ -39,8 +46,8 @@ impl BehaviorPrompt {
         &[
             Self::TaskExecution,
             Self::ToolUsage,
-            Self::ActionSafety,
-            Self::OutputEfficiency,
+            Self::SafetyConcerns,
+            Self::Communication,
         ]
     }
 }
@@ -49,32 +56,30 @@ impl BehaviorPrompt {
 // Default behavior content
 // ---------------------------------------------------------------------------
 
-pub const DEFAULT_DOING_TASKS: &str = "\
-# Doing tasks
+pub const DEFAULT_TASK_EXECUTION: &str = "\
+# Task execution
 - Do not propose changes to files you have not read. Read first, then modify.
 - Do not add features or improvements beyond what was asked.
 - Do not create files unless absolutely necessary. Prefer editing existing files.
 - If an approach fails, diagnose why before switching tactics.";
 
-pub const DEFAULT_USING_TOOLS: &str = "\
-# Using your tools
+pub const DEFAULT_TOOL_USAGE: &str = "\
+# Tool usage
 - Do NOT use bash when a dedicated tool exists (read_file over cat, edit_file over sed, grep over rg, glob over find).
-- You can call multiple tools in a single response. Make independent calls in parallel for efficiency.
-- If tool calls depend on previous results, make them sequentially — do not guess parameters.";
+- Call multiple tools in a single response. Make independent calls in parallel.
+- If tool calls depend on previous results, call them sequentially — do not guess parameters.";
 
-pub const DEFAULT_ACTIONS_CARE: &str = "\
-# Executing actions with care
-- Consider the reversibility and blast radius of actions before executing them.
-- For destructive or hard-to-reverse operations (deleting files, force-push, dropping data), confirm with the user first.
-- If an approach fails, diagnose why before switching tactics. \
-Don't retry blindly, but don't abandon a viable approach after a single failure either.";
+pub const DEFAULT_SAFETY_CONCERNS: &str = "\
+# Safety concerns
+- Consider the reversibility and impact of actions before executing them.
+- Prefer reversible operations over destructive ones when both achieve the goal.
+- If an approach fails, diagnose the root cause before retrying or switching tactics.";
 
-pub const DEFAULT_OUTPUT_EFFICIENCY: &str = "\
-# Output efficiency
-- Go straight to the point. Try the simplest approach first.
-- Keep text output brief and direct. Lead with the answer or action, not the reasoning.
-- Skip filler words, preamble, and unnecessary transitions.
-- If you can say it in one sentence, do not use three.";
+pub const DEFAULT_COMMUNICATION_STYLE: &str = "\
+# Communication
+- Be direct. Lead with the answer or action, not the reasoning.
+- Keep output concise — omit filler, preamble, and unnecessary transitions.
+- Try the simplest approach first.";
 
 // ---------------------------------------------------------------------------
 // Structured output constants
