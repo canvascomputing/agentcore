@@ -99,7 +99,7 @@ impl Tool for StructuredOutputTool {
 }
 
 /// Validate a JSON value against a JSON Schema object.
-pub fn validate_value(value: &Value, schema: &Value) -> Result<()> {
+pub(crate) fn validate_value(value: &Value, schema: &Value) -> Result<()> {
     let schema_type = schema.get("type").and_then(|t| t.as_str()).unwrap_or("object");
 
     match schema_type {

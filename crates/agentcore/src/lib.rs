@@ -12,20 +12,18 @@ pub use error::{AgenticError, Result};
 
 // Provider and message types
 pub use provider::{
-    AnthropicProvider, CompletionRequest, ContentBlock, LiteLlmProvider, MistralProvider,
-    LlmProvider, Message, ModelResponse, OpenAiProvider,
-    StopReason, StreamEvent, TokenUsage, ToolChoice, prewarm_connection,
+    AnthropicProvider, ContentBlock, LiteLlmProvider, LlmProvider, Message, MistralProvider,
+    OpenAiProvider, TokenUsage, prewarm_connection,
 };
 
 // Tool infrastructure and built-in tools
 pub use tools::{
-    BashGlobTool, BashTool, BuiltinToolset, EditFileTool, GlobTool, GrepTool, ListDirectoryTool, ReadFileTool,
-    SpawnAgentTool, TaskTool, Tool, ToolBuilder, ToolCall, ToolContext, ToolDefinition, ToolRegistry,
-    ToolResult, ToolSearchResult, ToolSearchTool, Toolset, WebFetchTool, WriteFileTool, execute_tool_calls,
+    BashGlobTool, BashTool, EditFileTool, GlobTool, GrepTool, ListDirectoryTool, ReadFileTool,
+    SpawnAgentTool, TaskTool, Tool, ToolBuilder, ToolContext, ToolRegistry,
+    ToolResult, ToolSearchTool, WebFetchTool, WriteFileTool,
 };
 
 // Agent
 pub use agent::{
-    Agent, AgentBuilder, AgentOutput, BehaviorPrompt, Event,
-    OutputSchema, Statistics, validate_value,
+    Agent, AgentBuilder, AgentOutput, BehaviorPrompt, Event, OutputSchema, Statistics,
 };

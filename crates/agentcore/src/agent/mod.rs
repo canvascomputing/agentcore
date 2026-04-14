@@ -11,5 +11,5 @@ pub use r#trait::Agent;
 pub use builder::AgentBuilder;
 pub(crate) use context::InvocationContext;
 pub use event::Event;
-pub use output::{AgentOutput, OutputSchema, Statistics, validate_value};
+pub use output::{AgentOutput, OutputSchema, Statistics};
 pub use prompts::BehaviorPrompt;

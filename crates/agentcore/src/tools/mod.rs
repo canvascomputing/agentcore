@@ -13,10 +13,8 @@ mod web_fetch;
 mod write_file;
 
 // Re-export tool infrastructure
-pub use tool::{
-    Tool, ToolBuilder, ToolCall, ToolContext, ToolDefinition, ToolRegistry, ToolResult,
-    ToolSearchResult, Toolset, execute_tool_calls,
-};
+pub use tool::{Tool, ToolBuilder, ToolContext, ToolRegistry, ToolResult};
+pub(crate) use tool::{ToolCall, execute_tool_calls};
 
 // Re-export built-in tools
 pub use bash::{BashGlobTool, BashTool};
@@ -30,23 +28,3 @@ pub use task_tools::TaskTool;
 pub use tool_search::ToolSearchTool;
 pub use web_fetch::WebFetchTool;
 pub use write_file::WriteFileTool;
-
-/// Built-in toolset providing file operations, search, directory listing,
-/// shell execution, and tool discovery.
-pub struct BuiltinToolset;
-
-impl Toolset for BuiltinToolset {
-    fn tools(&self) -> Vec<Box<dyn Tool>> {
-        vec![
-            Box::new(ReadFileTool),
-            Box::new(WriteFileTool),
-            Box::new(EditFileTool),
-            Box::new(GlobTool),
-            Box::new(GrepTool),
-            Box::new(ListDirectoryTool),
-            Box::new(BashTool()),
-            Box::new(ToolSearchTool),
-            Box::new(WebFetchTool),
-        ]
-    }
-}

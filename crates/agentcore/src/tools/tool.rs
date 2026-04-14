@@ -105,7 +105,7 @@ impl ToolResult {
 
 /// A search result from ToolRegistry::search().
 #[derive(Debug, Clone)]
-pub struct ToolSearchResult {
+pub(crate) struct ToolSearchResult {
     pub definition: ToolDefinition,
     pub score: u32,
 }
@@ -145,15 +145,6 @@ pub trait Tool: Send + Sync {
             input_schema: self.input_schema(),
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Toolset trait
-// ---------------------------------------------------------------------------
-
-/// A collection of related tools.
-pub trait Toolset: Send + Sync {
-    fn tools(&self) -> Vec<Box<dyn Tool>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -214,7 +205,7 @@ impl ToolRegistry {
     }
 
     /// Search tools by query string. Returns matches sorted by score (highest first).
-    pub fn search(&self, query: &str) -> Vec<ToolSearchResult> {
+    pub(crate) fn search(&self, query: &str) -> Vec<ToolSearchResult> {
         let query_lower = query.to_lowercase();
         let mut results: Vec<ToolSearchResult> = self
             .tools
@@ -429,7 +420,7 @@ fn partition_tool_calls(calls: &[ToolCall], registry: &ToolRegistry) -> Vec<Tool
 }
 
 /// Execute tool calls with concurrent read-only batching and serial write execution.
-pub async fn execute_tool_calls(
+pub(crate) async fn execute_tool_calls(
     calls: &[ToolCall],
     registry: &ToolRegistry,
     ctx: &ToolContext,

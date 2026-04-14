@@ -715,7 +715,7 @@ mod tests {
 
     #[test]
     fn validate_value_table() {
-        use crate::agent::validate_value;
+        use crate::agent::output::validate_value;
         let schema = serde_json::json!({
             "type": "object",
             "properties": {
