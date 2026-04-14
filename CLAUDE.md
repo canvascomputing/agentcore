@@ -85,3 +85,14 @@ Use cases are in `crates/use-cases/src/cli/`. Run with `make use-case name=<name
 - **`tools/tool.rs` vs `tools/`**: `tool.rs` defines the trait and infrastructure (Tool, ToolRegistry, ToolBuilder, execute_tool_calls). Other files in `tools/` are concrete implementations.
 - **`agent/` vs `provider/` vs `persistence/`**: `agent/` contains the agent loop, builder, context, events, output, and prompts. `provider/` contains LLM communication and estimated costs. `persistence/` contains internal disk storage (session transcripts, tasks).
 - **Tests live inline** in each module as `#[cfg(test)] mod tests`. Use `MockProvider` and `TestHarness` from `testutil.rs`.
+
+## Naming conventions
+
+- **Builder methods**: bare nouns or compound nouns. No `with_` prefix.
+  Exception: when the method name clashes with a trait method (e.g. `with_description` on BashGlobTool).
+  Examples: `.name()`, `.model()`, `.tool()`, `.sub_agents()`, `.read_only()`.
+- **Constructors**: `new()` for the primary constructor. Named constructors for variants: `open()`, `success()`, `error()`, `empty()`.
+- **Getters/setters on mutable refs**: `set_`/`get_` prefix to distinguish from builder methods.
+  Example: `set_extension()`, `get_extension()`.
+- **Free functions**: snake_case. Example: `execute_tool_calls()`, `prewarm_connection()`.
+- **Tool structs**: `{Name}Tool`. Example: `ReadFileTool`, `BashGlobTool`, `SpawnAgentTool`.

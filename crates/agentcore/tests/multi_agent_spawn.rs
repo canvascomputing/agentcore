@@ -30,8 +30,8 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     let spawn_tool = SpawnAgentTool::new()
-        .with_sub_agents(vec![researcher])
-        .with_default_model(&model);
+        .sub_agents(vec![researcher])
+        .default_model(&model);
 
     let output = AgentBuilder::new()
         .provider(provider)

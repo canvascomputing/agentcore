@@ -35,14 +35,14 @@ impl SpawnAgentTool {
         }
     }
 
-    pub fn with_sub_agents(mut self, agents: Vec<Arc<dyn Agent>>) -> Self {
+    pub fn sub_agents(mut self, agents: Vec<Arc<dyn Agent>>) -> Self {
         self.sub_agents = agents;
         self
     }
 
     /// Set the default model for ad-hoc sub-agents.
     /// Accepts an exact model ID string.
-    pub fn with_default_model(mut self, model: impl Into<String>) -> Self {
+    pub fn default_model(mut self, model: impl Into<String>) -> Self {
         self.default_model = ModelSpec::Exact(model.into());
         self
     }
@@ -215,7 +215,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_agent_foreground() {
-        let spawn_tool = SpawnAgentTool::new().with_default_model("mock");
+        let spawn_tool = SpawnAgentTool::new().default_model("mock");
 
         let agent = AgentBuilder::new()
             .name("orchestrator")
@@ -245,7 +245,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_agent_background_delivers_notification() {
-        let spawn_tool = SpawnAgentTool::new().with_default_model("mock");
+        let spawn_tool = SpawnAgentTool::new().default_model("mock");
 
         let agent = AgentBuilder::new()
             .name("orchestrator")
@@ -308,8 +308,8 @@ mod tests {
             .unwrap();
 
         let spawn_tool = SpawnAgentTool::new()
-            .with_sub_agents(vec![sub])
-            .with_default_model("mock");
+            .sub_agents(vec![sub])
+            .default_model("mock");
 
         let agent = AgentBuilder::new()
             .name("orchestrator")

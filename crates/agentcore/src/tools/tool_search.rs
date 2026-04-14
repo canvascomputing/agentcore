@@ -103,15 +103,15 @@ mod tests {
         Arc::new(registry)
     }
 
-    fn ctx_with_registry(registry: Arc<ToolRegistry>) -> ToolContext {
+    fn ctx_registry(registry: Arc<ToolRegistry>) -> ToolContext {
         ToolContext::new(std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")))
-            .with_registry(registry)
+            .registry(registry)
     }
 
     #[tokio::test]
     async fn find_by_name() {
         let registry = registry_with_mock_tools();
-        let ctx = ctx_with_registry(registry);
+        let ctx = ctx_registry(registry);
         let tool = ToolSearchTool;
         let input = serde_json::json!({ "query": "read_file" });
         let result = tool.call(input, &ctx).await.unwrap();
@@ -122,7 +122,7 @@ mod tests {
     #[tokio::test]
     async fn find_by_keyword() {
         let registry = registry_with_mock_tools();
-        let ctx = ctx_with_registry(registry);
+        let ctx = ctx_registry(registry);
         let tool = ToolSearchTool;
         let input = serde_json::json!({ "query": "file" });
         let result = tool.call(input, &ctx).await.unwrap();
@@ -134,7 +134,7 @@ mod tests {
     #[tokio::test]
     async fn no_results() {
         let registry = registry_with_mock_tools();
-        let ctx = ctx_with_registry(registry);
+        let ctx = ctx_registry(registry);
         let tool = ToolSearchTool;
         let input = serde_json::json!({ "query": "nonexistent_xyz" });
         let result = tool.call(input, &ctx).await.unwrap();
@@ -145,7 +145,7 @@ mod tests {
     #[tokio::test]
     async fn returns_schema() {
         let registry = registry_with_mock_tools();
-        let ctx = ctx_with_registry(registry);
+        let ctx = ctx_registry(registry);
         let tool = ToolSearchTool;
         let input = serde_json::json!({ "query": "read_file" });
         let result = tool.call(input, &ctx).await.unwrap();
@@ -156,7 +156,7 @@ mod tests {
     #[tokio::test]
     async fn missing_query_errors() {
         let registry = registry_with_mock_tools();
-        let ctx = ctx_with_registry(registry);
+        let ctx = ctx_registry(registry);
         let tool = ToolSearchTool;
         let input = serde_json::json!({});
         let result = tool.call(input, &ctx).await.unwrap();

@@ -31,7 +31,7 @@ impl ToolContext {
         }
     }
 
-    pub fn with_registry(mut self, registry: Arc<ToolRegistry>) -> Self {
+    pub fn registry(mut self, registry: Arc<ToolRegistry>) -> Self {
         self.tool_registry = Some(registry);
         self
     }

@@ -305,7 +305,7 @@ impl AgentLoop {
         }
 
         let mut tool_ctx = ToolContext::new(ctx.working_directory.clone())
-            .with_registry(Arc::new(state.tools.clone()));
+            .registry(Arc::new(state.tools.clone()));
         tool_ctx.set_extension(ctx.clone());
         let results = execute_tool_calls(tool_calls, &state.tools, &tool_ctx).await;
 
