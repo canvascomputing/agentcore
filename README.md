@@ -128,14 +128,15 @@ An agent is configured with a provider, model, tools, and prompt. Running it ret
 Providers for Anthropic, OpenAI-compatible, Mistral, and LiteLLM. Each owns a `reqwest::Client` for connection pooling and SSE streaming.
 
 ```rust
-use agentcore::{AnthropicProvider, MistralProvider, LiteLlmProvider, OpenAiProvider};
+use agentcore::{AnthropicProvider, MistralProvider, OpenAiProvider, LiteLlmProvider};
 
 let provider = AnthropicProvider::from_api_key(key);
 let provider = MistralProvider::from_api_key(key);
-let provider = LiteLlmProvider::from_api_key(key);
 let provider = OpenAiProvider::from_api_key(key);
+let provider = LiteLlmProvider::from_api_key(key);
 
-let client = reqwest::Client::new();                        // share a connection pool
+// share a connection pool
+let client = reqwest::Client::new();
 let provider = AnthropicProvider::new(key, client);
 ```
 
@@ -156,16 +157,23 @@ let output = AgentBuilder::new()
     .await?;
 ```
 
-#### Prompt types
+#### Prompting
 
 | Prompt | Purpose |
 |--------|---------|
-| `instruction_prompt` | The task for this run (required for `.run()`) |
+| `instruction_prompt` | The task for this run |
 | `context_prompt` | Additional context alongside the instruction |
 | `behavior_prompt` | How the agent behaves — [defaults provided](#behavior-prompts) |
 | `identity_prompt` | Who the agent is — persistent across runs |
 
-Use `{key}` placeholders in the identity prompt and fill them with `template_variable` (or `template_variables`).
+Use `{key}` placeholders in the identity prompt and fill them with `template_variable`:
+
+```rust
+AgentBuilder::new()
+    .identity_prompt("You are {role}. Respond in {language}.")
+    .template_variable("role", json!("a code reviewer"))
+    .template_variable("language", json!("German"))
+```
 
 #### Sub-agents
 
@@ -190,13 +198,14 @@ let output = AgentBuilder::new()
 
 #### Guardrails
 
-Limit agent execution to prevent runaway estimated costs or duration.
+Limit agent execution. Pass `UNLIMITED` (0) to disable a limit.
 
-| Method | What it does |
-|--------|-------------|
-| `.max_turns(10)` | Stop after N agentic loop iterations |
-| `.max_tokens(4096)` | Cap output tokens per LLM request |
-| `.cancel_signal(signal)` | Abort via an external `Arc<AtomicBool>` (e.g., on Ctrl+C) |
+| Method | Default | What it does |
+|--------|---------|-------------|
+| `.max_turns(10)` | `UNLIMITED` | Stop after N agentic loop iterations |
+| `.max_tokens(4096)` | 4096 | Cap output tokens per LLM request |
+| `.max_schema_retries(3)` | 3 | Retry structured output compliance |
+| `.cancel_signal(signal)` | — | Abort execution from outside the agent |
 
 #### Behavior prompts
 
@@ -216,17 +225,6 @@ AgentBuilder::new()
     .behavior_prompt(BehaviorPrompt::TaskExecution, "Follow instructions exactly.")
     .behavior_prompt(BehaviorPrompt::Communication, "Always respond in JSON.")
 ```
-
-#### Sessions
-
-Record every message exchanged during a run to disk as JSONL. The agent is not aware of this — recording happens transparently in the framework.
-
-```rust
-AgentBuilder::new()
-    .session_dir(PathBuf::from("./data"))
-```
-
-Each run writes `<dir>/sessions/<id>/transcript.jsonl` — one JSON line per user message, assistant response, and tool result, with timestamps and token usage.
 
 ### Events
 
@@ -273,7 +271,7 @@ Built-in tools:
 | **Shell** | `BashTool` | Execute a shell command (unrestricted) |
 | | `BashGlobTool` | Execute shell commands matching a glob pattern |
 | **Web** | `WebFetchTool` | Fetch a URL and return its content as text |
-| **Agent** | `SpawnAgentTool` | Delegate work to a sub-agent |
+| **Utility** | `SpawnAgentTool` | Delegate work to a sub-agent |
 | | `TaskTool` | Persistent task management (create, update, list, get) |
 | | `ToolSearchTool` | Discover available tools by keyword |
 

@@ -28,7 +28,7 @@ pub struct AgentBuilder {
     model: ModelSpec,
     identity_prompt: String,
     max_tokens: u32,
-    max_turns: Option<u32>,
+    max_turns: u32,
     output_schema: Option<OutputSchema>,
     max_schema_retries: u32,
     behavior_prompts: Vec<(BehaviorPrompt, String)>,
@@ -58,7 +58,7 @@ impl AgentBuilder {
             model: ModelSpec::Inherit,
             identity_prompt: String::new(),
             max_tokens: DEFAULT_MAX_TOKENS,
-            max_turns: None,
+            max_turns: crate::UNLIMITED,
             output_schema: None,
             max_schema_retries: 3,
             behavior_prompts,
@@ -95,13 +95,15 @@ impl AgentBuilder {
         self
     }
 
+    /// Maximum output tokens per LLM request. `UNLIMITED` (0) uses the provider default.
     pub fn max_tokens(mut self, max: u32) -> Self {
         self.max_tokens = max;
         self
     }
 
+    /// Maximum agentic loop iterations. `UNLIMITED` (0) means no limit.
     pub fn max_turns(mut self, max: u32) -> Self {
-        self.max_turns = Some(max);
+        self.max_turns = max;
         self
     }
 
@@ -115,6 +117,7 @@ impl AgentBuilder {
         self
     }
 
+    /// Maximum retries for structured output compliance. `UNLIMITED` (0) retries indefinitely.
     pub fn max_schema_retries(mut self, retries: u32) -> Self {
         self.max_schema_retries = retries;
         self

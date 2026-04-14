@@ -10,6 +10,9 @@ pub(crate) mod testutil;
 // Errors
 pub use error::{AgenticError, Result};
 
+/// Pass to any `max_` builder method to disable the limit.
+pub const UNLIMITED: u32 = 0;
+
 // Provider and message types
 pub use provider::{
     AnthropicProvider, ContentBlock, LiteLlmProvider, LlmProvider, Message, MistralProvider,

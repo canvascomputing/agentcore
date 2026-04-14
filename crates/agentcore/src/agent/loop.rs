@@ -31,7 +31,7 @@ pub(crate) struct AgentLoop {
     pub(crate) model: ModelSpec,
     pub(crate) identity_prompt: String,
     pub(crate) max_tokens: u32,
-    pub(crate) max_turns: Option<u32>,
+    pub(crate) max_turns: u32,
     pub(crate) output_schema: Option<OutputSchema>,
     pub(crate) max_schema_retries: u32,
     pub(crate) behavior_prompts: Vec<(BehaviorPrompt, String)>,
@@ -183,8 +183,8 @@ impl AgentLoop {
         if ctx.cancel_signal.load(Ordering::Relaxed) {
             return Err(AgenticError::Aborted);
         }
-        if self.max_turns.is_some_and(|max| state.turn >= max) {
-            return Err(AgenticError::MaxTurnsExceeded(self.max_turns.unwrap()));
+        if self.max_turns != crate::UNLIMITED && state.turn >= self.max_turns {
+            return Err(AgenticError::MaxTurnsExceeded(self.max_turns));
         }
         Ok(())
     }
@@ -265,7 +265,7 @@ impl AgentLoop {
         // Structured output retry
         if self.output_schema.is_some() && state.structured_output.is_none() {
             state.schema_retries += 1;
-            if state.schema_retries > self.max_schema_retries {
+            if self.max_schema_retries != crate::UNLIMITED && state.schema_retries > self.max_schema_retries {
                 return Err(AgenticError::SchemaRetryExhausted { retries: self.max_schema_retries });
             }
             state.messages.push(Message::user(prompts::STRUCTURED_OUTPUT_RETRY));

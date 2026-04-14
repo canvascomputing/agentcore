@@ -268,8 +268,11 @@ fn serialize_request(request: &CompletionRequest) -> Value {
     let mut body = serde_json::json!({
         "model": request.model,
         "messages": messages,
-        "max_tokens": request.max_tokens,
     });
+
+    if request.max_tokens != crate::UNLIMITED {
+        body["max_tokens"] = Value::from(request.max_tokens);
+    }
 
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools);

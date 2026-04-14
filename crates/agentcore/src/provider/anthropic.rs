@@ -53,8 +53,11 @@ impl AnthropicProvider {
             "model": request.model,
             "system": request.system_prompt,
             "messages": messages,
-            "max_tokens": request.max_tokens,
         });
+
+        if request.max_tokens != crate::UNLIMITED {
+            body["max_tokens"] = Value::from(request.max_tokens);
+        }
 
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools);
