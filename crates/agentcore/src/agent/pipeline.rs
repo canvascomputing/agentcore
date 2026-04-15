@@ -98,7 +98,10 @@ impl Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::MockProvider;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use crate::testutil::{MockProvider, tool_response, text_response};
+    use crate::tools::{ToolBuilder, ToolResult};
 
     fn agent_with_response(text: &str) -> AgentBuilder {
         let provider = Arc::new(MockProvider::text(text));
@@ -130,7 +133,7 @@ mod tests {
         let mut pipeline = Pipeline::new().batch_size(2);
         pipeline.push(agent_with_response("ok"));
         pipeline.push({
-            let provider = Arc::new(MockProvider::new(vec![])); // no responses → error
+            let provider = Arc::new(MockProvider::new(vec![]));
             AgentBuilder::new()
                 .name("fail")
                 .model("mock")
@@ -153,5 +156,58 @@ mod tests {
         let pipeline = Pipeline::new();
         let results = pipeline.run().await;
         assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pipeline_runs_concurrently() {
+        let running = Arc::new(AtomicUsize::new(0));
+        let max_concurrent = Arc::new(AtomicUsize::new(0));
+
+        let mut pipeline = Pipeline::new().batch_size(3);
+
+        for _ in 0..6 {
+            let running = running.clone();
+            let max_concurrent = max_concurrent.clone();
+
+            let slow_tool = ToolBuilder::new("slow", "Simulates slow work")
+                .schema(serde_json::json!({"type": "object", "properties": {}}))
+                .handler(move |_, _| {
+                    let running = running.clone();
+                    let max_concurrent = max_concurrent.clone();
+                    Box::pin(async move {
+                        let current = running.fetch_add(1, Ordering::SeqCst) + 1;
+                        max_concurrent.fetch_max(current, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        running.fetch_sub(1, Ordering::SeqCst);
+                        Ok(ToolResult::success("done"))
+                    })
+                })
+                .build();
+
+            let provider = Arc::new(MockProvider::new(vec![
+                tool_response("slow", "c1", serde_json::json!({})),
+                text_response("finished"),
+            ]));
+
+            pipeline.push(
+                AgentBuilder::new()
+                    .name("worker")
+                    .model("mock")
+                    .identity_prompt("")
+                    .instruction_prompt("go")
+                    .tool(slow_tool)
+                    .provider(provider)
+            );
+        }
+
+        let results = pipeline.run().await;
+
+        assert_eq!(results.len(), 6);
+        assert!(results.iter().all(|r| r.is_ok()));
+        assert!(
+            max_concurrent.load(Ordering::SeqCst) >= 3,
+            "Expected at least 3 concurrent agents, got {}",
+            max_concurrent.load(Ordering::SeqCst)
+        );
     }
 }
