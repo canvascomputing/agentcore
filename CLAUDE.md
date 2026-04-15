@@ -20,7 +20,7 @@ All code must compile with zero warnings (`RUSTFLAGS="-D warnings"`).
 ## Project structure
 
 ```
-crates/agentcore/src/
+crates/agentwerk/src/
   lib.rs                  public re-exports
   error.rs                AgenticError, Result
 
@@ -76,7 +76,7 @@ crates/use-cases/src/
     main.rs                 multi-agent deep research with web search
 ```
 
-Integration tests are in `crates/agentcore/tests/`. Shared helpers (provider setup, event handler, JSON output) are in `tests/common/mod.rs`. Run with `make test_integration`.
+Integration tests are in `crates/agentwerk/tests/`. Shared helpers (provider setup, event handler, JSON output) are in `tests/common/mod.rs`. Run with `make test_integration`.
 Use cases are in `crates/use-cases/src/cli/`. Run with `make use_case name=<name>`.
 
 ## Key conventions

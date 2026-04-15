@@ -46,7 +46,7 @@ endif
 # Bump version: make bump part=patch (default), minor, or major
 part ?= patch
 bump:
-	@current=$$(grep '^version' crates/agentcore/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
+	@current=$$(grep '^version' crates/agentwerk/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
 	IFS='.' read -r major minor patch <<< "$$current"; \
 	case "$(part)" in \
 		major) major=$$((major + 1)); minor=0; patch=0;; \
@@ -55,12 +55,12 @@ bump:
 		*) echo "Unknown part: $(part). Use major, minor, or patch."; exit 1;; \
 	esac; \
 	new="$$major.$$minor.$$patch"; \
-	sed -i '' "s/^version = \"$$current\"/version = \"$$new\"/" crates/agentcore/Cargo.toml; \
+	sed -i '' "s/^version = \"$$current\"/version = \"$$new\"/" crates/agentwerk/Cargo.toml; \
 	echo "$$current → $$new"
 
 # Publish to crates.io: make publish
 publish: test
-	cargo publish -p agentcore
+	cargo publish -p agentwerk
 
 # Start a LiteLLM proxy on localhost:4000
 # Forwards the provider's API key from your environment (never leaked in commands)

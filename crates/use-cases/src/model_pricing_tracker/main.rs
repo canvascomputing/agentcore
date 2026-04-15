@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use agentcore::{AgentBuilder, Event, SpawnAgentTool, WebFetchTool};
+use agentwerk::{AgentBuilder, Event, SpawnAgentTool, WebFetchTool};
 
 // ---------------------------------------------------------------------------
 // Prompts

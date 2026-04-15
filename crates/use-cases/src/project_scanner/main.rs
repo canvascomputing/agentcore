@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use agentcore::{
+use agentwerk::{
     AgentBuilder, Event, GlobTool, ListDirectoryTool, Pipeline, ReadFileTool,
 };
 use serde_json::{json, Value};

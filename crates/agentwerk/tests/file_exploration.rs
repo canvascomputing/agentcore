@@ -1,6 +1,6 @@
 mod common;
 
-use agentcore::{AgentBuilder, GlobTool, ReadFileTool};
+use agentwerk::{AgentBuilder, GlobTool, ReadFileTool};
 
 #[tokio::test]
 async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {

@@ -216,7 +216,7 @@ async fn follow_safe_redirects(
         let response = client
             .get(&current_url)
             .header("Accept", "text/markdown, text/html, */*")
-            .header("User-Agent", "agentcore/web_fetch")
+            .header("User-Agent", "agentwerk/web_fetch")
             .send()
             .await
             .map_err(|e| format!("Fetch failed: {e}"))?;

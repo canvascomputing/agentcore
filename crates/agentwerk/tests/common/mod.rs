@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use agentcore::{AgentOutput, Environment, LlmProvider};
+use agentwerk::{AgentOutput, Environment, LlmProvider};
 
 pub fn build_provider() -> (Arc<dyn LlmProvider>, String) {
     let env = Environment::detect_provider();

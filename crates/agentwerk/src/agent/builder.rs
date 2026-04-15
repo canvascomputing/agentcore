@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn identity_prompt_file_loads_content() {
-        let dir = std::env::temp_dir().join("agentcore_test_builder");
+        let dir = std::env::temp_dir().join("agentwerk_test_builder");
         let path = dir.join("identity.txt");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&path, "You are a test agent").unwrap();
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn instruction_prompt_file_loads_content() {
-        let dir = std::env::temp_dir().join("agentcore_test_builder_instr");
+        let dir = std::env::temp_dir().join("agentwerk_test_builder_instr");
         let path = dir.join("instruction.txt");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&path, "Do the thing").unwrap();
@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn context_prompt_file_loads_content() {
-        let dir = std::env::temp_dir().join("agentcore_test_builder_ctx");
+        let dir = std::env::temp_dir().join("agentwerk_test_builder_ctx");
         let path = dir.join("context.txt");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&path, "Extra context here").unwrap();
@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn behavior_prompt_file_loads_content() {
-        let dir = std::env::temp_dir().join("agentcore_test_builder_bhv");
+        let dir = std::env::temp_dir().join("agentwerk_test_builder_bhv");
         let path = dir.join("task_exec.txt");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&path, "Custom task execution rules").unwrap();

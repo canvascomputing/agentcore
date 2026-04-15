@@ -2,7 +2,7 @@ mod common;
 
 use std::sync::Arc;
 
-use agentcore::{AgentBuilder, BashGlobTool, Event};
+use agentwerk::{AgentBuilder, BashGlobTool, Event};
 
 #[tokio::test]
 async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {

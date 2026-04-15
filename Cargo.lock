@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "agentcore"
+name = "agentwerk"
 version = "0.1.1"
 dependencies = [
  "futures-util",
@@ -1251,7 +1251,7 @@ dependencies = [
 name = "use-cases"
 version = "0.1.0"
 dependencies = [
- "agentcore",
+ "agentwerk",
  "reqwest",
  "serde_json",
  "tokio",

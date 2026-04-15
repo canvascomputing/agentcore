@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use agentcore::{
+use agentwerk::{
     AgentBuilder, AgenticError, Event, SpawnAgentTool, ToolBuilder, ToolResult,
 };
 
@@ -133,7 +133,7 @@ fn output_schema() -> serde_json::Value {
 // Brave Search tool
 // ---------------------------------------------------------------------------
 
-fn brave_search_tool(api_key: String) -> impl agentcore::Tool {
+fn brave_search_tool(api_key: String) -> impl agentwerk::Tool {
     ToolBuilder::new("brave_search", "Search the web. Returns titles, URLs, and descriptions.")
         .schema(serde_json::json!({
             "type": "object",
@@ -151,7 +151,7 @@ fn brave_search_tool(api_key: String) -> impl agentcore::Tool {
         .build()
 }
 
-async fn brave_search(api_key: &str, input: &serde_json::Value) -> agentcore::Result<ToolResult> {
+async fn brave_search(api_key: &str, input: &serde_json::Value) -> agentwerk::Result<ToolResult> {
     let query = input["query"].as_str().unwrap_or("").trim();
     let count = input["count"].as_u64().unwrap_or(5).min(20);
 

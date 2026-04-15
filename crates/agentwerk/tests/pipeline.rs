@@ -1,6 +1,6 @@
 mod common;
 
-use agentcore::{AgentBuilder, Pipeline, ReadFileTool};
+use agentwerk::{AgentBuilder, Pipeline, ReadFileTool};
 
 #[tokio::test]
 async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {

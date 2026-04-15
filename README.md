@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/canvascomputing/agentcore/main/logo.png" width="200" />
+  <img src="https://raw.githubusercontent.com/canvascomputing/agentwerk/main/logo.png" width="200" />
 </p>
 
-<h1 align="center">agentcore</h1>
+<h1 align="center">agentwerk</h1>
 
 <p align="center">
   <strong>A minimal Rust crate that gives any application agentic capabilities.</strong>
@@ -19,12 +19,12 @@
 <p align="center">Most agentic applications reimplement the same core: an execution loop, tool dispatch, and provider integration. This crate provides that foundation as a library.</p>
 
 <p align="center">
-  <a href="crates/agentcore/src/agent/loop.rs">Agentic execution loop</a> ·
-  <a href="crates/agentcore/src/tools">Built-in tools</a> ·
-  <a href="crates/agentcore/src/tools/spawn_agent.rs">Agent orchestration</a> ·
-  <a href="crates/agentcore/src/provider">Anthropic, Mistral, OpenAI integration</a> ·
-  <a href="crates/agentcore/src/agent/output.rs">Schema-based output</a> ·
-  <a href="crates/agentcore/src/provider/retry.rs">Retry Mechanisms</a>
+  <a href="crates/agentwerk/src/agent/loop.rs">Agentic execution loop</a> ·
+  <a href="crates/agentwerk/src/tools">Built-in tools</a> ·
+  <a href="crates/agentwerk/src/tools/spawn_agent.rs">Agent orchestration</a> ·
+  <a href="crates/agentwerk/src/provider">Anthropic, Mistral, OpenAI integration</a> ·
+  <a href="crates/agentwerk/src/agent/output.rs">Schema-based output</a> ·
+  <a href="crates/agentwerk/src/provider/retry.rs">Retry Mechanisms</a>
 </p>
 
 ---
@@ -32,14 +32,14 @@
 ## Installation
 
 ```bash
-cargo add agentcore
+cargo add agentwerk
 ```
 
 ## Quick Start
 
 ```rust
 use std::sync::Arc;
-use agentcore::{AgentBuilder, AnthropicProvider, GlobTool};
+use agentwerk::{AgentBuilder, AnthropicProvider, GlobTool};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -79,11 +79,11 @@ Output:
   "files": [
     {
       "file": "README.md",
-      "summary": "Project documentation for agentcore, a Rust crate for building agentic LLM applications.",
+      "summary": "Project documentation for agentwerk, a Rust crate for building agentic LLM applications.",
       "language": "docs"
     },
     {
-      "file": "crates/agentcore/src/agent/loop.rs",
+      "file": "crates/agentwerk/src/agent/loop.rs",
       "summary": "Implements the main agent loop that calls an LLM iteratively and executes tool calls.",
       "language": "rust"
     }
@@ -144,7 +144,7 @@ An agent is configured with a provider, model, tools, and prompt. Running it ret
 Providers for Anthropic, OpenAI-compatible, Mistral, and LiteLLM. Each owns a `reqwest::Client` for connection pooling and SSE streaming.
 
 ```rust
-use agentcore::{AnthropicProvider, MistralProvider, OpenAiProvider, LiteLlmProvider};
+use agentwerk::{AnthropicProvider, MistralProvider, OpenAiProvider, LiteLlmProvider};
 
 let provider = AnthropicProvider::from_api_key(key);
 let provider = MistralProvider::from_api_key(key);
@@ -161,7 +161,7 @@ let provider = AnthropicProvider::new(key, client);
 Configures the agent's identity, tools, provider, and runtime options.
 
 ```rust
-use agentcore::AgentBuilder;
+use agentwerk::AgentBuilder;
 
 let output = AgentBuilder::new()
     .identity_prompt("You are a helpful assistant.")
@@ -244,7 +244,7 @@ Agents ship with default behavior prompts appended to the identity prompt. Overr
 | `Communication` | Be direct, concise, lead with the answer |
 
 ```rust
-use agentcore::BehaviorPrompt;
+use agentwerk::BehaviorPrompt;
 
 AgentBuilder::new()
     .behavior_prompt(BehaviorPrompt::TaskExecution, "Follow instructions exactly.")
@@ -256,7 +256,7 @@ AgentBuilder::new()
 Execute multiple agents with controlled parallelism. Each agent is fully configured with its own provider, prompts, and tools. Results are returned in push order. Individual failures do not abort the pipeline.
 
 ```rust
-use agentcore::{Pipeline, AgentBuilder, ReadFileTool};
+use agentwerk::{Pipeline, AgentBuilder, ReadFileTool};
 
 let mut pipeline = Pipeline::new()
     .batch_size(10)
@@ -299,7 +299,7 @@ Emitted via `AgentBuilder.event_handler()` during execution.
 Tools are functions the agent can call. Implement the `Tool` trait or use `ToolBuilder` for closures. Read-only tools run concurrently.
 
 ```rust
-use agentcore::{ToolBuilder, ToolResult};
+use agentwerk::{ToolBuilder, ToolResult};
 
 let tool = ToolBuilder::new("greet", "Say hello")
     .schema(json!({...}))

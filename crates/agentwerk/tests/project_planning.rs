@@ -4,7 +4,7 @@
 
 mod common;
 
-use agentcore::{AgentBuilder, TaskTool};
+use agentwerk::{AgentBuilder, TaskTool};
 
 #[tokio::test]
 async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
