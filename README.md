@@ -20,9 +20,10 @@
 <p align="center">
   <a href="crates/agentcore/src/agent/loop.rs">Agentic execution loop</a> ·
   <a href="crates/agentcore/src/tools">Built-in tools</a> ·
-  <a href="crates/agentcore/src/tools/spawn_agent.rs">Sub-agent orchestration</a> ·
+  <a href="crates/agentcore/src/tools/spawn_agent.rs">Agent orchestration</a> ·
   <a href="crates/agentcore/src/provider">Anthropic, Mistral, OpenAI integration</a> ·
-  <a href="crates/agentcore/src/agent/output.rs">Schema-based output</a>
+  <a href="crates/agentcore/src/agent/output.rs">Schema-based output</a> ·
+  <a href="crates/agentcore/src/provider/retry.rs">Retry Mechanisms</a>
 </p>
 
 ---
@@ -205,6 +206,8 @@ Set limits for agentic execution. You can set `UNLIMITED` to disable a limit.
 | `.max_turns(10)` | `UNLIMITED` | Stop after N agentic loop iterations |
 | `.max_tokens(4096)` | `UNLIMITED` | Cap output tokens per LLM request |
 | `.max_schema_retries(3)` | 10 | Retry structured output compliance |
+| `.max_request_retries(5)` | 3 | Retry on transient API errors (429, 529, 5xx) |
+| `.request_retry_backoff_ms(2000)` | 10,000 | Base delay for exponential backoff (`ms * 2^attempt`) |
 | `.cancel_signal(signal)` | — | Abort execution from outside the agent |
 
 #### Behavior prompts
@@ -233,7 +236,9 @@ Execute multiple agents with controlled parallelism. Each agent is fully configu
 ```rust
 use agentcore::{Pipeline, AgentBuilder, ReadFileTool};
 
-let mut pipeline = Pipeline::new().batch_size(10);
+let mut pipeline = Pipeline::new()
+    .batch_size(10)
+    .max_request_retries(5);          // default for all agents in pipeline
 
 pipeline.push(
     AgentBuilder::new()

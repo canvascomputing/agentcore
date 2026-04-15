@@ -8,6 +8,7 @@ pub enum AgenticError {
         message: String,
         status: Option<u16>,
         retryable: bool,
+        retry_after_ms: Option<u64>,
     },
     Tool {
         tool_name: String,
@@ -31,6 +32,19 @@ pub enum AgenticError {
     Other(String),
 }
 
+impl AgenticError {
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, AgenticError::Api { retryable: true, .. })
+    }
+
+    pub fn retry_after_ms(&self) -> Option<u64> {
+        match self {
+            AgenticError::Api { retry_after_ms, .. } => *retry_after_ms,
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for AgenticError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -38,6 +52,7 @@ impl fmt::Display for AgenticError {
                 message,
                 status,
                 retryable,
+                ..
             } => match status {
                 Some(code) => write!(
                     f,
@@ -101,6 +116,7 @@ mod tests {
             message: "rate limited".into(),
             status: Some(429),
             retryable: true,
+            retry_after_ms: None,
         };
         let display = format!("{err}");
         assert!(display.contains("429"));
@@ -129,6 +145,7 @@ mod tests {
                 message: "msg".into(),
                 status: Some(500),
                 retryable: false,
+                retry_after_ms: None,
             },
             AgenticError::Tool {
                 tool_name: "tool".into(),

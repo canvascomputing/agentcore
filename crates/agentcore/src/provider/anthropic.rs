@@ -84,7 +84,14 @@ impl AnthropicProvider {
         for (k, v) in self.api_headers() {
             req = req.header(k, v);
         }
-        req.send().await.map_err(|e| AgenticError::Other(e.to_string()))
+        let resp = req.send().await.map_err(|e| AgenticError::Api {
+            message: e.to_string(),
+            status: None,
+            retryable: true,
+            retry_after_ms: None,
+        })?;
+
+        super::check_http_error(resp).await
     }
 }
 

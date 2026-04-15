@@ -32,6 +32,7 @@ crates/agentcore/src/
     anthropic.rs          AnthropicProvider (with SSE streaming)
     openai.rs             OpenAiProvider, LiteLlmProvider, MistralProvider (with SSE streaming)
     stream.rs             StreamParser, SseEvent (streaming response parser)
+    retry.rs              compute_delay, DEFAULT_MAX_REQUEST_RETRIES, DEFAULT_BACKOFF_MS
 
   agent/
     mod.rs                re-exports

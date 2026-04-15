@@ -9,6 +9,7 @@ use serde_json::Value;
 use crate::error::{AgenticError, Result};
 use crate::persistence::session::{EntryType, TranscriptEntry};
 use crate::provider::model::ModelSpec;
+use crate::provider::retry::compute_delay;
 use crate::provider::types::{ContentBlock, Message, ModelResponse, StopReason, StreamEvent, TokenUsage};
 use crate::provider::{CompletionRequest, ToolChoice};
 use crate::tools::{ToolCall, ToolContext, ToolRegistry, execute_tool_calls};
@@ -37,6 +38,8 @@ pub(crate) struct AgentLoop {
     pub(crate) behavior_prompts: Vec<(BehaviorPrompt, String)>,
     pub(crate) context_builder: ContextBuilder,
     pub(crate) tools: ToolRegistry,
+    pub(crate) max_request_retries: u32,
+    pub(crate) request_retry_backoff_ms: u64,
     #[allow(dead_code)]
     pub(crate) sub_agents: Vec<Arc<dyn Agent>>,
 }
@@ -84,10 +87,10 @@ impl AgentLoop {
             state.turn += 1;
             self.emit(&ctx, Event::TurnStart { agent_name: self.name.clone(), turn: state.turn });
 
-            // LLM call
+            // LLM call (with retry on transient errors)
             let resolved_model = self.model.resolve(&ctx.model);
             self.emit(&ctx, Event::RequestStart { agent_name: self.name.clone(), model: resolved_model.clone() });
-            let response = self.call_llm(&ctx, &state).await?;
+            let response = self.call_llm_with_retry(&ctx, &state).await?;
             self.emit(&ctx, Event::RequestEnd { agent_name: self.name.clone(), model: resolved_model });
             self.record_usage(&ctx, &response, &mut state);
 
@@ -220,6 +223,28 @@ impl AgentLoop {
         });
 
         ctx.provider.complete_streaming(request, on_event).await
+    }
+
+    async fn call_llm_with_retry(
+        &self,
+        ctx: &InvocationContext,
+        state: &LoopState,
+    ) -> Result<ModelResponse> {
+        let mut last_err = None;
+
+        for attempt in 0..=self.max_request_retries {
+            match self.call_llm(ctx, state).await {
+                Ok(response) => return Ok(response),
+                Err(e) if e.is_retryable() && attempt < self.max_request_retries => {
+                    let delay_ms = compute_delay(self.request_retry_backoff_ms, attempt, e.retry_after_ms());
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    last_err = Some(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| AgenticError::Other("retry loop ended unexpectedly".into())))
     }
 
     fn record_usage(&self, ctx: &InvocationContext, response: &ModelResponse, state: &mut LoopState) {
@@ -942,5 +967,73 @@ mod tests {
             Event::ToolCallEnd { .. } => "ToolCallEnd",
             Event::TokenUsage { .. } => "TokenUsage",
         }
+    }
+
+    // --- Retry tests ---
+
+    fn rate_limit_error() -> AgenticError {
+        AgenticError::Api {
+            message: "rate limited".into(),
+            status: Some(429),
+            retryable: true,
+            retry_after_ms: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_succeeds_after_rate_limit() {
+        let provider = MockProvider::with_results(vec![
+            Err(rate_limit_error()),
+            Err(rate_limit_error()),
+            Ok(text_response("hello")),
+        ]);
+        let agent = AgentBuilder::new()
+            .name("test").model("mock").identity_prompt("")
+            .max_request_retries(3).request_retry_backoff_ms(10)
+            .build().unwrap();
+
+        let harness = TestHarness::new(provider);
+        let output = harness.run_agent(agent.as_ref(), "go").await.unwrap();
+        assert_eq!(output.response_raw, "hello");
+        assert_eq!(harness.provider().request_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn retry_exhausted_after_max_retries() {
+        let provider = MockProvider::with_results(vec![
+            Err(rate_limit_error()),
+            Err(rate_limit_error()),
+            Err(rate_limit_error()),
+            Err(rate_limit_error()),
+        ]);
+        let agent = AgentBuilder::new()
+            .name("test").model("mock").identity_prompt("")
+            .max_request_retries(3).request_retry_backoff_ms(10)
+            .build().unwrap();
+
+        let harness = TestHarness::new(provider);
+        let err = harness.run_agent(agent.as_ref(), "go").await.unwrap_err();
+        assert!(matches!(err, AgenticError::Api { status: Some(429), .. }));
+    }
+
+    #[tokio::test]
+    async fn no_retry_on_auth_error() {
+        let provider = MockProvider::with_results(vec![
+            Err(AgenticError::Api {
+                message: "unauthorized".into(),
+                status: Some(401),
+                retryable: false,
+                retry_after_ms: None,
+            }),
+        ]);
+        let agent = AgentBuilder::new()
+            .name("test").model("mock").identity_prompt("")
+            .max_request_retries(3).request_retry_backoff_ms(10)
+            .build().unwrap();
+
+        let harness = TestHarness::new(provider);
+        let err = harness.run_agent(agent.as_ref(), "go").await.unwrap_err();
+        assert!(matches!(err, AgenticError::Api { status: Some(401), .. }));
+        assert_eq!(harness.provider().request_count(), 1);
     }
 }

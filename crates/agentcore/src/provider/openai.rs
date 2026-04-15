@@ -114,14 +114,21 @@ impl OpenAiProvider {
     }
 
     async fn send_raw(&self, url: &str, body: Value) -> Result<reqwest::Response> {
-        self.client
+        let resp = self.client
             .post(url)
             .header("authorization", format!("Bearer {}", self.api_key))
             .header("content-type", "application/json")
             .json(&body)
             .send()
             .await
-            .map_err(|e| AgenticError::Other(e.to_string()))
+            .map_err(|e| AgenticError::Api {
+                message: e.to_string(),
+                status: None,
+                retryable: true,
+                retry_after_ms: None,
+            })?;
+
+        super::check_http_error(resp).await
     }
 }
 

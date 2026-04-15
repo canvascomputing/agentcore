@@ -13,18 +13,26 @@ use crate::provider::{CompletionRequest, LlmProvider};
 use crate::tools::{Tool, ToolContext, ToolResult};
 
 /// A mock LLM provider that returns pre-configured responses in order.
+///
+/// Use `new()` for simple response sequences, or `with_results()` to interleave
+/// errors and successes (useful for testing retry logic).
 pub struct MockProvider {
-    responses: Mutex<VecDeque<ModelResponse>>,
+    results: Mutex<VecDeque<Result<ModelResponse>>>,
     pub requests: Mutex<Vec<CompletionRequest>>,
-    error_message: Option<String>,
 }
 
 impl MockProvider {
     pub fn new(responses: Vec<ModelResponse>) -> Self {
         Self {
-            responses: Mutex::new(VecDeque::from(responses)),
+            results: Mutex::new(responses.into_iter().map(Ok).collect()),
             requests: Mutex::new(Vec::new()),
-            error_message: None,
+        }
+    }
+
+    pub fn with_results(results: Vec<Result<ModelResponse>>) -> Self {
+        Self {
+            results: Mutex::new(VecDeque::from(results)),
+            requests: Mutex::new(Vec::new()),
         }
     }
 
@@ -65,14 +73,11 @@ impl LlmProvider for MockProvider {
         self.requests.lock().unwrap().push(request);
 
         Box::pin(async move {
-            if let Some(ref msg) = self.error_message {
-                return Err(AgenticError::Other(msg.clone()));
-            }
-            self.responses
+            self.results
                 .lock()
                 .unwrap()
                 .pop_front()
-                .ok_or_else(|| AgenticError::Other("no more mock responses".into()))
+                .unwrap_or_else(|| Err(AgenticError::Other("no more mock responses".into())))
         })
     }
 }

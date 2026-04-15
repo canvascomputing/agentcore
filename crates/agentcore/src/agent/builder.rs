@@ -8,6 +8,7 @@ use serde_json::Value;
 use crate::error::{AgenticError, Result};
 use crate::provider::LlmProvider;
 use crate::provider::model::ModelSpec;
+use crate::provider::retry::{DEFAULT_MAX_REQUEST_RETRIES, DEFAULT_BACKOFF_MS};
 
 use crate::persistence::session::SessionStore;
 use super::context::{InvocationContext, generate_agent_name};
@@ -32,6 +33,9 @@ pub struct AgentBuilder {
     behavior_prompts: Vec<(BehaviorPrompt, String)>,
     context_builder: ContextBuilder,
     tools: ToolRegistry,
+    pub(crate) max_request_retries: u32,
+    pub(crate) request_retry_backoff_ms: u64,
+    pub(crate) retries_customized: bool,
     sub_agents: Vec<Arc<dyn Agent>>,
 
     // Runtime context
@@ -62,6 +66,9 @@ impl AgentBuilder {
             behavior_prompts,
             context_builder: ContextBuilder::new(),
             tools: ToolRegistry::new(),
+            max_request_retries: DEFAULT_MAX_REQUEST_RETRIES,
+            request_retry_backoff_ms: DEFAULT_BACKOFF_MS,
+            retries_customized: false,
             sub_agents: Vec::new(),
 
             provider: None,
@@ -118,6 +125,20 @@ impl AgentBuilder {
     /// Maximum retries for structured output compliance. `UNLIMITED` (0) retries indefinitely.
     pub fn max_schema_retries(mut self, retries: u32) -> Self {
         self.max_schema_retries = retries;
+        self
+    }
+
+    /// Maximum retries for transient API errors (429, 529, network failures).
+    pub fn max_request_retries(mut self, n: u32) -> Self {
+        self.max_request_retries = n;
+        self.retries_customized = true;
+        self
+    }
+
+    /// Base delay in ms for exponential backoff on request retries (`backoff * 2^attempt`).
+    pub fn request_retry_backoff_ms(mut self, ms: u64) -> Self {
+        self.request_retry_backoff_ms = ms;
+        self.retries_customized = true;
         self
     }
 
@@ -203,6 +224,8 @@ impl AgentBuilder {
             behavior_prompts: self.behavior_prompts,
             context_builder: self.context_builder,
             tools: self.tools,
+            max_request_retries: self.max_request_retries,
+            request_retry_backoff_ms: self.request_retry_backoff_ms,
             sub_agents: self.sub_agents,
         }))
     }

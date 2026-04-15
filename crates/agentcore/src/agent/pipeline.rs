@@ -19,6 +19,8 @@ const DEFAULT_BATCH_SIZE: usize = 10;
 pub struct Pipeline {
     batch_size: usize,
     agents: Vec<AgentBuilder>,
+    max_request_retries: Option<u32>,
+    request_retry_backoff_ms: Option<u64>,
 }
 
 impl Pipeline {
@@ -26,12 +28,26 @@ impl Pipeline {
         Self {
             batch_size: DEFAULT_BATCH_SIZE,
             agents: Vec::new(),
+            max_request_retries: None,
+            request_retry_backoff_ms: None,
         }
     }
 
     /// Maximum number of agents running concurrently.
     pub fn batch_size(mut self, size: usize) -> Self {
         self.batch_size = size;
+        self
+    }
+
+    /// Default max retries for transient API errors across all agents.
+    pub fn max_request_retries(mut self, n: u32) -> Self {
+        self.max_request_retries = Some(n);
+        self
+    }
+
+    /// Default base delay in ms for exponential backoff across all agents.
+    pub fn request_retry_backoff_ms(mut self, ms: u64) -> Self {
+        self.request_retry_backoff_ms = Some(ms);
         self
     }
 
@@ -50,7 +66,16 @@ impl Pipeline {
         let semaphore = Arc::new(Semaphore::new(self.batch_size));
         let mut set = JoinSet::new();
 
-        for (index, builder) in self.agents.into_iter().enumerate() {
+        for (index, mut builder) in self.agents.into_iter().enumerate() {
+            if !builder.retries_customized {
+                if let Some(n) = self.max_request_retries {
+                    builder = builder.max_request_retries(n);
+                }
+                if let Some(ms) = self.request_retry_backoff_ms {
+                    builder = builder.request_retry_backoff_ms(ms);
+                }
+                builder.retries_customized = false;
+            }
             let permit = semaphore.clone().acquire_owned().await.unwrap();
 
             set.spawn(async move {
