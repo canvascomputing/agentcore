@@ -42,6 +42,7 @@ crates/agentcore/src/
     event.rs              Event enum
     output.rs             AgentOutput, OutputSchema, StructuredOutputTool, validate_value
     prompts.rs            BehaviorPrompt (TaskExecution, ToolUsage, SafetyConcerns, Communication), ContextBuilder, EnvironmentContext
+    pipeline.rs           Pipeline (batch execution with concurrency control)
     queue.rs              CommandQueue, QueuePriority, QueuedCommand (internal)
 
   tools/

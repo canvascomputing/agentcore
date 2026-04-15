@@ -226,6 +226,31 @@ AgentBuilder::new()
     .behavior_prompt(BehaviorPrompt::Communication, "Always respond in JSON.")
 ```
 
+#### Pipelines
+
+Execute multiple agents with controlled parallelism. Each agent is fully configured with its own provider, prompts, and tools. Results are returned in push order. Individual failures do not abort the pipeline.
+
+```rust
+use agentcore::{Pipeline, AgentBuilder, ReadFileTool};
+
+let mut pipeline = Pipeline::new().batch_size(10);
+
+pipeline.push(
+    AgentBuilder::new()
+        .provider(provider.clone())
+        .instruction_prompt("Summarize document A")
+        .tool(ReadFileTool)
+);
+pipeline.push(
+    AgentBuilder::new()
+        .provider(provider.clone())
+        .instruction_prompt("Summarize document B")
+        .tool(ReadFileTool)
+);
+
+let results = pipeline.run().await;
+```
+
 ### Events
 
 Emitted via `AgentBuilder.event_handler()` during execution.
