@@ -8,7 +8,7 @@ build:
 test:
 	RUSTFLAGS="-D warnings" cargo test --lib
 
-# Run integration tests (requires a live LLM provider)
+# Run integration tests (requires a live LLM LITELLM_PROVIDER)
 # Usage: make test_integration              (run all)
 #        make test_integration name=bash_usage  (run one)
 test_integration:
@@ -68,7 +68,7 @@ publish: test
 #        make litellm LITELLM_PROVIDER=openai  (uses OPENAI_API_KEY)
 LITELLM_PROVIDER ?= anthropic
 
-# Map provider to its API key env var
+# Map LITELLM_PROVIDER to its API key env var
 ifeq ($(LITELLM_PROVIDER),anthropic)
   LITELLM_KEY_ENV     := ANTHROPIC_API_KEY
   LITELLM_MODEL_ENV   := ANTHROPIC_MODEL

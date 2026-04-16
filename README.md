@@ -425,7 +425,7 @@ Use cases and integration tests pick up the LLM provider from these environment 
 
 | Variable | Description |
 |----------|-------------|
-| `PROVIDER` | Explicit provider selection (`anthropic`, `mistral`, `openai`, `litellm`). Skips auto-detection |
+| `LITELLM_PROVIDER` | Explicit provider selection (`anthropic`, `mistral`, `openai`, `litellm`). Skips auto-detection |
 
 **Anthropic**
 | Variable | Description |
@@ -454,4 +454,5 @@ Use cases and integration tests pick up the LLM provider from these environment 
 | `LITELLM_BASE_URL` | Proxy URL (default: `http://localhost:4000`) |
 | `LITELLM_API_KEY` | Auth key (optional) |
 | `LITELLM_MODEL` | Model (default: `claude-sonnet-4-20250514`) |
-| `LITELLM_PROVIDER` | Provider for `make litellm` (default: `anthropic`, options: `anthropic`, `mistral`, `openai`) |
+| `LITELLM_PROVIDER` | LLM provider (default: `anthropic`, options: `anthropic`, `mistral`, `openai`) |
+
