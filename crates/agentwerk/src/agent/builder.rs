@@ -14,7 +14,7 @@ use crate::persistence::session::SessionStore;
 use super::context::{InvocationContext, generate_agent_name};
 use super::event::Event;
 use super::output::{AgentOutput, OutputSchema};
-use super::prompts::{BehaviorPrompt, ContextBuilder, EnvironmentContext};
+use super::prompts::{BehaviorPrompt, EnvironmentContext};
 use super::queue::CommandQueue;
 use super::r#loop::AgentLoop;
 use super::r#trait::Agent;
@@ -31,7 +31,8 @@ pub struct AgentBuilder {
     output_schema: Option<OutputSchema>,
     max_schema_retries: u32,
     behavior_prompts: Vec<(BehaviorPrompt, String)>,
-    context_builder: ContextBuilder,
+    user_context_blocks: Vec<String>,
+    environment_prompt: Option<String>,
     tools: ToolRegistry,
     pub(crate) max_request_retries: u32,
     pub(crate) request_retry_backoff_ms: u64,
@@ -65,7 +66,8 @@ impl AgentBuilder {
             output_schema: None,
             max_schema_retries: 10,
             behavior_prompts,
-            context_builder: ContextBuilder::new(),
+            user_context_blocks: Vec::new(),
+            environment_prompt: None,
             tools: ToolRegistry::new(),
             max_request_retries: DEFAULT_MAX_REQUEST_RETRIES,
             request_retry_backoff_ms: DEFAULT_BACKOFF_MS,
@@ -168,14 +170,26 @@ impl AgentBuilder {
 
     /// Inject additional context alongside the instruction prompt.
     pub fn context_prompt(mut self, content: impl Into<String>) -> Self {
-        self.context_builder.context_prompt(content.into());
+        self.user_context_blocks.push(content.into());
         self
     }
 
     /// Load additional context from a file.
     pub fn context_prompt_file(mut self, path: impl Into<PathBuf>) -> Self {
         let content = self.read_file(path.into());
-        self.context_builder.context_prompt(content);
+        self.user_context_blocks.push(content);
+        self
+    }
+
+    /// Override the environment context (working directory, platform, OS version, date).
+    pub fn environment_prompt(mut self, content: impl Into<String>) -> Self {
+        self.environment_prompt = Some(content.into());
+        self
+    }
+
+    /// Load the environment prompt override from a file.
+    pub fn environment_prompt_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.environment_prompt = Some(self.read_file(path.into()));
         self
     }
 
@@ -278,7 +292,7 @@ impl AgentBuilder {
             output_schema: self.output_schema,
             max_schema_retries: self.max_schema_retries,
             behavior_prompts: self.behavior_prompts,
-            context_builder: self.context_builder,
+            user_context_blocks: self.user_context_blocks,
             tools: self.tools,
             max_request_retries: self.max_request_retries,
             request_retry_backoff_ms: self.request_retry_backoff_ms,
@@ -287,7 +301,7 @@ impl AgentBuilder {
     }
 
     /// Build the agent and run it. Requires `.provider()` and `.instruction_prompt()`.
-    pub async fn run(mut self) -> Result<AgentOutput> {
+    pub async fn run(self) -> Result<AgentOutput> {
         self.check_prompt_errors()?;
 
         let provider = self
@@ -301,9 +315,13 @@ impl AgentBuilder {
             ));
         }
 
-        // Auto-collect environment from working directory
-        let env = EnvironmentContext::collect(&self.working_directory);
-        self.context_builder.environment_context(&env);
+        let env_context = match self.environment_prompt {
+            Some(ref custom) => custom.clone(),
+            None => {
+                let env = EnvironmentContext::collect(&self.working_directory);
+                super::prompts::format_environment_context(&env)
+            }
+        };
 
         let resolved_model = self.model.resolve(&String::new());
         let prompt = self.instruction_prompt.clone();
@@ -322,6 +340,7 @@ impl AgentBuilder {
             .event_handler(event_handler)
             .cancel_signal(cancel_signal)
             .model(resolved_model)
+            .environment_context(env_context)
             .command_queue(Arc::new(CommandQueue::new()));
 
         if let Some(dir) = session_dir {

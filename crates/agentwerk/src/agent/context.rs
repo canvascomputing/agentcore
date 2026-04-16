@@ -31,6 +31,9 @@ pub struct InvocationContext {
     // Model for this context — sub-agents using Inherit resolve to this
     pub model: String,
 
+    // Context
+    pub environment_context: Option<String>,
+
     // Optional persistence
     pub session_store: Option<Arc<Mutex<SessionStore>>>,
     pub command_queue: Option<Arc<CommandQueue>>,
@@ -47,6 +50,7 @@ impl InvocationContext {
             working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             provider,
             model: String::new(),
+            environment_context: None,
             session_store: None,
             command_queue: None,
         }
@@ -95,6 +99,11 @@ impl InvocationContext {
     /// Set the model ID for this context. Sub-agents using `Inherit` resolve to this.
     pub fn model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
+        self
+    }
+
+    pub fn environment_context(mut self, ctx: String) -> Self {
+        self.environment_context = Some(ctx);
         self
     }
 

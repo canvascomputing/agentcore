@@ -1,6 +1,4 @@
 //! Prompt infrastructure: behavior defaults, context building, and constants.
-//!
-//! `ContextBuilder` is internal — callers use `AgentBuilder` methods instead.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -148,60 +146,27 @@ impl EnvironmentContext {
 }
 
 // ---------------------------------------------------------------------------
-// Context builder (internal)
+// Context helpers
 // ---------------------------------------------------------------------------
 
-/// Builds the context user message (environment + user context).
-/// Not public — callers use `AgentBuilder` methods instead.
-#[derive(Clone)]
-pub(crate) struct ContextBuilder {
-    sections: Vec<(String, String)>,
-    user_context_blocks: Vec<String>,
+/// Format environment context as a tagged string for inclusion in the context message.
+pub(crate) fn format_environment_context(env: &EnvironmentContext) -> String {
+    format!(
+        "<environment>\nWorking directory: {}\nPlatform: {}\nOS version: {}\nDate: {}\n</environment>",
+        env.working_directory, env.platform, env.os_version, env.date
+    )
 }
 
-impl ContextBuilder {
-    pub(crate) fn new() -> Self {
-        Self {
-            sections: Vec::new(),
-            user_context_blocks: Vec::new(),
-        }
+/// Build a user message from pre-formatted parts. Returns `None` if empty.
+pub(crate) fn build_message(parts: &[String]) -> Option<Message> {
+    if parts.is_empty() {
+        return None;
     }
-
-    pub(crate) fn environment_context(&mut self, env: &EnvironmentContext) -> &mut Self {
-        let content = format!(
-            "<environment>\nWorking directory: {}\nPlatform: {}\nOS version: {}\nDate: {}\n</environment>",
-            env.working_directory, env.platform, env.os_version, env.date
-        );
-        self.sections.push(("environment".into(), content));
-        self
-    }
-
-    pub(crate) fn context_prompt(&mut self, content: String) -> &mut Self {
-        self.user_context_blocks.push(content);
-        self
-    }
-
-    pub(crate) fn build_context_message(&self) -> Option<Message> {
-        let mut parts = Vec::new();
-
-        for (_, content) in &self.sections {
-            parts.push(content.clone());
-        }
-
-        for ctx in &self.user_context_blocks {
-            parts.push(format!("<context>\n{ctx}\n</context>"));
-        }
-
-        if parts.is_empty() {
-            return None;
-        }
-
-        Some(Message::User {
-            content: vec![ContentBlock::Text {
-                text: parts.join("\n\n"),
-            }],
-        })
-    }
+    Some(Message::User {
+        content: vec![ContentBlock::Text {
+            text: parts.join("\n\n"),
+        }],
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -244,39 +209,34 @@ mod tests {
 
     #[test]
     fn environment_context_in_message() {
-        let mut builder = ContextBuilder::new();
         let env = EnvironmentContext {
             working_directory: "/home/user/project".into(),
             platform: "linux".into(),
             os_version: "6.1.0".into(),
             date: "2025-01-15".into(),
         };
-        builder.environment_context(&env);
-
-        let text = extract_context_text(&builder);
+        let parts = vec![format_environment_context(&env)];
+        let text = extract_message_text(&parts);
         assert!(text.contains("/home/user/project"));
         assert!(text.contains("linux"));
     }
 
     #[test]
-    fn no_context_message_when_empty() {
-        let builder = ContextBuilder::new();
-        assert!(builder.build_context_message().is_none());
+    fn no_message_when_empty() {
+        assert!(build_message(&[]).is_none());
     }
 
     #[test]
     fn user_context_injected() {
-        let mut builder = ContextBuilder::new();
-        builder.context_prompt("Git status: clean".into());
-
-        let text = extract_context_text(&builder);
+        let parts = vec![format!("<context>\nGit status: clean\n</context>")];
+        let text = extract_message_text(&parts);
         assert!(text.contains("Git status: clean"));
         assert!(text.contains("<context>"));
     }
 
-    fn extract_context_text(builder: &ContextBuilder) -> String {
-        let ctx = builder.build_context_message().unwrap();
-        match &ctx {
+    fn extract_message_text(parts: &[String]) -> String {
+        let msg = build_message(parts).unwrap();
+        match &msg {
             Message::User { content } => match &content[0] {
                 ContentBlock::Text { text } => text.clone(),
                 _ => panic!("Expected text"),

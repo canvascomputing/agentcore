@@ -15,3 +15,7 @@ pub use event::Event;
 pub use output::{AgentOutput, OutputSchema, Statistics};
 pub use pipeline::Pipeline;
 pub use prompts::BehaviorPrompt;
+pub use prompts::{
+    DEFAULT_TASK_EXECUTION, DEFAULT_TOOL_USAGE,
+    DEFAULT_SAFETY_CONCERNS, DEFAULT_COMMUNICATION_STYLE,
+};

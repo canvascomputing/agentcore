@@ -180,6 +180,7 @@ let output = AgentBuilder::new()
 | `identity_prompt` | `identity_prompt_file` | Persistent identity of the agent |
 | `instruction_prompt` | `instruction_prompt_file` | Task for the current run |
 | `context_prompt` | `context_prompt_file` | Additional context alongside the instruction |
+| `environment_prompt` | `environment_prompt_file` | Working directory, platform, date |
 | `behavior_prompt` | `behavior_prompt_file` | Behavioral directives appended to the system prompt |
 
 ```rust
@@ -236,12 +237,12 @@ Set limits for agentic execution. You can set `UNLIMITED` to disable a limit.
 
 Agents ship with default behavior prompts appended to the identity prompt. Override any:
 
-| Variant | Default behavior |
-|---------|-----------------|
-| `TaskExecution` | Read before modifying, don't add unrequested features, diagnose failures |
-| `ToolUsage` | Use dedicated tools over bash, parallelize independent calls |
-| `SafetyConcerns` | Consider reversibility and impact, prefer reversible operations |
-| `Communication` | Be direct, concise, lead with the answer |
+| Variant | Default | Description |
+|---------|---------|-------------|
+| `TaskExecution` | `DEFAULT_TASK_EXECUTION` | Read before modifying, don't add unrequested features, diagnose failures |
+| `ToolUsage` | `DEFAULT_TOOL_USAGE` | Use dedicated tools over bash, parallelize independent calls |
+| `SafetyConcerns` | `DEFAULT_SAFETY_CONCERNS` | Consider reversibility and impact, prefer reversible operations |
+| `Communication` | `DEFAULT_COMMUNICATION_STYLE` | Be direct, concise, lead with the answer |
 
 ```rust
 use agentwerk::BehaviorPrompt;
@@ -358,25 +359,18 @@ let output = AgentBuilder::new()
 output.response.unwrap()["category"]  // "billing"
 ```
 
-### Request Assembly
+### LLM Request Composition
 
-Each LLM request is assembled from:
+Each LLM request is assembled from four parts. Fields are listed in the order they appear in the request.
 
-- **general**:
-  - `model`: from `.model()` or inherited from parent
-  - `max_tokens`: from `.max_tokens()` or provider default
-  - `tool_choice`: forced to `StructuredOutput` when schema set with no other tools, otherwise auto
-- **system_prompt**: constant across turns
-  - `identity_prompt`: agent persona, `{key}` placeholders interpolated
-  - `TaskExecution`: how the agent approaches work, overridable
-  - `ToolUsage`: when to use which tool, overridable
-  - `SafetyConcerns`: awareness of consequences, overridable
-  - `Communication`: how to structure output, overridable
-- **messages**: full conversation, all prior messages included in every request
-  - `context_prompt`: additional context, if set
-  - `instruction_prompt`: the task for this run
-- **tools**: function definitions the LLM can call
-  - `.tool()`: registered tool definitions
+| Part | Type | Parameters | Description |
+|------|------|--------|-------------|
+| **model** | `String` | `model()` | The LLM model that processes the request |
+| **max_tokens** | `Number` | `max_tokens()` | The maximum number of tokens the model can output |
+| **tool_choice** | `ToolChoice` | `output_schema()` | A constraint that forces the model to call a specific tool |
+| **system_prompt** | `String` | `identity_prompt()`<br>`behavior_prompt(TaskExecution)`<br>`behavior_prompt(ToolUsage)`<br>`behavior_prompt(SafetyConcerns)`<br>`behavior_prompt(Communication)` | Persistent instructions that define who the agent is and how it behaves |
+| **message** | `Message[]` | `environment_prompt()`<br>`context_prompt()`<br>`instruction_prompt()` | The conversation history between user and assistant, starting with environment, context, and the task |
+| **tools** | `ToolDefinition[]` | `tool()` | The functions the model can call during execution |
 
 ## Development
 

@@ -18,7 +18,7 @@ use super::r#trait::Agent;
 use super::context::{InvocationContext, now_millis};
 use super::event::Event;
 use super::output::{AgentOutput, OutputSchema, Statistics, StructuredOutputTool};
-use super::prompts::{self as prompts, BehaviorPrompt, ContextBuilder, STRUCTURED_OUTPUT_TOOL_NAME, interpolate};
+use super::prompts::{self as prompts, BehaviorPrompt, STRUCTURED_OUTPUT_TOOL_NAME, interpolate};
 use super::queue::QueuePriority;
 
 // ---------------------------------------------------------------------------
@@ -36,7 +36,7 @@ pub(crate) struct AgentLoop {
     pub(crate) output_schema: Option<OutputSchema>,
     pub(crate) max_schema_retries: u32,
     pub(crate) behavior_prompts: Vec<(BehaviorPrompt, String)>,
-    pub(crate) context_builder: ContextBuilder,
+    pub(crate) user_context_blocks: Vec<String>,
     pub(crate) tools: ToolRegistry,
     pub(crate) max_request_retries: u32,
     pub(crate) request_retry_backoff_ms: u64,
@@ -131,8 +131,16 @@ impl AgentLoop {
         }
         let (tools, tool_choice) = self.build_tool_config();
 
+        let mut context_parts = Vec::new();
+        if let Some(ref env) = ctx.environment_context {
+            context_parts.push(env.clone());
+        }
+        for block in &self.user_context_blocks {
+            context_parts.push(format!("<context>\n{block}\n</context>"));
+        }
+
         let mut messages = Vec::new();
-        if let Some(context_msg) = self.context_builder.build_context_message() {
+        if let Some(context_msg) = prompts::build_message(&context_parts) {
             messages.push(context_msg);
         }
         messages.push(Message::user(ctx.instruction_prompt.clone()));
