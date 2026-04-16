@@ -40,8 +40,6 @@ pub(crate) struct AgentLoop {
     pub(crate) tools: ToolRegistry,
     pub(crate) max_request_retries: u32,
     pub(crate) request_retry_backoff_ms: u64,
-    #[allow(dead_code)]
-    pub(crate) sub_agents: Vec<Arc<dyn Agent>>,
 }
 
 impl Agent for AgentLoop {
@@ -965,7 +963,6 @@ mod tests {
         match event {
             Event::AgentStart { .. } => "AgentStart",
             Event::AgentEnd { .. } => "AgentEnd",
-            Event::AgentError { .. } => "AgentError",
             Event::TurnStart { .. } => "TurnStart",
             Event::TurnEnd { .. } => "TurnEnd",
             Event::RequestStart { .. } => "RequestStart",

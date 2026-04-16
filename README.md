@@ -287,7 +287,6 @@ Emitted via `AgentBuilder.event_handler()` during execution.
 |-|-------|-------------|
 | **Agent** | `AgentStart` | Agent begins execution |
 | | `AgentEnd` | Agent finishes with turn count |
-| | `AgentError` | Agent encountered an error |
 | | `TurnStart` / `TurnEnd` | Turn boundaries |
 | **LLM Provider** | `RequestStart` / `RequestEnd` | LLM request lifecycle |
 | | `ResponseTextChunk` | Streamed text token |

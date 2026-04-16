@@ -224,9 +224,6 @@ fn log_event(event: &Event) {
         Event::ToolCallEnd { tool_name, output, is_error: true, .. } => {
             eprintln!("[error] {tool_name}: {output}");
         }
-        Event::AgentError { agent_name, message } => {
-            eprintln!("[error] {agent_name}: {message}");
-        }
         _ => {}
     }
 }

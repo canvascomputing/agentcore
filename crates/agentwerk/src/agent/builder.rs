@@ -18,7 +18,7 @@ use super::prompts::{BehaviorPrompt, EnvironmentContext};
 use super::queue::CommandQueue;
 use super::r#loop::AgentLoop;
 use super::r#trait::Agent;
-use crate::tools::{Tool, ToolRegistry};
+use crate::tools::{Tool, ToolRegistry, SpawnAgentTool};
 
 #[derive(Clone)]
 pub struct AgentBuilder {
@@ -28,7 +28,7 @@ pub struct AgentBuilder {
     identity_prompt: String,
     max_tokens: u32,
     max_turns: u32,
-    output_schema: Option<OutputSchema>,
+    output_schema: Option<Value>,
     max_schema_retries: u32,
     behavior_prompts: Vec<(BehaviorPrompt, String)>,
     user_context_blocks: Vec<String>,
@@ -128,7 +128,7 @@ impl AgentBuilder {
     }
 
     pub fn output_schema(mut self, schema: Value) -> Self {
-        self.output_schema = Some(OutputSchema::new(schema).expect("invalid output schema"));
+        self.output_schema = Some(schema);
         self
     }
 
@@ -168,13 +168,13 @@ impl AgentBuilder {
         self
     }
 
-    /// Inject additional context alongside the instruction prompt.
+    /// Append additional context alongside the instruction prompt. Can be called multiple times.
     pub fn context_prompt(mut self, content: impl Into<String>) -> Self {
         self.user_context_blocks.push(content.into());
         self
     }
 
-    /// Load additional context from a file.
+    /// Append additional context from a file. Can be called multiple times.
     pub fn context_prompt_file(mut self, path: impl Into<PathBuf>) -> Self {
         let content = self.read_file(path.into());
         self.user_context_blocks.push(content);
@@ -276,12 +276,18 @@ impl AgentBuilder {
 
     /// Build the agent without running it. Use when you need `Arc<dyn Agent>`
     /// (e.g., to register as a sub-agent).
-    pub fn build(self) -> Result<Arc<dyn Agent>> {
+    pub fn build(mut self) -> Result<Arc<dyn Agent>> {
         self.check_prompt_errors()?;
 
         let name = self
             .name
             .unwrap_or_else(|| generate_agent_name("agent"));
+
+        if !self.sub_agents.is_empty() && self.tools.get("spawn_agent").is_none() {
+            self.tools.register(SpawnAgentTool::new().sub_agents(self.sub_agents));
+        }
+
+        let output_schema = self.output_schema.map(OutputSchema::new).transpose()?;
 
         Ok(Arc::new(AgentLoop {
             name,
@@ -289,14 +295,13 @@ impl AgentBuilder {
             identity_prompt: self.identity_prompt,
             max_tokens: self.max_tokens,
             max_turns: self.max_turns,
-            output_schema: self.output_schema,
+            output_schema,
             max_schema_retries: self.max_schema_retries,
             behavior_prompts: self.behavior_prompts,
             user_context_blocks: self.user_context_blocks,
             tools: self.tools,
             max_request_retries: self.max_request_retries,
             request_retry_backoff_ms: self.request_retry_backoff_ms,
-            sub_agents: self.sub_agents,
         }))
     }
 
@@ -438,5 +443,71 @@ mod tests {
 
         std::fs::remove_file(&path).ok();
         std::fs::remove_dir(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn sub_agent_auto_wires_spawn_tool() {
+        use crate::testutil::*;
+
+        let sub = AgentBuilder::new()
+            .name("helper")
+            .identity_prompt("I help.")
+            .build()
+            .unwrap();
+
+        let provider = MockProvider::text("ok");
+        let agent = AgentBuilder::new()
+            .name("parent")
+            .identity_prompt("I coordinate.")
+            .sub_agent(sub)
+            .build()
+            .unwrap();
+
+        let harness = TestHarness::new(provider);
+        harness.run_agent(agent.as_ref(), "go").await.unwrap();
+
+        let req = harness.provider().last_request().unwrap();
+        assert!(req.tools.iter().any(|t| t.name == "spawn_agent"),
+            "sub_agent() should auto-register a spawn_agent tool");
+    }
+
+    #[tokio::test]
+    async fn sub_agent_does_not_clobber_user_spawn_tool() {
+        use crate::testutil::*;
+
+        let sub = AgentBuilder::new()
+            .name("helper")
+            .identity_prompt("I help.")
+            .build()
+            .unwrap();
+
+        let user_spawn = SpawnAgentTool::new().default_model("custom-model");
+
+        let provider = MockProvider::text("ok");
+        let agent = AgentBuilder::new()
+            .name("parent")
+            .identity_prompt("I coordinate.")
+            .tool(user_spawn)
+            .sub_agent(sub)
+            .build()
+            .unwrap();
+
+        let harness = TestHarness::new(provider);
+        harness.run_agent(agent.as_ref(), "go").await.unwrap();
+
+        let req = harness.provider().last_request().unwrap();
+        let spawn_tools: Vec<_> = req.tools.iter().filter(|t| t.name == "spawn_agent").collect();
+        assert_eq!(spawn_tools.len(), 1,
+            "should not duplicate spawn_agent when user already registered one");
+    }
+
+    #[test]
+    fn invalid_output_schema_fails_at_build() {
+        let result = AgentBuilder::new()
+            .name("test")
+            .identity_prompt("")
+            .output_schema(serde_json::json!({"type": "string"}))
+            .build();
+        assert!(result.is_err(), "invalid schema should fail at build(), not panic");
     }
 }
