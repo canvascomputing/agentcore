@@ -415,8 +415,8 @@ Start a local LiteLLM proxy on port 4000 that forwards to a provider. Requires D
 
 ```bash
 make litellm                       # default: anthropic
-make litellm provider=openai       # use OpenAI
-make litellm provider=mistral      # use Mistral
+make litellm LITELLM_PROVIDER=openai       # use OpenAI
+make litellm LITELLM_PROVIDER=mistral      # use Mistral
 ```
 
 ### Environment
@@ -450,3 +450,4 @@ Use cases and integration tests pick up the LLM provider from these environment 
 | `LITELLM_API_URL` | Proxy URL (default: `http://localhost:4000`) |
 | `LITELLM_API_KEY` | Auth key (optional) |
 | `LITELLM_MODEL` | Model (default: `claude-sonnet-4-20250514`) |
+| `LITELLM_PROVIDER` | Provider for `make litellm` (default: `anthropic`, options: `anthropic`, `mistral`, `openai`) |

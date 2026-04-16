@@ -8,7 +8,7 @@ build:
 test:
 	RUSTFLAGS="-D warnings" cargo test --lib
 
-# Run integration tests (requires a live LLM provider)
+# Run integration tests (requires a live LLM LITELLM_PROVIDER)
 # Usage: make test_integration              (run all)
 #        make test_integration name=bash_usage  (run one)
 test_integration:
@@ -65,19 +65,19 @@ publish: test
 # Start a LiteLLM proxy on localhost:4000
 # Forwards the provider's API key from your environment (never leaked in commands)
 # Usage: make litellm                  (default: anthropic, uses ANTHROPIC_API_KEY)
-#        make litellm provider=openai  (uses OPENAI_API_KEY)
-provider ?= anthropic
+#        make litellm LITELLM_PROVIDER=openai  (uses OPENAI_API_KEY)
+LITELLM_PROVIDER ?= anthropic
 
-# Map provider name to its API key env var
-ifeq ($(provider),anthropic)
+# Map provider to its API key env var
+ifeq ($(LITELLM_PROVIDER),anthropic)
   LITELLM_KEY_ENV     := ANTHROPIC_API_KEY
   LITELLM_MODEL_ENV   := ANTHROPIC_MODEL
   LITELLM_DEFAULT_MDL := claude-sonnet-4-20250514
-else ifeq ($(provider),mistral)
+else ifeq ($(LITELLM_PROVIDER),mistral)
   LITELLM_KEY_ENV     := MISTRAL_API_KEY
   LITELLM_MODEL_ENV   := MISTRAL_MODEL
   LITELLM_DEFAULT_MDL := mistral-small-2603
-else ifeq ($(provider),openai)
+else ifeq ($(LITELLM_PROVIDER),openai)
   LITELLM_KEY_ENV     := OPENAI_API_KEY
   LITELLM_MODEL_ENV   := OPENAI_MODEL
   LITELLM_DEFAULT_MDL := gpt-4o
@@ -91,13 +91,13 @@ LITELLM_MODEL_VAL := $(or $($(LITELLM_MODEL_ENV)),$(LITELLM_DEFAULT_MDL))
 
 litellm:
 ifndef LITELLM_KEY_ENV
-	$(error Unsupported provider "$(provider)". Supported: anthropic, mistral, openai)
+	$(error Unsupported LITELLM_PROVIDER "$(LITELLM_PROVIDER)". Supported: anthropic, mistral, openai)
 endif
 	@printf '%s\n' \
 		'model_list:' \
 		'  - model_name: $(LITELLM_MODEL_VAL)' \
 		'    litellm_params:' \
-		'      model: $(provider)/$(LITELLM_MODEL_VAL)' \
+		'      model: $(LITELLM_PROVIDER)/$(LITELLM_MODEL_VAL)' \
 		'      api_key: os.environ/$(LITELLM_KEY_ENV)' \
 		> /tmp/agent_litellm_config.yaml
 	docker run --rm \
