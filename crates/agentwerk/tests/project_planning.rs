@@ -31,7 +31,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
              7. Get details of 'Write tests' by ID\n\
              8. Summarize what you did",
         )
-        .tool(TaskTool::open(tmp.path()))
+        .tool(TaskTool::new(tmp.path()))
         .max_turns(15)
         .run()
         .await?;

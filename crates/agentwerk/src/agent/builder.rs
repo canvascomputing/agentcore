@@ -11,10 +11,11 @@ use crate::provider::model::ModelSpec;
 use crate::provider::retry::{DEFAULT_MAX_REQUEST_RETRIES, DEFAULT_BACKOFF_MS};
 
 use crate::persistence::session::SessionStore;
-use super::context::{RuntimeContext, generate_agent_name};
+use super::context::RuntimeContext;
+use crate::util::generate_agent_name;
 use super::event::Event;
 use super::output::{AgentOutput, OutputSchema};
-use super::prompts::{BehaviorPrompt, EnvironmentContext};
+use super::prompts::BehaviorPrompt;
 use super::queue::CommandQueue;
 use super::r#loop::AgentLoop;
 use super::r#trait::Agent;
@@ -318,8 +319,7 @@ impl AgentBuilder {
         let env_context = match self.environment_prompt {
             Some(ref custom) => custom.clone(),
             None => {
-                let env = EnvironmentContext::collect(&self.working_directory);
-                super::prompts::format_environment_context(&env)
+                super::prompts::collect_environment_context(&self.working_directory)
             }
         };
 

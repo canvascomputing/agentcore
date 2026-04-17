@@ -1,57 +1,56 @@
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use serde::{Deserialize, Serialize};
 
+use crate::util::now_millis;
 use crate::error::{AgenticError, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Task {
-    pub id: String,
-    pub subject: String,
-    pub description: String,
-    pub status: TaskStatus,
-    pub owner: Option<String>,
-    pub blocks: Vec<String>,
-    pub blocked_by: Vec<String>,
-    pub metadata: HashMap<String, serde_json::Value>,
-    pub created_at: u64,
-    pub updated_at: u64,
+pub(crate) struct Task {
+    pub(crate) id: String,
+    pub(crate) subject: String,
+    pub(crate) description: String,
+    pub(crate) status: TaskStatus,
+    pub(crate) owner: Option<String>,
+    pub(crate) blocks: Vec<String>,
+    pub(crate) blocked_by: Vec<String>,
+    pub(crate) metadata: HashMap<String, serde_json::Value>,
+    pub(crate) created_at: u64,
+    pub(crate) updated_at: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TaskStatus {
+pub(crate) enum TaskStatus {
     Pending,
     InProgress,
     Completed,
 }
 
 #[derive(Debug, Default)]
-pub struct TaskUpdate {
-    pub status: Option<TaskStatus>,
-    pub subject: Option<String>,
-    pub description: Option<String>,
-    pub owner: Option<Option<String>>,
-    pub metadata: Option<HashMap<String, serde_json::Value>>,
+pub(crate) struct TaskUpdate {
+    pub(crate) status: Option<TaskStatus>,
+    pub(crate) subject: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) owner: Option<Option<String>>,
+    pub(crate) metadata: Option<HashMap<String, serde_json::Value>>,
 }
 
 /// Persists tasks to disk as individual JSON files.
-pub struct TaskStore {
+pub(crate) struct TaskStore {
     base_dir: PathBuf,
     list_id: String,
 }
 
 impl TaskStore {
-    pub fn open(base_dir: &Path, list_id: &str) -> Self {
+    pub(crate) fn new(base_dir: &Path, list_id: &str) -> Self {
         Self {
             base_dir: base_dir.to_path_buf(),
             list_id: list_id.to_string(),
         }
     }
 
-    pub fn create(&self, subject: &str, description: &str) -> Result<Task> {
+    pub(crate) fn create(&self, subject: &str, description: &str) -> Result<Task> {
         self.with_lock(|| {
             let mark = self.read_high_water_mark();
             let from_files = self.highest_task_id_on_disk();
@@ -78,11 +77,11 @@ impl TaskStore {
         })
     }
 
-    pub fn get(&self, id: &str) -> Result<Option<Task>> {
+    pub(crate) fn get(&self, id: &str) -> Result<Option<Task>> {
         self.read_task(id)
     }
 
-    pub fn list(&self) -> Result<Vec<Task>> {
+    pub(crate) fn list(&self) -> Result<Vec<Task>> {
         let dir = self.dir();
         if !dir.exists() {
             return Ok(Vec::new());
@@ -104,7 +103,7 @@ impl TaskStore {
         Ok(tasks)
     }
 
-    pub fn update(&self, id: &str, update: TaskUpdate) -> Result<Task> {
+    pub(crate) fn update(&self, id: &str, update: TaskUpdate) -> Result<Task> {
         self.with_lock(|| {
             let mut task = self.require_task(id)?;
 
@@ -130,7 +129,7 @@ impl TaskStore {
         })
     }
 
-    pub fn delete(&self, id: &str) -> Result<()> {
+    pub(crate) fn delete(&self, id: &str) -> Result<()> {
         self.with_lock(|| {
             let path = self.task_path(id);
             if !path.exists() {
@@ -142,7 +141,7 @@ impl TaskStore {
         })
     }
 
-    pub fn claim(&self, id: &str, agent_name: &str) -> Result<Task> {
+    pub(crate) fn claim(&self, id: &str, agent_name: &str) -> Result<Task> {
         self.with_lock(|| {
             let mut task = self.require_task(id)?;
 
@@ -161,7 +160,7 @@ impl TaskStore {
         })
     }
 
-    pub fn add_dependency(&self, from: &str, to: &str) -> Result<()> {
+    pub(crate) fn add_dependency(&self, from: &str, to: &str) -> Result<()> {
         self.with_lock(|| {
             let mut from_task = self.require_task(from)?;
             let mut to_task = self.require_task(to)?;
@@ -323,13 +322,6 @@ fn with_file_lock<T>(lock_path: &Path, f: impl FnOnce() -> Result<T>) -> Result<
     )))
 }
 
-fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
 #[cfg(unix)]
 fn try_lock_exclusive(file: &File) -> Result<bool> {
     use std::os::unix::io::AsRawFd;
@@ -372,7 +364,7 @@ mod tests {
 
     fn test_store() -> (tempfile::TempDir, TaskStore) {
         let tmp = tempfile::tempdir().unwrap();
-        let store = TaskStore::open(tmp.path(), "test");
+        let store = TaskStore::new(tmp.path(), "test");
         (tmp, store)
     }
 
@@ -532,7 +524,7 @@ mod tests {
             .map(|i| {
                 let base = base.clone();
                 std::thread::spawn(move || {
-                    let store = TaskStore::open(&base, "concurrent");
+                    let store = TaskStore::new(&base, "concurrent");
                     store.create(&format!("Task {i}"), "").unwrap()
                 })
             })

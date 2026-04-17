@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
 use crate::provider::LlmProvider;
 use crate::persistence::session::SessionStore;
+use crate::util::generate_agent_name;
 
 use super::event::Event;
 use super::queue::CommandQueue;
@@ -110,17 +110,3 @@ impl RuntimeContext {
     }
 }
 
-pub(crate) fn generate_agent_name(name: &str) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{name}_{nanos}")
-}
-
-pub(crate) fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}

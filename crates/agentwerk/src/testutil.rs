@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::agent::{Agent, AgentOutput, Event, RuntimeContext};
 use crate::error::{AgenticError, Result};
-use crate::provider::types::{ContentBlock, ModelResponse, StopReason, TokenUsage};
+use crate::provider::types::{ContentBlock, ModelResponse, StopReason, StreamEvent, TokenUsage};
 use crate::provider::{CompletionRequest, LlmProvider};
 use crate::tools::{Tool, ToolContext, ToolResult};
 
@@ -78,6 +78,23 @@ impl LlmProvider for MockProvider {
                 .unwrap()
                 .pop_front()
                 .unwrap_or_else(|| Err(AgenticError::Other("no more mock responses".into())))
+        })
+    }
+
+    fn complete_streaming(
+        &self,
+        request: CompletionRequest,
+        on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
+    ) -> Pin<Box<dyn Future<Output = Result<ModelResponse>> + Send + '_>> {
+        Box::pin(async move {
+            let response = self.complete(request).await?;
+            for block in &response.content {
+                if let ContentBlock::Text { text } = block {
+                    on_event(StreamEvent::TextDelta { index: 0, text: text.clone() });
+                }
+            }
+            on_event(StreamEvent::MessageDone);
+            Ok(response)
         })
     }
 }

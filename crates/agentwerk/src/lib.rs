@@ -3,6 +3,7 @@ pub mod provider;
 pub mod tools;
 pub mod agent;
 pub(crate) mod persistence;
+pub(crate) mod util;
 
 #[cfg(test)]
 pub(crate) mod testutil;
@@ -22,11 +23,11 @@ pub use provider::environment::Environment;
 // Tool infrastructure and built-in tools
 pub use tools::{
     BashTool, EditFileTool, GlobTool, GrepTool, ListDirectoryTool, ReadFileTool,
-    SpawnAgentTool, TaskTool, Tool, ToolBuilder, ToolContext, ToolRegistry,
+    SpawnAgentTool, TaskTool, Tool, ToolBuilder, ToolContext,
     ToolResult, ToolSearchTool, WebFetchTool, WriteFileTool,
 };
 
 // Agent
 pub use agent::{
-    Agent, AgentBuilder, AgentOutput, BehaviorPrompt, Event, OutputSchema, Pipeline, Statistics,
+    Agent, AgentBuilder, AgentOutput, BehaviorPrompt, Event, Pipeline, Statistics,
 };

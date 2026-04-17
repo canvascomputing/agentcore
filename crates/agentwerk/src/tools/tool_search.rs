@@ -71,8 +71,7 @@ impl Tool for ToolSearchTool {
             let count = results.len();
             let mut content = format!("Found {count} tool(s) matching '{query}':\n\n");
 
-            for result in &results {
-                let def = &result.definition;
+            for def in &results {
                 let pretty_schema =
                     serde_json::to_string_pretty(&def.input_schema).unwrap_or_default();
 

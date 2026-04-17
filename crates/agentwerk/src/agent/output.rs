@@ -35,12 +35,12 @@ impl AgentOutput {
 
 /// A validated JSON Schema for structured output.
 #[derive(Debug, Clone)]
-pub struct OutputSchema {
+pub(crate) struct OutputSchema {
     pub schema: Value,
 }
 
 impl OutputSchema {
-    pub fn new(schema: Value) -> Result<Self> {
+    pub(crate) fn new(schema: Value) -> Result<Self> {
         if schema.get("type").and_then(|t| t.as_str()) != Some("object") {
             return Err(AgenticError::SchemaValidation {
                 path: String::new(),

@@ -53,7 +53,7 @@ impl AnthropicProvider {
         ]
     }
 
-    pub(crate) fn serialize_request(&self, request: &CompletionRequest) -> Value {
+    fn serialize_request(&self, request: &CompletionRequest) -> Value {
         let messages = serialize_messages(&request.messages);
         let tools: Vec<Value> = request.tools.iter().map(serialize_tool_definition).collect();
 
@@ -77,7 +77,7 @@ impl AnthropicProvider {
         body
     }
 
-    pub(crate) fn parse_response(&self, json: Value) -> Result<ModelResponse> {
+    fn parse_response(&self, json: Value) -> Result<ModelResponse> {
         Ok(ModelResponse {
             content: parse_content(&json),
             stop_reason: parse_stop_reason(&json),

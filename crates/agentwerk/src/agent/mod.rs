@@ -12,6 +12,6 @@ pub use r#trait::Agent;
 pub use builder::AgentBuilder;
 pub(crate) use context::RuntimeContext;
 pub use event::Event;
-pub use output::{AgentOutput, OutputSchema, Statistics};
+pub use output::{AgentOutput, Statistics};
 pub use pipeline::Pipeline;
 pub use prompts::BehaviorPrompt;

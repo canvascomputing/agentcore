@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::provider::types::{ContentBlock, Message};
@@ -119,41 +118,19 @@ pub(crate) fn interpolate(template: &str, state: &HashMap<String, Value>) -> Str
 // Environment context
 // ---------------------------------------------------------------------------
 
-/// Environment information collected once per session.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct EnvironmentContext {
-    pub(crate) working_directory: String,
-    pub(crate) platform: String,
-    pub(crate) os_version: String,
-    pub(crate) date: String,
-}
+/// Collect environment information and format it as a tagged string for the context message.
+pub(crate) fn collect_environment_context(cwd: &Path) -> String {
+    let working_directory = cwd.display();
+    let platform = std::env::consts::OS;
+    let os_version = std::process::Command::new("uname")
+        .arg("-r")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    let date = format_current_date();
 
-impl EnvironmentContext {
-    pub(crate) fn collect(cwd: &Path) -> Self {
-        let os_version = std::process::Command::new("uname")
-            .arg("-r")
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_default();
-
-        Self {
-            working_directory: cwd.display().to_string(),
-            platform: std::env::consts::OS.to_string(),
-            os_version,
-            date: format_current_date(),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Context helpers
-// ---------------------------------------------------------------------------
-
-/// Format environment context as a tagged string for inclusion in the context message.
-pub(crate) fn format_environment_context(env: &EnvironmentContext) -> String {
     format!(
-        "<environment>\nWorking directory: {}\nPlatform: {}\nOS version: {}\nDate: {}\n</environment>",
-        env.working_directory, env.platform, env.os_version, env.date
+        "<environment>\nWorking directory: {working_directory}\nPlatform: {platform}\nOS version: {os_version}\nDate: {date}\n</environment>"
     )
 }
 
@@ -209,16 +186,11 @@ mod tests {
 
     #[test]
     fn environment_context_in_message() {
-        let env = EnvironmentContext {
-            working_directory: "/home/user/project".into(),
-            platform: "linux".into(),
-            os_version: "6.1.0".into(),
-            date: "2025-01-15".into(),
-        };
-        let parts = vec![format_environment_context(&env)];
+        let ctx = collect_environment_context(std::path::Path::new("/home/user/project"));
+        let parts = vec![ctx];
         let text = extract_message_text(&parts);
         assert!(text.contains("/home/user/project"));
-        assert!(text.contains("linux"));
+        assert!(text.contains("<environment>"));
     }
 
     #[test]

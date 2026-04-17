@@ -15,7 +15,8 @@ use crate::provider::{CompletionRequest, ToolChoice};
 use crate::tools::{ToolCall, ToolContext, ToolRegistry, execute_tool_calls};
 
 use super::r#trait::Agent;
-use super::context::{RuntimeContext, now_millis};
+use super::context::RuntimeContext;
+use crate::util::now_millis;
 use super::event::Event;
 use super::output::{AgentOutput, OutputSchema, Statistics, StructuredOutputTool};
 use super::prompts::{self as prompts, BehaviorPrompt, STRUCTURED_OUTPUT_TOOL_NAME, interpolate};
@@ -58,6 +59,13 @@ impl Agent for AgentLoop {
 // Agent loop execution
 // ---------------------------------------------------------------------------
 
+/// Immutable configuration resolved once at agent start.
+struct LoopConfig {
+    system_prompt: String,
+    tools: Arc<ToolRegistry>,
+    tool_choice: Option<ToolChoice>,
+}
+
 /// Mutable state carried across turns of the agent loop.
 struct LoopState {
     messages: Vec<Message>,
@@ -68,57 +76,55 @@ struct LoopState {
     schema_retries: u32,
     discovered_tools: HashSet<String>,
     turn: u32,
-    system_prompt: String,
-    tools: ToolRegistry,
-    tool_choice: Option<ToolChoice>,
 }
 
 impl AgentLoop {
     pub(crate) async fn execute(&self, ctx: RuntimeContext) -> Result<AgentOutput> {
         ctx.provider.prewarm().await;
-        let mut state = self.init_state(&ctx);
-        self.emit(&ctx, Event::AgentStart { agent_name: self.name.clone() });
+        let (config, mut state) = self.init_state(&ctx);
+        emit(&ctx, Event::AgentStart { agent_name: self.name.clone() });
 
         loop {
             // Guards: cancellation, turn limit, estimated costs
             self.check_guards(&ctx, &state)?;
             state.turn += 1;
-            self.emit(&ctx, Event::TurnStart { agent_name: self.name.clone(), turn: state.turn });
+            emit(&ctx, Event::TurnStart { agent_name: self.name.clone(), turn: state.turn });
 
             // LLM call (with retry on transient errors)
             let resolved_model = self.model.resolve(&ctx.model);
-            self.emit(&ctx, Event::RequestStart { agent_name: self.name.clone(), model: resolved_model.clone() });
-            let response = self.call_llm_with_retry(&ctx, &state).await?;
-            self.emit(&ctx, Event::RequestEnd { agent_name: self.name.clone(), model: resolved_model });
+            emit(&ctx, Event::RequestStart { agent_name: self.name.clone(), model: resolved_model.clone() });
+            let response = self.call_llm_with_retry(&ctx, &config, &state, &resolved_model).await?;
+            emit(&ctx, Event::RequestEnd { agent_name: self.name.clone(), model: resolved_model });
             self.record_usage(&ctx, &response, &mut state);
 
             // Parse response into text and tool calls
-            let (text, tool_calls) = self.parse_response(&ctx, &response);
+            let (text, tool_calls) = self.parse_response(&response);
             state.messages.push(Message::Assistant { content: response.content.clone() });
-            self.record_transcript(&ctx, EntryType::AssistantMessage, &state, Some(&response));
+            record_transcript(&ctx, EntryType::AssistantMessage, state.messages.last().unwrap(), Some((&response.usage, &response.model)));
 
             // Done? Return or retry structured output
             if response.stop_reason != StopReason::ToolUse || tool_calls.is_empty() {
                 if let Some(output) = self.try_finish(&ctx, &mut state, text)? {
+                    emit(&ctx, Event::TurnEnd { agent_name: self.name.clone(), turn: state.turn });
                     return Ok(output);
                 }
-                continue;
+            } else {
+                // Execute tools and collect results
+                let results = self.execute_tools(&ctx, &config, &mut state, &tool_calls).await;
+                capture_structured_output(&tool_calls, &mut state);
+                capture_discovered_tools(&tool_calls, &results, &mut state);
+
+                // Add tool results to conversation
+                state.messages.push(Message::User { content: results });
+                record_transcript(&ctx, EntryType::ToolResult, state.messages.last().unwrap(), None);
+                drain_command_queue(&ctx, &mut state);
             }
 
-            // Execute tools and collect results
-            let results = self.execute_tools(&ctx, &mut state, &tool_calls).await;
-            self.extract_discoveries(&tool_calls, &results, &mut state);
-
-            // Add tool results to conversation
-            state.messages.push(Message::User { content: results });
-            self.record_transcript(&ctx, EntryType::ToolResult, &state, None);
-            self.drain_command_queue(&ctx, &mut state);
-
-            self.emit(&ctx, Event::TurnEnd { agent_name: self.name.clone(), turn: state.turn });
+            emit(&ctx, Event::TurnEnd { agent_name: self.name.clone(), turn: state.turn });
         }
     }
 
-    fn init_state(&self, ctx: &RuntimeContext) -> LoopState {
+    fn init_state(&self, ctx: &RuntimeContext) -> (LoopConfig, LoopState) {
         let mut system_prompt = interpolate(&self.identity_prompt, &ctx.template_variables);
         for (_, content) in &self.behavior_prompts {
             system_prompt.push_str("\n\n");
@@ -142,9 +148,15 @@ impl AgentLoop {
             messages.push(context_msg);
         }
         messages.push(Message::user(ctx.instruction_prompt.clone()));
-        self.record_initial_message(ctx, &messages);
+        record_transcript(ctx, EntryType::UserMessage, messages.last().unwrap(), None);
 
-        LoopState {
+        let config = LoopConfig {
+            system_prompt,
+            tools,
+            tool_choice,
+        };
+
+        let state = LoopState {
             messages,
             total_usage: TokenUsage::default(),
             request_count: 0,
@@ -153,27 +165,14 @@ impl AgentLoop {
             schema_retries: 0,
             discovered_tools: HashSet::new(),
             turn: 0,
-            system_prompt,
-            tools,
-            tool_choice,
-        }
+        };
+
+        (config, state)
     }
 
-    fn record_initial_message(&self, ctx: &RuntimeContext, messages: &[Message]) {
-        let Some(ref store) = ctx.session_store else { return };
-        let Some(message) = messages.last() else { return };
-        store.lock().unwrap().record(TranscriptEntry {
-            recorded_at: now_millis(),
-            entry_type: EntryType::UserMessage,
-            message: message.clone(),
-            usage: None,
-            model: None,
-        }).ok();
-    }
-
-    fn build_tool_config(&self) -> (ToolRegistry, Option<ToolChoice>) {
+    fn build_tool_config(&self) -> (Arc<ToolRegistry>, Option<ToolChoice>) {
         let Some(ref schema) = self.output_schema else {
-            return (self.tools.clone(), None);
+            return (Arc::new(self.tools.clone()), None);
         };
 
         let mut tools = self.tools.clone();
@@ -185,7 +184,7 @@ impl AgentLoop {
             None
         };
 
-        (tools, tool_choice)
+        (Arc::new(tools), tool_choice)
     }
 
     fn check_guards(&self, ctx: &RuntimeContext, state: &LoopState) -> Result<()> {
@@ -198,23 +197,16 @@ impl AgentLoop {
         Ok(())
     }
 
-    async fn call_llm(&self, ctx: &RuntimeContext, state: &LoopState) -> Result<ModelResponse> {
-        let tools = &state.tools;
-        let tool_defs = if tools.has_deferred_tools() {
-            tools.definitions_filtered(&state.discovered_tools)
-        } else {
-            tools.definitions()
-        };
-
-        let resolved_model = self.model.resolve(&ctx.model);
+    async fn call_llm(&self, ctx: &RuntimeContext, config: &LoopConfig, state: &LoopState, resolved_model: &str) -> Result<ModelResponse> {
+        let tool_defs = config.tools.definitions(&state.discovered_tools);
 
         let request = CompletionRequest {
-            model: resolved_model,
-            system_prompt: state.system_prompt.clone(),
+            model: resolved_model.to_string(),
+            system_prompt: config.system_prompt.clone(),
             messages: state.messages.clone(),
             tools: tool_defs,
             max_tokens: self.max_tokens,
-            tool_choice: state.tool_choice.clone(),
+            tool_choice: config.tool_choice.clone(),
         };
 
         let event_handler = ctx.event_handler.clone();
@@ -234,12 +226,14 @@ impl AgentLoop {
     async fn call_llm_with_retry(
         &self,
         ctx: &RuntimeContext,
+        config: &LoopConfig,
         state: &LoopState,
+        resolved_model: &str,
     ) -> Result<ModelResponse> {
         let mut last_err = None;
 
         for attempt in 0..=self.max_request_retries {
-            match self.call_llm(ctx, state).await {
+            match self.call_llm(ctx, config, state, resolved_model).await {
                 Ok(response) => return Ok(response),
                 Err(e) if e.is_retryable() && attempt < self.max_request_retries => {
                     let delay_ms = compute_delay(self.request_retry_backoff_ms, attempt, e.retry_after_ms());
@@ -256,14 +250,14 @@ impl AgentLoop {
     fn record_usage(&self, ctx: &RuntimeContext, response: &ModelResponse, state: &mut LoopState) {
         state.total_usage += &response.usage;
         state.request_count += 1;
-        self.emit(ctx, Event::TokenUsage {
+        emit(ctx, Event::TokenUsage {
             agent_name: self.name.clone(),
             model: response.model.clone(),
             usage: response.usage.clone(),
         });
     }
 
-    fn parse_response(&self, ctx: &RuntimeContext, response: &ModelResponse) -> (String, Vec<ToolCall>) {
+    fn parse_response(&self, response: &ModelResponse) -> (String, Vec<ToolCall>) {
         let mut text = String::new();
         let mut tool_calls = Vec::new();
 
@@ -271,7 +265,6 @@ impl AgentLoop {
             match block {
                 ContentBlock::Text { text: chunk } => {
                     text.push_str(chunk);
-                    self.emit(ctx, Event::ResponseTextChunk { agent_name: self.name.clone(), content: chunk.clone() });
                 }
                 ContentBlock::ToolUse { id, name, input } => {
                     tool_calls.push(ToolCall {
@@ -303,8 +296,7 @@ impl AgentLoop {
             return Ok(None); // continue loop
         }
 
-        self.emit(ctx, Event::TurnEnd { agent_name: self.name.clone(), turn: state.turn });
-        self.emit(ctx, Event::AgentEnd { agent_name: self.name.clone(), turns: state.turn });
+        emit(ctx, Event::AgentEnd { agent_name: self.name.clone(), turns: state.turn });
         Ok(Some(AgentOutput {
             response: state.structured_output.take(),
             response_raw: text,
@@ -321,12 +313,13 @@ impl AgentLoop {
     async fn execute_tools(
         &self,
         ctx: &RuntimeContext,
+        config: &LoopConfig,
         state: &mut LoopState,
         tool_calls: &[ToolCall],
     ) -> Vec<ContentBlock> {
         state.tool_call_count += tool_calls.len() as u64;
         for call in tool_calls {
-            self.emit(ctx, Event::ToolCallStart {
+            emit(ctx, Event::ToolCallStart {
                 agent_name: self.name.clone(),
                 tool_name: call.name.clone(),
                 call_id: call.id.clone(),
@@ -334,17 +327,12 @@ impl AgentLoop {
             });
         }
 
-        let mut tool_ctx = ToolContext::new(ctx.working_directory.clone())
-            .registry(Arc::new(state.tools.clone()));
-        tool_ctx.set_extension(ctx.clone());
-        let results = execute_tool_calls(tool_calls, &state.tools, &tool_ctx).await;
+        let tool_ctx = ToolContext::new(ctx.working_directory.clone())
+            .registry(Arc::clone(&config.tools))
+            .runtime_context(ctx.clone());
+        let results = execute_tool_calls(tool_calls, &tool_ctx).await;
 
-        self.emit_tool_results(ctx, tool_calls, &results);
-        results
-    }
-
-    fn emit_tool_results(&self, ctx: &RuntimeContext, tool_calls: &[ToolCall], results: &[ContentBlock]) {
-        for block in results {
+        for block in &results {
             let ContentBlock::ToolResult { tool_use_id, content, is_error } = block else {
                 continue;
             };
@@ -353,7 +341,7 @@ impl AgentLoop {
                 .find(|c| c.id == *tool_use_id)
                 .map(|c| c.name.clone())
                 .unwrap_or_default();
-            self.emit(ctx, Event::ToolCallEnd {
+            emit(ctx, Event::ToolCallEnd {
                 agent_name: self.name.clone(),
                 tool_name,
                 call_id: tool_use_id.clone(),
@@ -361,65 +349,63 @@ impl AgentLoop {
                 is_error: *is_error,
             });
         }
+
+        results
     }
 
-    fn extract_discoveries(
-        &self,
-        tool_calls: &[ToolCall],
-        results: &[ContentBlock],
-        state: &mut LoopState,
-    ) {
-        for call in tool_calls {
-            if call.name == STRUCTURED_OUTPUT_TOOL_NAME {
-                state.structured_output = Some(call.input.clone());
-                continue;
-            }
-            if call.name != "tool_search" {
-                continue;
-            }
+}
 
-            let search_output = find_tool_result(results, &call.id);
-            if let Some(content) = search_output {
-                extract_discovered_tool_names(content, &mut state.discovered_tools);
+fn emit(ctx: &RuntimeContext, event: Event) {
+    (ctx.event_handler)(event);
+}
+
+fn record_transcript(
+    ctx: &RuntimeContext,
+    entry_type: EntryType,
+    message: &Message,
+    usage_and_model: Option<(&TokenUsage, &str)>,
+) {
+    let Some(ref store) = ctx.session_store else { return };
+    store.lock().unwrap().record(TranscriptEntry {
+        recorded_at: now_millis(),
+        entry_type,
+        message: message.clone(),
+        usage: usage_and_model.map(|(u, _)| u.clone()),
+        model: usage_and_model.map(|(_, m)| m.to_string()),
+    }).ok();
+}
+
+fn drain_command_queue(ctx: &RuntimeContext, state: &mut LoopState) {
+    let Some(ref queue) = ctx.command_queue else { return };
+    while let Some(cmd) = queue.dequeue(Some(&ctx.agent_name)) {
+        match cmd.priority {
+            QueuePriority::Now | QueuePriority::Next => {
+                state.messages.push(Message::user(cmd.content));
             }
-        }
-    }
-
-    fn record_transcript(
-        &self,
-        ctx: &RuntimeContext,
-        entry_type: EntryType,
-        state: &LoopState,
-        response: Option<&ModelResponse>,
-    ) {
-        let Some(ref store) = ctx.session_store else { return };
-        let Some(message) = state.messages.last() else { return };
-        store.lock().unwrap().record(TranscriptEntry {
-            recorded_at: now_millis(),
-            entry_type,
-            message: message.clone(),
-            usage: response.map(|r| r.usage.clone()),
-            model: response.map(|r| r.model.clone()),
-        }).ok();
-    }
-
-    fn drain_command_queue(&self, ctx: &RuntimeContext, state: &mut LoopState) {
-        let Some(ref queue) = ctx.command_queue else { return };
-        while let Some(cmd) = queue.dequeue(Some(&ctx.agent_name)) {
-            match cmd.priority {
-                QueuePriority::Now | QueuePriority::Next => {
-                    state.messages.push(Message::user(cmd.content));
-                }
-                QueuePriority::Later => {
-                    queue.enqueue(cmd);
-                    break;
-                }
+            QueuePriority::Later => {
+                queue.enqueue(cmd);
+                break;
             }
         }
     }
+}
 
-    fn emit(&self, ctx: &RuntimeContext, event: Event) {
-        (ctx.event_handler)(event);
+fn capture_structured_output(tool_calls: &[ToolCall], state: &mut LoopState) {
+    for call in tool_calls {
+        if call.name == STRUCTURED_OUTPUT_TOOL_NAME {
+            state.structured_output = Some(call.input.clone());
+        }
+    }
+}
+
+fn capture_discovered_tools(tool_calls: &[ToolCall], results: &[ContentBlock], state: &mut LoopState) {
+    for call in tool_calls {
+        if call.name != "tool_search" {
+            continue;
+        }
+        if let Some(content) = find_tool_result(results, &call.id) {
+            extract_discovered_tool_names(content, &mut state.discovered_tools);
+        }
     }
 }
 
@@ -949,11 +935,11 @@ mod tests {
             "TurnEnd",
             "TurnStart",
             "RequestStart",
+            "ResponseTextChunk",
             "RequestEnd",
             "TokenUsage",
-            "ResponseTextChunk",
-            "TurnEnd",
             "AgentEnd",
+            "TurnEnd",
         ]);
     }
 

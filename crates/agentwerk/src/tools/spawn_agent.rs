@@ -191,7 +191,8 @@ impl Tool for SpawnAgentTool {
                 })?;
 
             let invocation_ctx = ctx
-                .get_extension::<RuntimeContext>()
+                .runtime_context
+                .as_ref()
                 .ok_or_else(|| AgenticError::Tool {
                     tool_name: "spawn_agent".into(),
                     message: "RuntimeContext not available in ToolContext".into(),

@@ -1,5 +1,4 @@
-use std::any::{Any, TypeId};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -8,6 +7,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::agent::RuntimeContext;
 use crate::error::Result;
 use crate::provider::types::ContentBlock;
 
@@ -16,10 +16,11 @@ use crate::provider::types::ContentBlock;
 // ---------------------------------------------------------------------------
 
 /// Context passed to tool execution.
+#[derive(Clone)]
 pub struct ToolContext {
     pub working_directory: PathBuf,
-    pub tool_registry: Option<Arc<ToolRegistry>>,
-    extensions: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+    pub(crate) tool_registry: Option<Arc<ToolRegistry>>,
+    pub(crate) runtime_context: Option<RuntimeContext>,
 }
 
 impl ToolContext {
@@ -27,36 +28,18 @@ impl ToolContext {
         Self {
             working_directory,
             tool_registry: None,
-            extensions: HashMap::new(),
+            runtime_context: None,
         }
     }
 
-    pub fn registry(mut self, registry: Arc<ToolRegistry>) -> Self {
+    pub(crate) fn registry(mut self, registry: Arc<ToolRegistry>) -> Self {
         self.tool_registry = Some(registry);
         self
     }
 
-    /// Store a typed extension value accessible by tools.
-    pub fn set_extension<T: Any + Send + Sync + 'static>(&mut self, value: T) {
-        self.extensions.insert(TypeId::of::<T>(), Arc::new(value));
-    }
-
-    /// Retrieve a typed extension value.
-    pub fn get_extension<T: Any + Send + Sync + 'static>(&self) -> Option<&T> {
-        self.extensions
-            .get(&TypeId::of::<T>())
-            .and_then(|arc| arc.downcast_ref::<T>())
-    }
-
-}
-
-impl Clone for ToolContext {
-    fn clone(&self) -> Self {
-        Self {
-            working_directory: self.working_directory.clone(),
-            tool_registry: self.tool_registry.clone(),
-            extensions: self.extensions.clone(),
-        }
+    pub(crate) fn runtime_context(mut self, ctx: RuntimeContext) -> Self {
+        self.runtime_context = Some(ctx);
+        self
     }
 }
 
@@ -65,7 +48,7 @@ impl std::fmt::Debug for ToolContext {
         f.debug_struct("ToolContext")
             .field("working_directory", &self.working_directory)
             .field("tool_registry", &self.tool_registry)
-            .field("extensions_count", &self.extensions.len())
+            .field("has_runtime_context", &self.runtime_context.is_some())
             .finish()
     }
 }
@@ -101,13 +84,6 @@ impl ToolResult {
     pub fn error(content: impl Into<String>) -> Self {
         Self { content: content.into(), is_error: true }
     }
-}
-
-/// A search result from ToolRegistry::search().
-#[derive(Debug, Clone)]
-pub(crate) struct ToolSearchResult {
-    pub definition: ToolDefinition,
-    pub score: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +128,7 @@ pub trait Tool: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Registry of tools available to an agent.
-pub struct ToolRegistry {
+pub(crate) struct ToolRegistry {
     pub(crate) tools: Vec<Arc<dyn Tool>>,
 }
 
@@ -166,28 +142,21 @@ impl std::fmt::Debug for ToolRegistry {
 }
 
 impl ToolRegistry {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self { tools: Vec::new() }
     }
 
-    pub fn register(&mut self, tool: impl Tool + 'static) {
+    pub(crate) fn register(&mut self, tool: impl Tool + 'static) {
         self.tools.push(Arc::new(tool));
     }
 
-    pub fn get(&self, name: &str) -> Option<&dyn Tool> {
-        self.tools
-            .iter()
-            .find(|t| t.name() == name)
-            .map(|t| t.as_ref() as &dyn Tool)
+    pub(crate) fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.iter().find(|t| t.name() == name).cloned()
     }
 
-    pub fn definitions(&self) -> Vec<ToolDefinition> {
-        self.tools.iter().map(|t| t.definition()).collect()
-    }
-
-    /// Full definitions for non-deferred + discovered deferred tools.
-    /// Undiscovered deferred tools get name-only definitions.
-    pub fn definitions_filtered(&self, discovered: &HashSet<String>) -> Vec<ToolDefinition> {
+    /// Tool definitions for the LLM. Deferred tools that haven't been
+    /// discovered yet get name-only stubs; all others get full definitions.
+    pub(crate) fn definitions(&self, discovered: &HashSet<String>) -> Vec<ToolDefinition> {
         self.tools
             .iter()
             .map(|t| {
@@ -204,10 +173,10 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Search tools by query string. Returns matches sorted by score (highest first).
-    pub(crate) fn search(&self, query: &str) -> Vec<ToolSearchResult> {
+    /// Search tools by query string. Returns matches sorted by relevance (highest first).
+    pub(crate) fn search(&self, query: &str) -> Vec<ToolDefinition> {
         let query_lower = query.to_lowercase();
-        let mut results: Vec<ToolSearchResult> = self
+        let mut scored: Vec<(ToolDefinition, u32)> = self
             .tools
             .iter()
             .filter_map(|t| {
@@ -235,25 +204,18 @@ impl ToolRegistry {
                 }
 
                 if score > 0 {
-                    Some(ToolSearchResult {
-                        definition: t.definition(),
-                        score,
-                    })
+                    Some((t.definition(), score))
                 } else {
                     None
                 }
             })
             .collect();
 
-        results.sort_by(|a, b| b.score.cmp(&a.score));
-        results
+        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.into_iter().map(|(def, _)| def).collect()
     }
 
-    pub fn has_deferred_tools(&self) -> bool {
-        self.tools.iter().any(|t| t.should_defer())
-    }
-
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.tools.is_empty()
     }
 }
@@ -422,9 +384,22 @@ fn partition_tool_calls(calls: &[ToolCall], registry: &ToolRegistry) -> Vec<Tool
 /// Execute tool calls with concurrent read-only batching and serial write execution.
 pub(crate) async fn execute_tool_calls(
     calls: &[ToolCall],
-    registry: &ToolRegistry,
     ctx: &ToolContext,
 ) -> Vec<ContentBlock> {
+    let registry = match ctx.tool_registry.as_ref() {
+        Some(r) => r,
+        None => {
+            return calls
+                .iter()
+                .map(|call| ContentBlock::ToolResult {
+                    tool_use_id: call.id.clone(),
+                    content: "No tool registry available".into(),
+                    is_error: true,
+                })
+                .collect();
+        }
+    };
+
     let batches = partition_tool_calls(calls, registry);
     let mut results: Vec<ContentBlock> = Vec::new();
     let semaphore = Arc::new(tokio::sync::Semaphore::new(10));
@@ -436,11 +411,7 @@ pub(crate) async fn execute_tool_calls(
                 for call in calls {
                     let sem = semaphore.clone();
                     let ctx = ctx.clone();
-                    let tool_arc = registry
-                        .tools
-                        .iter()
-                        .find(|t| t.name() == call.name)
-                        .cloned();
+                    let tool_arc = registry.get(&call.name);
                     let call_id = call.id.clone();
                     let call_name = call.name.clone();
                     let input = call.input.clone();
@@ -513,7 +484,7 @@ mod tests {
         registry.register(MockTool::new("read", true, "ok"));
         registry.register(MockTool::new("write", false, "ok"));
 
-        let defs = registry.definitions();
+        let defs = registry.definitions(&HashSet::new());
         assert_eq!(defs.len(), 2);
         assert_eq!(defs[0].name, "read");
         assert_eq!(defs[1].name, "write");
@@ -530,14 +501,14 @@ mod tests {
     }
 
     #[test]
-    fn registry_definitions_filtered_deferred() {
+    fn registry_definitions_deferred() {
         let mut registry = ToolRegistry::new();
         registry.register(MockTool::new("always_visible", true, "ok"));
         registry.register(DeferredMockTool::new("deferred_tool"));
 
         // Without discovery: deferred tool has empty definition
         let discovered = HashSet::new();
-        let defs = registry.definitions_filtered(&discovered);
+        let defs = registry.definitions(&discovered);
         assert_eq!(defs.len(), 2);
         let deferred = defs.iter().find(|d| d.name == "deferred_tool").unwrap();
         assert!(deferred.description.is_empty());
@@ -546,19 +517,9 @@ mod tests {
         // With discovery: deferred tool has full definition
         let mut discovered = HashSet::new();
         discovered.insert("deferred_tool".to_string());
-        let defs = registry.definitions_filtered(&discovered);
+        let defs = registry.definitions(&discovered);
         let deferred = defs.iter().find(|d| d.name == "deferred_tool").unwrap();
         assert!(!deferred.description.is_empty());
-    }
-
-    #[test]
-    fn registry_has_deferred_tools() {
-        let mut registry = ToolRegistry::new();
-        registry.register(MockTool::new("t", true, "ok"));
-        assert!(!registry.has_deferred_tools());
-
-        registry.register(DeferredMockTool::new("d"));
-        assert!(registry.has_deferred_tools());
     }
 
     #[test]
@@ -569,7 +530,7 @@ mod tests {
 
         let results = registry.search("read");
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].definition.name, "read_file");
+        assert_eq!(results[0].name, "read_file");
     }
 
     #[test]
@@ -577,20 +538,20 @@ mod tests {
         let mut registry = ToolRegistry::new();
         registry.register(MockTool::new("t", true, "ok"));
         let cloned = registry.clone();
-        assert_eq!(cloned.definitions().len(), 1);
+        assert_eq!(cloned.definitions(&HashSet::new()).len(), 1);
     }
 
     #[tokio::test]
     async fn execute_unknown_tool_returns_error() {
         let registry = ToolRegistry::new();
-        let ctx = test_tool_context();
+        let ctx = test_tool_context().registry(Arc::new(registry));
         let calls = vec![ToolCall {
             id: "c1".into(),
             name: "nonexistent".into(),
             input: serde_json::json!({}),
         }];
 
-        let results = execute_tool_calls(&calls, &registry, &ctx).await;
+        let results = execute_tool_calls(&calls, &ctx).await;
         assert_eq!(results.len(), 1);
         match &results[0] {
             ContentBlock::ToolResult {
@@ -608,7 +569,7 @@ mod tests {
         let mut registry = ToolRegistry::new();
         registry.register(MockTool::new("read1", true, "result1"));
         registry.register(MockTool::new("read2", true, "result2"));
-        let ctx = test_tool_context();
+        let ctx = test_tool_context().registry(Arc::new(registry));
 
         let calls = vec![
             ToolCall {
@@ -623,7 +584,7 @@ mod tests {
             },
         ];
 
-        let results = execute_tool_calls(&calls, &registry, &ctx).await;
+        let results = execute_tool_calls(&calls, &ctx).await;
         assert_eq!(results.len(), 2);
     }
 
@@ -632,7 +593,7 @@ mod tests {
         let mut registry = ToolRegistry::new();
         let tool = MockTool::new("write_file", false, "written");
         registry.register(tool);
-        let ctx = test_tool_context();
+        let ctx = test_tool_context().registry(Arc::new(registry));
 
         let calls = vec![ToolCall {
             id: "c1".into(),
@@ -640,7 +601,7 @@ mod tests {
             input: serde_json::json!({"path": "/tmp/test"}),
         }];
 
-        let results = execute_tool_calls(&calls, &registry, &ctx).await;
+        let results = execute_tool_calls(&calls, &ctx).await;
         assert_eq!(results.len(), 1);
         match &results[0] {
             ContentBlock::ToolResult {
@@ -690,19 +651,4 @@ mod tests {
         let _ = ToolBuilder::new("no_handler", "missing").build();
     }
 
-    #[test]
-    fn tool_context_extensions_set_get() {
-        let mut ctx = test_tool_context();
-        ctx.set_extension(42u32);
-        ctx.set_extension("hello".to_string());
-
-        assert_eq!(ctx.get_extension::<u32>(), Some(&42));
-        assert_eq!(ctx.get_extension::<String>(), Some(&"hello".to_string()));
-    }
-
-    #[test]
-    fn tool_context_extensions_missing() {
-        let ctx = test_tool_context();
-        assert!(ctx.get_extension::<u32>().is_none());
-    }
 }

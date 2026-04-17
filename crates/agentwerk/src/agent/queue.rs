@@ -31,11 +31,10 @@ impl QueuedCommand {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Variants used in tests and by enqueue_notification; full set kept for future routing.
+#[allow(dead_code)] // UserInput used in tests; TaskNotification used by enqueue_notification.
 pub(crate) enum CommandSource {
     UserInput,
     TaskNotification { task_id: String },
-    System,
 }
 
 /// Thread-safe priority queue for commands.
@@ -44,17 +43,17 @@ pub(crate) struct CommandQueue {
 }
 
 impl CommandQueue {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
-    pub fn enqueue(&self, command: QueuedCommand) {
+    pub(crate) fn enqueue(&self, command: QueuedCommand) {
         self.inner.lock().unwrap().push_back(command);
     }
 
-    pub fn enqueue_notification(&self, task_id: &str, summary: &str) {
+    pub(crate) fn enqueue_notification(&self, task_id: &str, summary: &str) {
         self.enqueue(QueuedCommand {
             content: format!("Task {task_id} completed: {summary}"),
             priority: QueuePriority::Later,
@@ -65,7 +64,7 @@ impl CommandQueue {
         });
     }
 
-    pub fn dequeue(&self, agent_name: Option<&str>) -> Option<QueuedCommand> {
+    pub(crate) fn dequeue(&self, agent_name: Option<&str>) -> Option<QueuedCommand> {
         let mut queue = self.inner.lock().unwrap();
         let mut best: Option<(usize, QueuePriority)> = None;
 

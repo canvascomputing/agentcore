@@ -148,8 +148,6 @@ use agentwerk::{AnthropicProvider, OpenAiProvider};
 
 let provider = AnthropicProvider::new(key);
 let provider = OpenAiProvider::new(key);
-let provider = OpenAiProvider::mistral(key);
-let provider = OpenAiProvider::litellm(key);
 
 // share a connection pool
 let client = reqwest::Client::new();

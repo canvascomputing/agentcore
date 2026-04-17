@@ -7,7 +7,7 @@ use crate::error::Result;
 use crate::provider::types::{Message, TokenUsage};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum EntryType {
+pub(crate) enum EntryType {
     UserMessage,
     AssistantMessage,
     ToolResult,
@@ -15,27 +15,27 @@ pub enum EntryType {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct TranscriptEntry {
-    pub recorded_at: u64,
-    pub entry_type: EntryType,
-    pub message: Message,
-    pub usage: Option<TokenUsage>,
-    pub model: Option<String>,
+pub(crate) struct TranscriptEntry {
+    pub(crate) recorded_at: u64,
+    pub(crate) entry_type: EntryType,
+    pub(crate) message: Message,
+    pub(crate) usage: Option<TokenUsage>,
+    pub(crate) model: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[allow(dead_code)] // Used by list_sessions; tested but no production caller yet.
-pub struct SessionMetadata {
-    pub session_id: String,
-    pub created_at: u64,
-    pub last_active_at: u64,
-    pub message_count: u64,
+pub(crate) struct SessionMetadata {
+    pub(crate) session_id: String,
+    pub(crate) created_at: u64,
+    pub(crate) last_active_at: u64,
+    pub(crate) message_count: u64,
 }
 
 /// Append-only JSONL transcript store.
 ///
 /// Directory layout: `<base_dir>/sessions/<session_id>/transcript.jsonl`
-pub struct SessionStore {
+pub(crate) struct SessionStore {
     base_dir: PathBuf,
     session_id: String,
     writer: Option<BufWriter<File>>,
@@ -43,7 +43,7 @@ pub struct SessionStore {
 
 #[allow(dead_code)] // Session resumption API — tested but not yet wired to CLI.
 impl SessionStore {
-    pub fn new(base_dir: &Path, session_id: &str) -> Self {
+    pub(crate) fn new(base_dir: &Path, session_id: &str) -> Self {
         Self {
             base_dir: base_dir.to_path_buf(),
             session_id: session_id.to_string(),
@@ -52,7 +52,7 @@ impl SessionStore {
     }
 
     /// Append a message to the transcript.
-    pub fn record(&mut self, entry: TranscriptEntry) -> Result<()> {
+    pub(crate) fn record(&mut self, entry: TranscriptEntry) -> Result<()> {
         let line = serde_json::to_string(&entry)?;
         let writer = self.open_writer()?;
         writeln!(writer, "{line}")?;
@@ -60,7 +60,7 @@ impl SessionStore {
     }
 
     /// Flush buffered writes to disk.
-    pub fn flush(&mut self) -> Result<()> {
+    pub(crate) fn flush(&mut self) -> Result<()> {
         if let Some(ref mut writer) = self.writer {
             writer.flush()?;
         }
@@ -68,7 +68,7 @@ impl SessionStore {
     }
 
     /// Load all entries from a transcript file.
-    pub fn load(base_dir: &Path, session_id: &str) -> Result<Vec<TranscriptEntry>> {
+    pub(crate) fn load(base_dir: &Path, session_id: &str) -> Result<Vec<TranscriptEntry>> {
         let path = base_dir
             .join("sessions")
             .join(session_id)
@@ -94,7 +94,7 @@ impl SessionStore {
     }
 
     /// List available sessions with metadata.
-    pub fn list_sessions(base_dir: &Path) -> Result<Vec<SessionMetadata>> {
+    pub(crate) fn list_sessions(base_dir: &Path) -> Result<Vec<SessionMetadata>> {
         let sessions_dir = base_dir.join("sessions");
         if !sessions_dir.exists() {
             return Ok(Vec::new());

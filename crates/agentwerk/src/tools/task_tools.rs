@@ -15,15 +15,15 @@ pub struct TaskTool {
 }
 
 impl TaskTool {
-    pub fn new() -> Self {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        Self::open(&cwd)
+    pub fn new(data_dir: &Path) -> Self {
+        Self {
+            store: Arc::new(Mutex::new(TaskStore::new(data_dir, "tasks"))),
+        }
     }
 
-    pub fn open(data_dir: &Path) -> Self {
-        Self {
-            store: Arc::new(Mutex::new(TaskStore::open(data_dir, "tasks"))),
-        }
+    pub fn ephemeral() -> Self {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        Self::new(&cwd)
     }
 }
 
@@ -144,7 +144,7 @@ mod tests {
     fn test_tool() -> TaskTool {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.keep();
-        TaskTool::open(&path)
+        TaskTool::new(&path)
     }
 
     #[tokio::test]
