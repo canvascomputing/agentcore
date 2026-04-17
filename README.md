@@ -179,7 +179,7 @@ that vary per run. The `AgentPool` example below shows this.
 |--------|-------------|---------|
 | `identity_prompt` | `identity_prompt_file` | Persistent identity of the agent |
 | `instruction_prompt` | `instruction_prompt_file` | Task for the current run |
-| `context_prompt` | `context_prompt_file` | Additional context appended after auto-collected metadata |
+| `context_prompt` | `context_prompt_file` | Additional context appended after environment metadata (working directory, platform, OS version, date) |
 | `behavior_prompt` | `behavior_prompt_file` | Override the default behavioral directives (`DEFAULT_BEHAVIOR_PROMPT`) |
 
 ```rust
