@@ -16,16 +16,7 @@
   <a href="#development">Development</a>
 </p>
 
-<p align="center">Most agentic applications reimplement the same core: an execution loop, tool dispatch, and provider integration. This crate provides that foundation as a library.</p>
-
-<p align="center">
-  <a href="crates/agentwerk/src/agent/loop.rs">Agentic execution loop</a> ·
-  <a href="crates/agentwerk/src/tools">Built-in tools</a> ·
-  <a href="crates/agentwerk/src/tools/spawn_agent.rs">Agent orchestration</a> ·
-  <a href="crates/agentwerk/src/provider">Anthropic, Mistral, OpenAI integration</a> ·
-  <a href="crates/agentwerk/src/agent/output.rs">Schema-based output</a> ·
-  <a href="crates/agentwerk/src/provider/retry.rs">Retry Mechanisms</a>
-</p>
+<p align="center">Most agentic applications reimplement the same core: an execution loop, tool dispatch, and provider integration. This crate provides that foundation as a library — agentic execution loop, built-in tools, agent orchestration, Anthropic/Mistral/OpenAI/LiteLLM integration, schema-based output, and retry mechanisms.</p>
 
 ---
 
