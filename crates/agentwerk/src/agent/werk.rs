@@ -66,7 +66,6 @@ pub(crate) struct AgentConfig {
     pub max_schema_retries: Option<u32>,
     pub behavior_prompt: String,
     pub context_prompts: Vec<String>,
-    pub environment_prompt: Option<String>,
     pub tools: ToolRegistry,
     pub max_request_retries: u32,
     pub request_retry_backoff_ms: u64,
@@ -85,7 +84,6 @@ impl Default for AgentConfig {
             max_schema_retries: Some(10),
             behavior_prompt: DEFAULT_BEHAVIOR_PROMPT.to_string(),
             context_prompts: Vec::new(),
-            environment_prompt: None,
             tools: ToolRegistry::new(),
             max_request_retries: DEFAULT_MAX_REQUEST_RETRIES,
             request_retry_backoff_ms: DEFAULT_BACKOFF_MS,
@@ -106,7 +104,6 @@ impl Clone for AgentConfig {
             max_schema_retries: self.max_schema_retries,
             behavior_prompt: self.behavior_prompt.clone(),
             context_prompts: self.context_prompts.clone(),
-            environment_prompt: self.environment_prompt.clone(),
             tools: self.tools.clone(),
             max_request_retries: self.max_request_retries,
             request_retry_backoff_ms: self.request_retry_backoff_ms,
@@ -242,18 +239,6 @@ impl Agent {
     pub fn context_prompt_file(mut self, path: impl Into<PathBuf>) -> Self {
         let content = self.read_file(path.into());
         self.with_config(|c| c.context_prompts.push(content))
-    }
-
-    /// Override the environment context (working directory, platform, OS version, date).
-    pub fn environment_prompt(self, content: impl Into<String>) -> Self {
-        let content = content.into();
-        self.with_config(|c| c.environment_prompt = Some(content))
-    }
-
-    /// Load the environment prompt override from a file.
-    pub fn environment_prompt_file(mut self, path: impl Into<PathBuf>) -> Self {
-        let content = self.read_file(path.into());
-        self.with_config(|c| c.environment_prompt = Some(content))
     }
 
     /// Register one or more agents as sub-agents. The LLM can call them by
@@ -400,7 +385,7 @@ pub(crate) struct Runtime {
     pub working_directory: PathBuf,
     pub command_queue: Option<Arc<CommandQueue>>,
     pub session_store: Option<Arc<Mutex<SessionStore>>>,
-    pub environment_prompt: Option<String>,
+    pub metadata: Option<String>,
 }
 
 impl Runtime {
@@ -440,10 +425,7 @@ impl Runtime {
             Arc::new(Mutex::new(store))
         });
 
-        let environment_prompt = match agent.config.environment_prompt.clone() {
-            Some(custom) => Some(custom),
-            None => Some(prompts::collect_environment_prompt(&working_directory)),
-        };
+        let metadata = Some(prompts::collect_metadata(&working_directory));
 
         Ok(Self {
             provider,
@@ -452,7 +434,7 @@ impl Runtime {
             working_directory,
             command_queue,
             session_store,
-            environment_prompt,
+            metadata,
         })
     }
 
@@ -479,7 +461,7 @@ impl Runtime {
                 .unwrap_or_else(|| self.working_directory.clone()),
             command_queue: self.command_queue.clone(),
             session_store: self.session_store.clone(),
-            environment_prompt: self.environment_prompt.clone(),
+            metadata: self.metadata.clone(),
         }
     }
 }
@@ -599,8 +581,8 @@ fn compile_system_prompt(agent: &Agent) -> String {
 
 fn compile_context_prompt(runtime: &Runtime, agent: &Agent) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
-    if let Some(env) = &runtime.environment_prompt {
-        parts.push(env.clone());
+    if let Some(meta) = &runtime.metadata {
+        parts.push(meta.clone());
     }
     for block in &agent.config.context_prompts {
         parts.push(format!("<context>\n{block}\n</context>"));
@@ -1239,6 +1221,53 @@ mod tests {
             ModelSpec::Exact(m) => assert_eq!(m, "overridden"),
             _ => panic!("expected Exact model"),
         }
+    }
+
+    fn runtime_with_metadata(meta: &str) -> Runtime {
+        Runtime {
+            provider: Arc::new(MockProvider::text("ok")),
+            event_handler: Arc::new(|_| {}),
+            cancel_signal: Arc::new(AtomicBool::new(false)),
+            working_directory: PathBuf::from("/tmp"),
+            command_queue: None,
+            session_store: None,
+            metadata: Some(meta.to_string()),
+        }
+    }
+
+    #[test]
+    fn context_prompt_appended_after_metadata() {
+        let agent = Agent::new()
+            .name("test").model("mock").identity_prompt("")
+            .context_prompt("user-provided context");
+
+        let runtime = runtime_with_metadata("<environment>\ntest metadata\n</environment>");
+        let spec = AgentSpec::compile(&agent, &runtime, None).unwrap();
+
+        let ctx = spec.context_prompt.unwrap();
+        let meta_pos = ctx.find("<environment>").expect("metadata missing");
+        let user_pos = ctx.find("<context>\nuser-provided context\n</context>")
+            .expect("context_prompt missing");
+        assert!(meta_pos < user_pos,
+            "metadata should appear before context_prompt:\n{ctx}");
+    }
+
+    #[test]
+    fn multiple_context_prompts_stacked() {
+        let agent = Agent::new()
+            .name("test").model("mock").identity_prompt("")
+            .context_prompt("first block")
+            .context_prompt("second block");
+
+        let runtime = runtime_with_metadata("<environment>\nmetadata\n</environment>");
+        let spec = AgentSpec::compile(&agent, &runtime, None).unwrap();
+
+        let ctx = spec.context_prompt.unwrap();
+        let meta_pos = ctx.find("<environment>").unwrap();
+        let first_pos = ctx.find("<context>\nfirst block\n</context>").unwrap();
+        let second_pos = ctx.find("<context>\nsecond block\n</context>").unwrap();
+        assert!(meta_pos < first_pos, "metadata before first context");
+        assert!(first_pos < second_pos, "first context before second context");
     }
 }
 

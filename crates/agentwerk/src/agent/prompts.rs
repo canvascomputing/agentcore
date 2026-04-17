@@ -74,9 +74,9 @@ pub(crate) fn interpolate(template: &str, state: &HashMap<String, Value>) -> Str
 // Environment prompt
 // ---------------------------------------------------------------------------
 
-/// Build the default environment prompt — a tagged block with working
-/// directory, platform, OS version, and current date.
-pub(crate) fn collect_environment_prompt(cwd: &Path) -> String {
+/// Build the metadata block — working directory, platform, OS version, and
+/// current date. Prepended to the first user message.
+pub(crate) fn collect_metadata(cwd: &Path) -> String {
     let working_directory = cwd.display();
     let platform = std::env::consts::OS;
     let os_version = std::process::Command::new("uname")
@@ -123,8 +123,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn environment_prompt_includes_path() {
-        let ctx = collect_environment_prompt(std::path::Path::new("/home/user/project"));
+    fn metadata_includes_path() {
+        let ctx = collect_metadata(std::path::Path::new("/home/user/project"));
         assert!(ctx.contains("/home/user/project"));
         assert!(ctx.contains("<environment>"));
     }

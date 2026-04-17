@@ -356,7 +356,7 @@ impl TestHarness {
                 working_directory: self.working_directory.clone(),
                 command_queue: Some(queue.clone()),
                 session_store: None,
-                environment_prompt: None,
+                metadata: None,
             };
             let spec = AgentSpec::compile(&prepared, &runtime, None)?;
             return prepared

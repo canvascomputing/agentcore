@@ -179,8 +179,7 @@ that vary per run. The `AgentPool` example below shows this.
 |--------|-------------|---------|
 | `identity_prompt` | `identity_prompt_file` | Persistent identity of the agent |
 | `instruction_prompt` | `instruction_prompt_file` | Task for the current run |
-| `context_prompt` | `context_prompt_file` | Additional context alongside the instruction |
-| `environment_prompt` | `environment_prompt_file` | Working directory, platform, date |
+| `context_prompt` | `context_prompt_file` | Additional context appended after auto-collected metadata |
 | `behavior_prompt` | `behavior_prompt_file` | Override the default behavioral directives (`DEFAULT_BEHAVIOR_PROMPT`) |
 
 ```rust
@@ -231,7 +230,7 @@ Three rules are specific to running as a sub-agent:
 | Behavior | Fields |
 |---|---|
 | Inherited | `provider`, `model`, `working_directory`, `event_handler`, `cancel_signal` |
-| Shared | `environment_prompt`, `command_queue`, `session_store` |
+| Shared | `command_queue`, `session_store` |
 | Own | `behavior_prompt`, `context_prompt`, `tools`, `output_schema` |
 | Per-spawn | `instruction_prompt` (required), `model`, `identity_prompt`, `max_turns`, `max_tokens`, `max_schema_retries`, `max_request_retries`, `request_retry_backoff_ms` |
 
@@ -393,7 +392,7 @@ Each LLM request is assembled from four parts. Fields are listed in the order th
 | **max_tokens** | `Number` | `max_tokens()` | The maximum number of tokens the model can output |
 | **tool_choice** | `ToolChoice` | `output_schema()` | A constraint that forces the model to call a specific tool |
 | **system_prompt** | `String` | `identity_prompt()`<br>`behavior_prompt()` | Persistent instructions that define who the agent is and how it behaves |
-| **message** | `Message[]` | `environment_prompt()`<br>`context_prompt()`<br>`instruction_prompt()` | The conversation history between user and assistant, starting with environment, context, and the task |
+| **message** | `Message[]` | `context_prompt()`<br>`instruction_prompt()` | The conversation history between user and assistant, starting with metadata, context, and the task |
 | **tools** | `ToolDefinition[]` | `tool()` | The functions the model can call during execution |
 
 ## Development
