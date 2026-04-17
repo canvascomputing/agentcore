@@ -431,4 +431,242 @@ mod tests {
 
         assert!(pool.next().await.is_none());
     }
+
+    // --- Performance tests ---
+
+    fn agent_with_delay(name: &str, delay_ms: u64, text: &str) -> Agent {
+        let slow_tool = ToolBuilder::new("slow", "simulates work")
+            .schema(serde_json::json!({"type": "object", "properties": {}}))
+            .handler(move |_, _| {
+                Box::pin(async move {
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    Ok(ToolResult::success("done"))
+                })
+            })
+            .build();
+
+        let provider = Arc::new(MockProvider::new(vec![
+            tool_response("slow", "c1", serde_json::json!({})),
+            text_response(text),
+        ]));
+
+        Agent::new()
+            .name(name)
+            .model("mock")
+            .identity_prompt("")
+            .instruction_prompt("go")
+            .tool(slow_tool)
+            .provider(provider)
+    }
+
+    #[tokio::test]
+    async fn perf_throughput_scales_with_batch_size() {
+        // Sequential: 20 agents × 50ms each ≈ 1000ms
+        let start = tokio::time::Instant::now();
+        let pool = AgentPool::new().batch_size(1);
+        for i in 0..20 {
+            pool.spawn(agent_with_delay("w", 50, &format!("r{i}")))
+                .await;
+        }
+        let seq_results = pool.drain().await;
+        let seq_elapsed = start.elapsed();
+
+        assert_eq!(seq_results.len(), 20);
+        assert!(seq_results.iter().all(|r| r.1.is_ok()));
+
+        // Parallel: 20 agents × 50ms with batch_size=20 ≈ 50ms
+        let start = tokio::time::Instant::now();
+        let pool = AgentPool::new().batch_size(20);
+        for i in 0..20 {
+            pool.spawn(agent_with_delay("w", 50, &format!("r{i}")))
+                .await;
+        }
+        let par_results = pool.drain().await;
+        let par_elapsed = start.elapsed();
+
+        assert_eq!(par_results.len(), 20);
+        assert!(par_results.iter().all(|r| r.1.is_ok()));
+
+        assert!(
+            seq_elapsed > par_elapsed * 3,
+            "Sequential ({seq_elapsed:?}) should be at least 3x slower than parallel ({par_elapsed:?})"
+        );
+    }
+
+    #[tokio::test]
+    async fn perf_spawn_order_vs_completion_order() {
+        let mut times = Vec::new();
+
+        for strategy in [PoolStrategy::CompletionOrder, PoolStrategy::SpawnOrder] {
+            let start = tokio::time::Instant::now();
+            let pool = AgentPool::new().batch_size(10).ordering(strategy);
+            for i in 0..50 {
+                pool.spawn(agent_with_delay("w", 20, &format!("r{i}")))
+                    .await;
+            }
+            let results = pool.drain().await;
+            let elapsed = start.elapsed();
+
+            assert_eq!(results.len(), 50);
+            assert!(results.iter().all(|r| r.1.is_ok()));
+            times.push(elapsed);
+        }
+
+        let diff = if times[0] > times[1] {
+            times[0] - times[1]
+        } else {
+            times[1] - times[0]
+        };
+        assert!(
+            diff < Duration::from_millis(500),
+            "CompletionOrder ({:?}) and SpawnOrder ({:?}) should complete within 500ms of each other",
+            times[0],
+            times[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn perf_high_job_count() {
+        let pool = AgentPool::new().batch_size(50);
+        for i in 0..500 {
+            pool.spawn(agent_with_response(&format!("r{i}"))).await;
+        }
+
+        let start = tokio::time::Instant::now();
+        let results = pool.drain().await;
+        let elapsed = start.elapsed();
+
+        assert_eq!(results.len(), 500);
+        assert!(results.iter().all(|r| r.1.is_ok()));
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "500 instant agents should drain in < 5s, took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn perf_concurrent_spawn_and_consume() {
+        let running = Arc::new(AtomicUsize::new(0));
+        let max_concurrent = Arc::new(AtomicUsize::new(0));
+        let pool = Arc::new(AgentPool::new().batch_size(5));
+
+        // Spawner task: push 50 agents
+        let pool_s = pool.clone();
+        let running_s = running.clone();
+        let max_s = max_concurrent.clone();
+        let spawner = tokio::spawn(async move {
+            for i in 0..50 {
+                let r = running_s.clone();
+                let m = max_s.clone();
+                let slow_tool = ToolBuilder::new("slow", "work")
+                    .schema(serde_json::json!({"type": "object", "properties": {}}))
+                    .handler(move |_, _| {
+                        let r = r.clone();
+                        let m = m.clone();
+                        Box::pin(async move {
+                            let cur = r.fetch_add(1, Ordering::SeqCst) + 1;
+                            m.fetch_max(cur, Ordering::SeqCst);
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                            r.fetch_sub(1, Ordering::SeqCst);
+                            Ok(ToolResult::success("done"))
+                        })
+                    })
+                    .build();
+
+                let provider = Arc::new(MockProvider::new(vec![
+                    tool_response("slow", "c1", serde_json::json!({})),
+                    text_response(&format!("r{i}")),
+                ]));
+
+                pool_s
+                    .spawn(
+                        Agent::new()
+                            .name("w")
+                            .model("mock")
+                            .identity_prompt("")
+                            .instruction_prompt("go")
+                            .tool(slow_tool)
+                            .provider(provider),
+                    )
+                    .await;
+            }
+        });
+
+        // Consumer: collect all results
+        let mut collected = Vec::new();
+        loop {
+            match pool.next().await {
+                Some(entry) => collected.push(entry),
+                None => {
+                    if spawner.is_finished() {
+                        // Drain remaining after spawner is done
+                        while let Some(entry) = pool.next().await {
+                            collected.push(entry);
+                        }
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            }
+        }
+        spawner.await.unwrap();
+
+        assert_eq!(collected.len(), 50);
+        assert!(collected.iter().all(|r| r.1.is_ok()));
+        assert!(
+            max_concurrent.load(Ordering::SeqCst) <= 5,
+            "Max concurrent ({}) should not exceed batch_size (5)",
+            max_concurrent.load(Ordering::SeqCst)
+        );
+    }
+
+    #[tokio::test]
+    async fn perf_spawn_order_buffering_under_load() {
+        let pool = AgentPool::new()
+            .batch_size(10)
+            .ordering(PoolStrategy::SpawnOrder);
+
+        for i in 0u64..100 {
+            let delay = (i % 5) * 10; // 0, 10, 20, 30, 40ms
+            pool.spawn(agent_with_delay("w", delay, &format!("r{i}")))
+                .await;
+        }
+
+        let results = pool.drain().await;
+
+        assert_eq!(results.len(), 100);
+        for (idx, (job_id, result)) in results.iter().enumerate() {
+            assert_eq!(
+                *job_id, idx as u64,
+                "Result at position {idx} has wrong job_id {job_id}"
+            );
+            assert!(result.is_ok(), "Job {job_id} failed unexpectedly");
+        }
+    }
+
+    #[tokio::test]
+    async fn perf_semaphore_backpressure() {
+        let start = tokio::time::Instant::now();
+        let pool = AgentPool::new().batch_size(2);
+
+        for i in 0..10 {
+            pool.spawn(agent_with_delay("w", 50, &format!("r{i}")))
+                .await;
+        }
+
+        let results = pool.drain().await;
+        let elapsed = start.elapsed();
+
+        assert_eq!(results.len(), 10);
+        assert!(results.iter().all(|r| r.1.is_ok()));
+        // 10 agents / 2 concurrent × 50ms = 250ms minimum
+        assert!(
+            elapsed >= Duration::from_millis(200),
+            "Should take at least 200ms with batch_size=2, took {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(1000),
+            "Should complete within 1s, took {elapsed:?}"
+        );
+    }
 }
