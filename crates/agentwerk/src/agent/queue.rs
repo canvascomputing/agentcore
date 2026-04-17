@@ -64,12 +64,20 @@ impl CommandQueue {
         });
     }
 
-    pub(crate) fn dequeue(&self, agent_name: Option<&str>) -> Option<QueuedCommand> {
+    /// Dequeue the highest-priority command visible to the given agent that also
+    /// satisfies `pred`. Commands failing the predicate are skipped (not removed).
+    pub(crate) fn dequeue_if<F>(&self, agent_name: Option<&str>, pred: F) -> Option<QueuedCommand>
+    where
+        F: Fn(&QueuedCommand) -> bool,
+    {
         let mut queue = self.inner.lock().unwrap();
         let mut best: Option<(usize, QueuePriority)> = None;
 
         for (i, cmd) in queue.iter().enumerate() {
             if !cmd.is_visible_to(agent_name) {
+                continue;
+            }
+            if !pred(cmd) {
                 continue;
             }
             if best.as_ref().is_some_and(|(_, p)| *p <= cmd.priority) {

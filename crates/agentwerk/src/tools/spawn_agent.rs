@@ -4,106 +4,29 @@ use std::pin::Pin;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::agent::{Agent, AgentBuilder, AgentOutput, RuntimeContext};
+use crate::agent::Agent;
 use crate::error::{AgenticError, Result};
-use crate::provider::model::ModelSpec;
+use crate::util::generate_agent_name;
 
 use crate::tools::tool::{Tool, ToolContext, ToolResult};
 
+/// Default identity for ad-hoc sub-agents (when the LLM doesn't supply one).
+const DEFAULT_IDENTITY: &str = "You are a focused helper agent. Answer concisely.";
+
+/// LLM-facing tool that spawns a sub-agent. Carries no state — every per-call
+/// detail (caller's `Runtime`, `AgentSpec`) flows in via `ToolContext`.
+pub struct SpawnAgentTool;
+
+/// Tool-control fields. Per-agent config overrides (identity, model, max_*, …)
+/// live in the same JSON object and are applied via `Agent::apply_overrides`.
 #[derive(Deserialize)]
-struct SpawnAgentInput {
+struct SpawnArgs {
     description: String,
-    prompt: String,
+    instruction: String,
+    #[serde(default)]
     agent: Option<String>,
-    model: Option<String>,
-    max_turns: Option<u32>,
+    #[serde(default)]
     background: Option<bool>,
-}
-
-/// Tool that spawns sub-agents in foreground or background mode.
-pub struct SpawnAgentTool {
-    sub_agents: Vec<Agent>,
-    default_model: ModelSpec,
-}
-
-impl SpawnAgentTool {
-    pub fn new() -> Self {
-        Self {
-            sub_agents: Vec::new(),
-            default_model: ModelSpec::Inherit,
-        }
-    }
-
-    pub fn sub_agent(mut self, agent: Agent) -> Self {
-        self.sub_agents.push(agent);
-        self
-    }
-
-    /// Set the default model for ad-hoc sub-agents.
-    /// Accepts an exact model ID string.
-    pub fn default_model(mut self, model: impl Into<String>) -> Self {
-        self.default_model = ModelSpec::Exact(model.into());
-        self
-    }
-
-    fn find_agent(&self, name: &str) -> Result<Agent> {
-        self.sub_agents
-            .iter()
-            .find(|a| a.name() == name)
-            .cloned()
-            .ok_or_else(|| AgenticError::Tool {
-                tool_name: "spawn_agent".into(),
-                message: format!("No sub-agent named '{name}'"),
-            })
-    }
-
-    async fn execute(&self, input: SpawnAgentInput, ctx: RuntimeContext) -> Result<AgentOutput> {
-        let agent: Agent = if let Some(ref name) = input.agent {
-            self.find_agent(name)?
-        } else {
-            let mut builder = AgentBuilder::new()
-                .name(&input.description)
-                .identity_prompt(&input.prompt)
-                .max_turns(input.max_turns.unwrap_or(10));
-
-            if let Some(id) = input.model.as_deref() {
-                builder = builder.model(id);
-            } else if let ModelSpec::Exact(id) = &self.default_model {
-                builder = builder.model(id);
-            }
-
-            builder.build()?
-        };
-
-        let child_ctx = ctx.child(&input.description).instruction_prompt(&input.prompt);
-
-        if input.background.unwrap_or(false) {
-            let agent_id = child_ctx.agent_name.clone();
-            let agent_id_for_msg = agent_id.clone();
-            let queue = ctx.command_queue.clone();
-            let description = input.description.clone();
-
-            tokio::spawn(async move {
-                let result = agent.execute(child_ctx).await;
-                if let Some(q) = queue {
-                    match result {
-                        Ok(output) => q.enqueue_notification(&agent_id, &output.response_raw),
-                        Err(e) => q.enqueue_notification(&agent_id, &format!("Failed: {e}")),
-                    }
-                }
-            });
-
-            Ok(AgentOutput {
-                response_raw: format!(
-                    "Background agent '{}' started (id: {agent_id_for_msg})",
-                    description
-                ),
-                ..AgentOutput::empty()
-            })
-        } else {
-            agent.execute(child_ctx).await
-        }
-    }
 }
 
 const DESCRIPTION: &str = "\
@@ -147,30 +70,50 @@ impl Tool for SpawnAgentTool {
             "properties": {
                 "description": {
                     "type": "string",
-                    "description": "Short description of what the agent should do"
+                    "description": "Short label for the spawned agent — shown in events."
                 },
-                "prompt": {
+                "instruction": {
                     "type": "string",
-                    "description": "The prompt/instructions for the agent"
+                    "description": "The user-level task for the agent to perform."
                 },
                 "agent": {
                     "type": "string",
-                    "description": "Name of a registered sub-agent to use (optional)"
+                    "description": "Name of a registered sub-agent to use. Omit for an ad-hoc agent."
+                },
+                "identity": {
+                    "type": "string",
+                    "description": "System prompt for ad-hoc agents (ignored when 'agent' is set). Defaults to a generic helper identity."
                 },
                 "model": {
                     "type": "string",
-                    "description": "Model to use for ad-hoc agents (optional)"
+                    "description": "Override the model used for this spawn."
                 },
                 "max_turns": {
                     "type": "integer",
-                    "description": "Maximum turns for the agent (default: 10)"
+                    "description": "Cap the agentic loop for this spawn. Ad-hoc agents default to 10."
+                },
+                "max_tokens": {
+                    "type": "integer",
+                    "description": "Cap output tokens per LLM request for this spawn."
+                },
+                "max_schema_retries": {
+                    "type": "integer",
+                    "description": "Override structured-output retry count for this spawn."
+                },
+                "max_request_retries": {
+                    "type": "integer",
+                    "description": "Override transient-API retry count for this spawn."
+                },
+                "request_retry_backoff_ms": {
+                    "type": "integer",
+                    "description": "Override base backoff (ms) for request retries."
                 },
                 "background": {
                     "type": "boolean",
-                    "description": "Run in background (default: false). Returns immediately with agent ID."
+                    "description": "Run in background (default: false). Returns immediately with an agent id; posts completion to the command queue."
                 }
             },
-            "required": ["description", "prompt"]
+            "required": ["description", "instruction"]
         })
     }
 
@@ -180,24 +123,82 @@ impl Tool for SpawnAgentTool {
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
         Box::pin(async move {
-            let spawn_input: SpawnAgentInput =
-                serde_json::from_value(input).map_err(|e| AgenticError::Tool {
+            let args: SpawnArgs =
+                serde_json::from_value(input.clone()).map_err(|e| AgenticError::Tool {
                     tool_name: "spawn_agent".into(),
                     message: format!("Invalid input: {e}"),
                 })?;
 
-            let invocation_ctx = ctx
-                .runtime_context
+            let runtime = ctx
+                .runtime
                 .as_ref()
                 .ok_or_else(|| AgenticError::Tool {
                     tool_name: "spawn_agent".into(),
-                    message: "RuntimeContext not available in ToolContext".into(),
+                    message: "Runtime not available in ToolContext".into(),
+                })?
+                .clone();
+            let caller = ctx
+                .caller_spec
+                .as_ref()
+                .ok_or_else(|| AgenticError::Tool {
+                    tool_name: "spawn_agent".into(),
+                    message: "caller AgentSpec not available in ToolContext".into(),
                 })?
                 .clone();
 
-            match self.execute(spawn_input, invocation_ctx).await {
-                Ok(output) => Ok(ToolResult::success(output.response_raw)),
-                Err(e) => Ok(ToolResult::error(format!("Agent error: {e}"))),
+            // Resolve the base Agent: either a registered sub-agent, or a fresh
+            // ad-hoc one seeded with the default identity and max_turns=10. The
+            // overrides step below applies every LLM-supplied tuning knob to
+            // this base, regardless of path.
+            let base = match &args.agent {
+                Some(name) => caller
+                    .sub_agents
+                    .iter()
+                    .find(|a| a.name_ref() == Some(name.as_str()))
+                    .cloned()
+                    .ok_or_else(|| AgenticError::Tool {
+                        tool_name: "spawn_agent".into(),
+                        message: format!("No sub-agent named '{name}'"),
+                    })?,
+                None => Agent::new()
+                    .name(&args.description)
+                    .identity_prompt(DEFAULT_IDENTITY)
+                    .max_turns(10),
+            };
+
+            let agent = base
+                .apply_overrides(&input)
+                .instruction_prompt(&args.instruction);
+
+            let description = Some(args.description.clone());
+
+            if args.background.unwrap_or(false) {
+                let id = generate_agent_name(&args.description);
+                let queue = runtime.command_queue.clone();
+                let agent_id = id.clone();
+                let parent_model = caller.model.clone();
+                let description_for_child = description.clone();
+                tokio::spawn(async move {
+                    let summary = match agent
+                        .run_child(&runtime, &parent_model, description_for_child)
+                        .await
+                    {
+                        Ok(o) => o.response_raw,
+                        Err(e) => format!("Failed: {e}"),
+                    };
+                    if let Some(q) = queue {
+                        q.enqueue_notification(&agent_id, &summary);
+                    }
+                });
+                Ok(ToolResult::success(format!(
+                    "Background agent '{}' started (id: {id})",
+                    args.description
+                )))
+            } else {
+                match agent.run_child(&runtime, &caller.model, description).await {
+                    Ok(o) => Ok(ToolResult::success(o.response_raw)),
+                    Err(e) => Ok(ToolResult::error(format!("Agent error: {e}"))),
+                }
             }
         })
     }
@@ -212,24 +213,19 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_agent_foreground() {
-        let spawn_tool = SpawnAgentTool::new().default_model("mock");
-
-        let agent = AgentBuilder::new()
+        let agent = Agent::new()
             .name("orchestrator")
             .model("mock")
             .identity_prompt("Coordinate work.")
-            .tool(spawn_tool)
-            .build()
-            .unwrap();
+            .tool(SpawnAgentTool);
 
-        // Provider serves: parent spawn call, child response, parent final
         let harness = TestHarness::new(MockProvider::new(vec![
             tool_response(
                 "spawn_agent",
                 "sa1",
                 serde_json::json!({
                     "description": "researcher",
-                    "prompt": "Research topic X"
+                    "instruction": "Research topic X"
                 }),
             ),
             text_response("research findings"),
@@ -242,79 +238,55 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_agent_background_delivers_notification() {
-        let spawn_tool = SpawnAgentTool::new().default_model("mock");
-
-        let agent = AgentBuilder::new()
+        let agent = Agent::new()
             .name("orchestrator")
             .model("mock")
             .identity_prompt("")
-            .tool(spawn_tool)
-            .build()
-            .unwrap();
+            .tool(SpawnAgentTool);
 
         let queue = Arc::new(CommandQueue::new());
 
-        // Shared provider: parent and child both consume from this queue.
-        // Parent turn 1: spawn background agent → tool call
-        // Parent turn 2: final text (after tool result)
-        // Child turn: text response (runs concurrently)
-        // Order of consumption depends on scheduling, so provide enough for both.
         let provider = Arc::new(MockProvider::new(vec![
             tool_response(
                 "spawn_agent",
                 "sa1",
                 serde_json::json!({
                     "description": "bg-worker",
-                    "prompt": "Do work",
+                    "instruction": "Do work",
                     "background": true
                 }),
             ),
-            // These two will be consumed by parent and child in arbitrary order
             text_response("response-a"),
             text_response("response-b"),
         ]));
 
-        let harness = TestHarness::new(MockProvider::new(vec![]));
-        let mut ctx = harness.build_context("Start background work");
-        ctx.provider = provider;
-        ctx.command_queue = Some(queue.clone());
-
-        let output = agent.execute(ctx).await.unwrap();
-        // Parent got one of the text responses
+        let harness = TestHarness::with_provider_and_queue(provider.clone(), queue.clone());
+        let output = harness.run_agent(&agent, "Start background work").await.unwrap();
         assert!(!output.response_raw.is_empty());
 
-        // Wait for background task
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        // Check that a notification was delivered via the queue
-        let cmd = queue.dequeue(None);
+        let cmd = queue.dequeue_if(None, |_| true);
         assert!(cmd.is_some(), "Expected notification from background agent");
         let notification = cmd.unwrap().content;
-        // Notification contains either the child's response or an error (if it got the other response)
-        assert!(notification.contains("response-") || notification.contains("Failed"),
-            "Notification should contain agent result: {notification}");
+        assert!(
+            notification.contains("response-") || notification.contains("Failed"),
+            "Notification should contain agent result: {notification}"
+        );
     }
 
     #[tokio::test]
     async fn spawn_agent_named_sub_agent() {
-        let sub = AgentBuilder::new()
+        let sub = Agent::new()
             .name("specialist")
             .model("mock")
-            .identity_prompt("I am a specialist.")
-            .build()
-            .unwrap();
+            .identity_prompt("I am a specialist.");
 
-        let spawn_tool = SpawnAgentTool::new()
-            .sub_agent(sub)
-            .default_model("mock");
-
-        let agent = AgentBuilder::new()
+        let agent = Agent::new()
             .name("orchestrator")
             .model("mock")
             .identity_prompt("")
-            .tool(spawn_tool)
-            .build()
-            .unwrap();
+            .sub_agents([sub]);
 
         let provider = Arc::new(MockProvider::new(vec![
             tool_response(
@@ -322,35 +294,26 @@ mod tests {
                 "sa1",
                 serde_json::json!({
                     "description": "use specialist",
-                    "prompt": "Do specialized work",
+                    "instruction": "Do specialized work",
                     "agent": "specialist"
                 }),
             ),
-            // Specialist agent response
             text_response("specialized result"),
-            // Orchestrator final
             text_response("Got specialized result"),
         ]));
 
-        let harness = TestHarness::new(MockProvider::new(vec![]));
-        let mut ctx = harness.build_context("Use the specialist");
-        ctx.provider = provider;
-
-        let output = agent.execute(ctx).await.unwrap();
+        let harness = TestHarness::with_provider(provider);
+        let output = harness.run_agent(&agent, "Use the specialist").await.unwrap();
         assert_eq!(output.response_raw, "Got specialized result");
     }
 
     #[tokio::test]
     async fn spawn_agent_unknown_agent_errors() {
-        let spawn_tool = SpawnAgentTool::new();
-
-        let agent = AgentBuilder::new()
+        let agent = Agent::new()
             .name("orchestrator")
             .model("mock")
             .identity_prompt("")
-            .tool(spawn_tool)
-            .build()
-            .unwrap();
+            .tool(SpawnAgentTool);
 
         let provider = Arc::new(MockProvider::new(vec![
             tool_response(
@@ -358,19 +321,15 @@ mod tests {
                 "sa1",
                 serde_json::json!({
                     "description": "use unknown",
-                    "prompt": "Do work",
+                    "instruction": "Do work",
                     "agent": "nonexistent"
                 }),
             ),
-            // After error tool result, agent gives final text
             text_response("Could not find agent"),
         ]));
 
-        let harness = TestHarness::new(MockProvider::new(vec![]));
-        let mut ctx = harness.build_context("Use nonexistent agent");
-        ctx.provider = provider;
-
-        let output = agent.execute(ctx).await.unwrap();
+        let harness = TestHarness::with_provider(provider);
+        let output = harness.run_agent(&agent, "Use nonexistent agent").await.unwrap();
         assert_eq!(output.response_raw, "Could not find agent");
     }
 }

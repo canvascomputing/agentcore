@@ -38,13 +38,13 @@ cargo add agentwerk
 ## Quick Start
 
 ```rust
-use agentwerk::{AgentBuilder, GlobTool, provider_from_env};
+use agentwerk::{Agent, GlobTool, provider_from_env};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (provider, model) = provider_from_env()?;
 
-    let output = AgentBuilder::new()
+    let output = Agent::new()
         .provider(provider)
         .model(model)
         .instruction_prompt("Find all Rust source files.")
@@ -65,7 +65,7 @@ Example applications built with this project.
 
 ### [Project Scanner](crates/use-cases/src/project_scanner/)
 
-Two-phase pipeline: a discovery agent finds files worth reading, then a pipeline of agents summarizes each file in parallel.
+Two phases: a discovery agent finds files worth reading, then a pool of agents summarizes each file in parallel.
 
 ```bash
 make use_case name=project-scanner -- ./
@@ -153,14 +153,14 @@ let client = reqwest::Client::new();
 let provider = AnthropicProvider::with_client(key, client);
 ```
 
-### AgentBuilder
+### Agent
 
 Configures the agent's identity, tools, provider, and runtime options.
 
 ```rust
-use agentwerk::AgentBuilder;
+use agentwerk::Agent;
 
-let output = AgentBuilder::new()
+let output = Agent::new()
     .identity_prompt("You are a helpful assistant.")
     .instruction_prompt("What does src/main.rs do?")
     .model("claude-sonnet-4-20250514")
@@ -169,6 +169,10 @@ let output = AgentBuilder::new()
     .run()
     .await?;
 ```
+
+`Agent` is cheap to clone. Configure a template once, then clone it for each
+task and change only the fields that vary per run (provider, instruction
+prompt, working directory). The `AgentPool` example below shows this.
 
 #### Prompting
 
@@ -181,7 +185,7 @@ let output = AgentBuilder::new()
 | `behavior_prompt` | `behavior_prompt_file` | Behavioral directives appended to the system prompt |
 
 ```rust
-AgentBuilder::new()
+Agent::new()
     .identity_prompt_file("prompts/identity.md")
     .instruction_prompt("Summarize the project.")
     .behavior_prompt_file(BehaviorPrompt::Communication, "prompts/style.md")
@@ -190,7 +194,7 @@ AgentBuilder::new()
 Use `{key}` placeholders in the identity prompt and fill them with `template_variable`:
 
 ```rust
-AgentBuilder::new()
+Agent::new()
     .identity_prompt("You are {role}. Respond in {language}.")
     .template_variable("role", json!("a code reviewer"))
     .template_variable("language", json!("German"))
@@ -198,30 +202,47 @@ AgentBuilder::new()
 
 #### Sub-agents
 
-`AgentBuilder::build()` returns an `Agent` — a cheap, cloneable handle that can be registered as a sub-agent. Without an explicit model, a sub-agent inherits its parent's model at runtime. Clone the builder to create multiple similar agents:
+An agent can register other agents as sub-agents. The LLM can then call them
+by name.
 
 ```rust
-let researcher_base = AgentBuilder::new()
+let researcher_base = Agent::new()
     .model("claude-haiku-4-5-20251001")
     .identity_prompt("Research this topic.")
     .tool(brave_search_tool())
     .max_turns(3);
 
-let r1 = researcher_base.clone().name("researcher_1").build()?;
-let r2 = researcher_base.clone().name("researcher_2").build()?;
+let r1 = researcher_base.clone().name("researcher_1");
+let r2 = researcher_base.clone().name("researcher_2");
 
-let output = AgentBuilder::new()
+let output = Agent::new()
     .name("orchestrator")
     .identity_prompt("Coordinate research.")
-    .sub_agent(r1)
-    .sub_agent(r2)
+    .sub_agents([r1, r2])
 ```
 
-`.sub_agent()` auto-wires a default `SpawnAgentTool` at `build()` time. If you need to configure the spawn tool (e.g., `default_model` for ad-hoc agents the LLM spawns by description alone), register it explicitly instead: `.tool(SpawnAgentTool::new().sub_agent(r1).default_model(m))`.
+Registered sub-agents are available to the LLM by name. The LLM can also
+spawn ad-hoc agents at call time, supplying the prompt for that spawn.
+
+##### Inheritance
+
+A sub-agent is just an `Agent`; configure it with the normal builder methods.
+Three rules are specific to running as a sub-agent:
+
+| Behavior | Fields |
+|---|---|
+| Falls back to the parent's value if unset | `provider`, `model`, `working_directory`, `event_handler`, `cancel_signal` |
+| Always the parent's (setting it on the sub-agent has no effect) | `environment_prompt`, `command_queue`, `session_store` |
+| Passed in at each spawn call (not configured on the sub-agent) | `instruction_prompt` (required); plus optional `model`, `identity_prompt`, `max_turns`, `max_tokens`, `max_schema_retries`, `max_request_retries`, `request_retry_backoff_ms` — these override the sub-agent's config for that call only |
+
+Everything else (prompts, tools, limits, output schema) behaves like on a
+standalone Agent.
 
 #### Guardrails
 
-Set limits for agentic execution. Omit a setter to use the default (most default to "no limit").
+Per-agent limits for agentic execution. Omit a setter to use the default
+(most default to "no limit"). When the parent's LLM spawns a sub-agent, it
+can override any of these for a single spawn.
 
 | Method | Default | What it does |
 |--------|---------|-------------|
@@ -230,7 +251,9 @@ Set limits for agentic execution. Omit a setter to use the default (most default
 | `.max_schema_retries(3)` | 10 | Retry structured output compliance |
 | `.max_request_retries(5)` | 3 | Retry on transient API errors (429, 529, 5xx) |
 | `.request_retry_backoff_ms(2000)` | 10,000 | Base delay for exponential backoff (`ms * 2^attempt`) |
-| `.cancel_signal(signal)` | — | Abort execution from outside the agent |
+
+To abort from outside the agent, use `.cancel_signal(signal)` — see
+[Inheritance](#inheritance) for how it propagates across sub-agents.
 
 #### Behavior prompts
 
@@ -246,41 +269,53 @@ Agents ship with default behavior prompts appended to the identity prompt. Overr
 ```rust
 use agentwerk::BehaviorPrompt;
 
-AgentBuilder::new()
+Agent::new()
     .behavior_prompt(BehaviorPrompt::TaskExecution, "Follow instructions exactly.")
     .behavior_prompt(BehaviorPrompt::Communication, "Always respond in JSON.")
 ```
 
-### Pipelines
+### AgentPool
 
-Execute multiple agents with controlled parallelism. Each agent is fully configured with its own provider, prompts, and tools. Results are returned in push order. Individual failures do not abort the pipeline.
+Run many agents in parallel with a cap on how many run at once. Each agent
+is a fully configured job with its own provider, prompts, and tools. Submit
+work with `spawn()` and read results with `next()` (one at a time) or
+`drain()` (all of them).
+
+Pick the order results come back in:
+
+- `Completion` (default) — results come back as each agent finishes.
+- `Submission` — results come back in the order you submitted them.
 
 ```rust
-use agentwerk::{Pipeline, AgentBuilder, ReadFileTool};
+use agentwerk::{Agent, AgentPool, PoolOrdering, ReadFileTool};
 
-let mut pipeline = Pipeline::new()
+let template = Agent::new()
+    .model("claude-haiku-4-5-20251001")
+    .tool(ReadFileTool);
+
+let pool = AgentPool::new()
     .batch_size(10)
-    .max_request_retries(5);
+    .ordering(PoolOrdering::Submission);
 
-pipeline.push(
-    AgentBuilder::new()
-        .provider(provider.clone())
-        .instruction_prompt("Summarize document A")
-        .tool(ReadFileTool)
-);
-pipeline.push(
-    AgentBuilder::new()
-        .provider(provider.clone())
-        .instruction_prompt("Summarize document B")
-        .tool(ReadFileTool)
-);
+for doc in ["document A", "document B"] {
+    pool.spawn(
+        template
+            .clone()
+            .provider(provider.clone())
+            .instruction_prompt(format!("Summarize {doc}"))
+    )
+    .await;
+}
 
-let results = pipeline.run().await;
+let results = pool.drain().await; // Vec<(JobId, Result<AgentOutput>)>
 ```
+
+You can add more work after the pool has already started — `spawn()` is
+always safe to call. If the pool is at capacity, it waits for a free slot.
 
 ### Events
 
-Emitted via `AgentBuilder.event_handler()` during execution. Each `Event` carries an `agent_name: String` plus an `EventKind` variant.
+Emitted via `Agent.event_handler()` during execution. Each `Event` carries an `agent_name: String` plus an `EventKind` variant.
 
 ```rust
 use agentwerk::{Event, EventKind};
@@ -294,7 +329,7 @@ let handler = Arc::new(|event: Event| match &event.kind {
 
 | | Kind | Description |
 |-|-------|-------------|
-| **Agent** | `AgentStart` | Agent begins execution |
+| **Agent** | `AgentStart { description }` | Agent begins execution. `description` is set when the LLM spawned this agent as a sub-agent (the label it gave), and `None` for the top-level run. |
 | | `AgentEnd { turns }` | Agent finishes with turn count |
 | | `TurnStart` / `TurnEnd` | Turn boundaries |
 | **LLM Provider** | `RequestStart` / `RequestEnd` | LLM request lifecycle |
@@ -354,7 +389,7 @@ output.statistics.turns        // number of agentic turns
 With an output schema, the agent returns validated JSON:
 
 ```rust
-let output = AgentBuilder::new()
+let output = Agent::new()
     .output_schema(json!({
         "type": "object",
         "properties": { "category": { "type": "string" } },

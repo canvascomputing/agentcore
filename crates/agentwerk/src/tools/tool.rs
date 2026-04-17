@@ -7,7 +7,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agent::RuntimeContext;
+use crate::agent::{AgentSpec, Runtime};
 use crate::error::Result;
 use crate::provider::types::ContentBlock;
 
@@ -20,7 +20,14 @@ use crate::provider::types::ContentBlock;
 pub struct ToolContext {
     pub working_directory: PathBuf,
     pub(crate) tool_registry: Option<Arc<ToolRegistry>>,
-    pub(crate) runtime_context: Option<RuntimeContext>,
+    /// Ambient externals for the run (provider, handlers, queue, session). Used by
+    /// internal tools that need to spawn sub-agents — external tool authors do not
+    /// have access.
+    pub(crate) runtime: Option<Arc<Runtime>>,
+    /// The caller agent's compiled spec (name, model, sub_agents). Used by
+    /// `SpawnAgentTool` to resolve registered sub-agents and to pass the caller's
+    /// model as `ModelSpec::Inherit` fallback to children.
+    pub(crate) caller_spec: Option<Arc<AgentSpec>>,
 }
 
 impl ToolContext {
@@ -28,7 +35,8 @@ impl ToolContext {
         Self {
             working_directory,
             tool_registry: None,
-            runtime_context: None,
+            runtime: None,
+            caller_spec: None,
         }
     }
 
@@ -37,8 +45,13 @@ impl ToolContext {
         self
     }
 
-    pub(crate) fn runtime_context(mut self, ctx: RuntimeContext) -> Self {
-        self.runtime_context = Some(ctx);
+    pub(crate) fn runtime(mut self, runtime: Arc<Runtime>) -> Self {
+        self.runtime = Some(runtime);
+        self
+    }
+
+    pub(crate) fn caller_spec(mut self, spec: Arc<AgentSpec>) -> Self {
+        self.caller_spec = Some(spec);
         self
     }
 }
@@ -48,7 +61,8 @@ impl std::fmt::Debug for ToolContext {
         f.debug_struct("ToolContext")
             .field("working_directory", &self.working_directory)
             .field("tool_registry", &self.tool_registry)
-            .field("has_runtime_context", &self.runtime_context.is_some())
+            .field("has_runtime", &self.runtime.is_some())
+            .field("has_caller_spec", &self.caller_spec.is_some())
             .finish()
     }
 }
@@ -70,27 +84,40 @@ pub struct ToolCall {
 }
 
 /// Result returned by a tool execution.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ToolResult {
     pub(crate) content: String,
     pub(crate) is_error: bool,
+    /// Side-effect: captured structured output (set by `StructuredOutputTool`).
+    /// The agent loop reads this to populate `AgentOutput.response` — no name-based dispatch.
+    pub(crate) structured_output: Option<Value>,
+    /// Side-effect: tool names discovered by an introspection tool (set by `ToolSearchTool`).
+    /// The agent loop merges these into its discovered-tools set so deferred tools get
+    /// their full definitions on subsequent LLM requests.
+    pub(crate) discovered_tools: Vec<String>,
 }
 
 impl ToolResult {
     pub fn success(content: impl Into<String>) -> Self {
-        Self { content: content.into(), is_error: false }
+        Self { content: content.into(), is_error: false, ..Self::default() }
     }
 
     pub fn error(content: impl Into<String>) -> Self {
-        Self { content: content.into(), is_error: true }
+        Self { content: content.into(), is_error: true, ..Self::default() }
     }
 
-    pub fn content(&self) -> &str {
-        &self.content
+    /// Attach a structured-output side-effect. Used by `StructuredOutputTool` so the
+    /// agent loop doesn't need to match on tool names.
+    pub fn with_structured_output(mut self, value: Value) -> Self {
+        self.structured_output = Some(value);
+        self
     }
 
-    pub fn is_error(&self) -> bool {
-        self.is_error
+    /// Attach discovered tool names. Used by `ToolSearchTool` so the agent loop doesn't
+    /// need to parse tool output by name.
+    pub fn with_discovered_tools(mut self, names: Vec<String>) -> Self {
+        self.discovered_tools = names;
+        self
     }
 }
 
@@ -390,26 +417,34 @@ fn partition_tool_calls(calls: &[ToolCall], registry: &ToolRegistry) -> Vec<Tool
 }
 
 /// Execute tool calls with concurrent read-only batching and serial write execution.
+///
+/// Returns `(ContentBlock, ToolResult)` pairs so the caller can read both the
+/// LLM-visible result block and any `ToolResult` side-effects (structured output
+/// capture, discovered tool names) without dispatching on tool names.
 pub(crate) async fn execute_tool_calls(
     calls: &[ToolCall],
     ctx: &ToolContext,
-) -> Vec<ContentBlock> {
+) -> Vec<(ContentBlock, ToolResult)> {
     let registry = match ctx.tool_registry.as_ref() {
         Some(r) => r,
         None => {
             return calls
                 .iter()
-                .map(|call| ContentBlock::ToolResult {
-                    tool_use_id: call.id.clone(),
-                    content: "No tool registry available".into(),
-                    is_error: true,
+                .map(|call| {
+                    let r = ToolResult::error("No tool registry available");
+                    let block = ContentBlock::ToolResult {
+                        tool_use_id: call.id.clone(),
+                        content: r.content.clone(),
+                        is_error: r.is_error,
+                    };
+                    (block, r)
                 })
                 .collect();
         }
     };
 
     let batches = partition_tool_calls(calls, registry);
-    let mut results: Vec<ContentBlock> = Vec::new();
+    let mut results: Vec<(ContentBlock, ToolResult)> = Vec::new();
     let semaphore = Arc::new(tokio::sync::Semaphore::new(10));
 
     for batch in batches {
@@ -439,11 +474,12 @@ pub(crate) async fn execute_tool_calls(
 
                 while let Some(join_result) = set.join_next().await {
                     if let Ok((id, result)) = join_result {
-                        results.push(ContentBlock::ToolResult {
+                        let block = ContentBlock::ToolResult {
                             tool_use_id: id,
-                            content: result.content,
+                            content: result.content.clone(),
                             is_error: result.is_error,
-                        });
+                        };
+                        results.push((block, result));
                     }
                 }
             }
@@ -455,11 +491,12 @@ pub(crate) async fn execute_tool_calls(
                     },
                     None => ToolResult::error(format!("Unknown tool: {}", call.name)),
                 };
-                results.push(ContentBlock::ToolResult {
+                let block = ContentBlock::ToolResult {
                     tool_use_id: call.id.clone(),
-                    content: result.content,
+                    content: result.content.clone(),
                     is_error: result.is_error,
-                });
+                };
+                results.push((block, result));
             }
         }
     }
@@ -561,7 +598,7 @@ mod tests {
 
         let results = execute_tool_calls(&calls, &ctx).await;
         assert_eq!(results.len(), 1);
-        match &results[0] {
+        match &results[0].0 {
             ContentBlock::ToolResult {
                 is_error, content, ..
             } => {
@@ -611,7 +648,7 @@ mod tests {
 
         let results = execute_tool_calls(&calls, &ctx).await;
         assert_eq!(results.len(), 1);
-        match &results[0] {
+        match &results[0].0 {
             ContentBlock::ToolResult {
                 content, is_error, ..
             } => {

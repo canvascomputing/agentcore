@@ -5,7 +5,6 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::provider::types::{ContentBlock, Message};
 
 // ---------------------------------------------------------------------------
 // Behavior prompts
@@ -14,7 +13,7 @@ use crate::provider::types::{ContentBlock, Message};
 /// Behavioral directives injected into the system prompt of every LLM request.
 ///
 /// All four variants are always present. Each has a sensible default that can be
-/// replaced via [`AgentBuilder::behavior_prompt()`]. They appear in the system
+/// replaced via [`Agent::behavior_prompt()`]. They appear in the system
 /// prompt after the identity prompt, in the order listed here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BehaviorPrompt {
@@ -115,11 +114,12 @@ pub(crate) fn interpolate(template: &str, state: &HashMap<String, Value>) -> Str
 }
 
 // ---------------------------------------------------------------------------
-// Environment context
+// Environment prompt
 // ---------------------------------------------------------------------------
 
-/// Collect environment information and format it as a tagged string for the context message.
-pub(crate) fn collect_environment_context(cwd: &Path) -> String {
+/// Build the default environment prompt — a tagged block with working
+/// directory, platform, OS version, and current date.
+pub(crate) fn collect_environment_prompt(cwd: &Path) -> String {
     let working_directory = cwd.display();
     let platform = std::env::consts::OS;
     let os_version = std::process::Command::new("uname")
@@ -132,18 +132,6 @@ pub(crate) fn collect_environment_context(cwd: &Path) -> String {
     format!(
         "<environment>\nWorking directory: {working_directory}\nPlatform: {platform}\nOS version: {os_version}\nDate: {date}\n</environment>"
     )
-}
-
-/// Build a user message from pre-formatted parts. Returns `None` if empty.
-pub(crate) fn build_message(parts: &[String]) -> Option<Message> {
-    if parts.is_empty() {
-        return None;
-    }
-    Some(Message::User {
-        content: vec![ContentBlock::Text {
-            text: parts.join("\n\n"),
-        }],
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -185,36 +173,18 @@ mod tests {
     }
 
     #[test]
-    fn environment_context_in_message() {
-        let ctx = collect_environment_context(std::path::Path::new("/home/user/project"));
-        let parts = vec![ctx];
-        let text = extract_message_text(&parts);
-        assert!(text.contains("/home/user/project"));
-        assert!(text.contains("<environment>"));
+    fn environment_prompt_includes_path() {
+        let ctx = collect_environment_prompt(std::path::Path::new("/home/user/project"));
+        assert!(ctx.contains("/home/user/project"));
+        assert!(ctx.contains("<environment>"));
     }
 
     #[test]
-    fn no_message_when_empty() {
-        assert!(build_message(&[]).is_none());
+    fn interpolate_substitutes_placeholders() {
+        let mut vars: HashMap<String, Value> = HashMap::new();
+        vars.insert("name".into(), Value::String("Alice".into()));
+        vars.insert("count".into(), Value::from(3));
+        let out = interpolate("Hello {name}, you have {count} tasks.", &vars);
+        assert_eq!(out, "Hello Alice, you have 3 tasks.");
     }
-
-    #[test]
-    fn user_context_injected() {
-        let parts = vec![format!("<context>\nGit status: clean\n</context>")];
-        let text = extract_message_text(&parts);
-        assert!(text.contains("Git status: clean"));
-        assert!(text.contains("<context>"));
-    }
-
-    fn extract_message_text(parts: &[String]) -> String {
-        let msg = build_message(parts).unwrap();
-        match &msg {
-            Message::User { content } => match &content[0] {
-                ContentBlock::Text { text } => text.clone(),
-                _ => panic!("Expected text"),
-            },
-            _ => panic!("Expected user message"),
-        }
-    }
-
 }

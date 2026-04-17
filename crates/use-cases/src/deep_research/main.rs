@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use agentwerk::{
-    AgentBuilder, AgenticError, Event, EventKind, SpawnAgentTool, ToolBuilder, ToolResult,
+    Agent, AgenticError, Event, EventKind, ToolBuilder, ToolResult,
 };
 
 // ---------------------------------------------------------------------------
@@ -29,26 +29,20 @@ async fn main() {
 
     let researchers: Vec<_> = (1..=3)
         .map(|i| {
-            AgentBuilder::new()
-                .name(&format!("researcher_{i}"))
+            Agent::new()
+                .name(format!("researcher_{i}"))
                 .model(&model)
                 .identity_prompt(RESEARCHER_PROMPT)
                 .tool(brave_search_tool(brave_key.clone()))
                 .max_turns(3)
-                .build()
-                .expect("Failed to build researcher")
         })
         .collect();
 
-    let output = match AgentBuilder::new()
+    let output = match Agent::new()
         .name("report_writer")
         .model(&model)
         .identity_prompt(REPORT_WRITER_PROMPT)
-        .tool({
-            let mut spawn = SpawnAgentTool::new();
-            for r in researchers { spawn = spawn.sub_agent(r); }
-            spawn.default_model(&model)
-        })
+        .sub_agents(researchers)
         .output_schema(output_schema())
         .max_turns(10)
         .provider(provider)

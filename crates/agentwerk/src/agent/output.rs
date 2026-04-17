@@ -91,7 +91,7 @@ impl Tool for StructuredOutputTool {
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
         Box::pin(async move {
             validate_value(&input, &self.schema.schema)?;
-            Ok(ToolResult::success("Structured output accepted."))
+            Ok(ToolResult::success("Structured output accepted.").with_structured_output(input))
         })
     }
 }

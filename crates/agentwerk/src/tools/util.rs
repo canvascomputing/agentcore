@@ -34,8 +34,11 @@ pub(crate) async fn run_shell_command(
                 content.push_str(&stderr);
             }
 
-            let is_error = !output.status.success();
-            ToolResult { content, is_error }
+            if output.status.success() {
+                ToolResult::success(content)
+            } else {
+                ToolResult::error(content)
+            }
         }
     }
 }

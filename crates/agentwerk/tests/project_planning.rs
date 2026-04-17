@@ -4,7 +4,7 @@
 
 mod common;
 
-use agentwerk::{AgentBuilder, TaskTool};
+use agentwerk::{Agent, TaskTool};
 
 #[tokio::test]
 async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -12,7 +12,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let tmp = tempfile::tempdir()?;
 
-    let output = AgentBuilder::new()
+    let output = Agent::new()
         .provider(provider)
         .model(&model)
         .identity_prompt(

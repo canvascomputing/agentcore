@@ -1,6 +1,6 @@
-//! Scans a project directory using a two-phase pipeline:
+//! Scans a project directory in two phases:
 //! 1. Discovery agent finds files worth reading
-//! 2. Pipeline of agents summarizes each file in parallel
+//! 2. Pool of agents summarizes each file in parallel
 //!
 //! Usage: project-scanner [OPTIONS] [FOLDER]
 
@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use agentwerk::{
-    AgentBuilder, EventKind, GlobTool, ListDirectoryTool, Pipeline, ReadFileTool,
+    Agent, AgentPool, EventKind, GlobTool, ListDirectoryTool, PoolOrdering, ReadFileTool,
 };
 use serde_json::{json, Value};
 
@@ -82,7 +82,7 @@ async fn main() {
     // Phase 1: Discover files
     eprintln!("[discover] scanning {}", config.folder.display());
 
-    let discovery = AgentBuilder::new()
+    let discovery = Agent::new()
         .provider(provider.clone())
         .model(&model)
         .identity_prompt(DISCOVERY_PROMPT)
@@ -117,7 +117,11 @@ async fn main() {
         Ok(output) => match output.response {
             Some(data) => data["files"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect::<Vec<String>>()
+                })
                 .unwrap_or_default(),
             None => {
                 eprintln!("Error: discovery agent returned no structured output");
@@ -138,7 +142,16 @@ async fn main() {
     }
 
     // Phase 2: Summarize each file in parallel
-    let mut pipeline = Pipeline::new().batch_size(config.batch_size);
+    let summarizer = Agent::new()
+        .model(&model)
+        .identity_prompt(SUMMARIZE_PROMPT)
+        .tool(ReadFileTool)
+        .output_schema(summarize_schema())
+        .max_turns(5);
+
+    let pool = AgentPool::new()
+        .batch_size(config.batch_size)
+        .ordering(PoolOrdering::Submission);
     let total = files.len();
     let progress = Arc::new(AtomicUsize::new(0));
 
@@ -146,37 +159,33 @@ async fn main() {
         let file_name = file.clone();
         let progress = progress.clone();
 
-        pipeline = pipeline.push(
-            AgentBuilder::new()
-                .provider(provider.clone())
-                .model(&model)
-                .identity_prompt(SUMMARIZE_PROMPT)
-                .instruction_prompt(format!("Read and summarize: {file}"))
-                .tool(ReadFileTool)
-                .output_schema(summarize_schema())
-                .working_directory(config.folder.clone())
-                .cancel_signal(cancel.clone())
-                .max_turns(5)
-                .event_handler(Arc::new(move |event| match &event.kind {
-                    EventKind::ToolCallEnd { is_error: true, output, .. } => {
-                        eprintln!("[summarize] {file_name} — error: {output}");
-                    }
-                    EventKind::AgentEnd { .. } => {
-                        let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
-                        eprintln!("[summarize] {done}/{total} {file_name}");
-                    }
-                    _ => {}
-                }))
-        );
+        let job = summarizer
+            .clone()
+            .provider(provider.clone())
+            .instruction_prompt(format!("Read and summarize: {file}"))
+            .working_directory(config.folder.clone())
+            .cancel_signal(cancel.clone())
+            .event_handler(Arc::new(move |event| match &event.kind {
+                EventKind::ToolCallEnd { is_error: true, output, .. } => {
+                    eprintln!("[summarize] {file_name} — error: {output}");
+                }
+                EventKind::AgentEnd { .. } => {
+                    let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
+                    eprintln!("[summarize] {done}/{total} {file_name}");
+                }
+                _ => {}
+            }));
+
+        pool.spawn(job).await;
     }
 
-    let results = pipeline.run().await;
+    let results = pool.drain().await;
 
     // Phase 3: Aggregate
     let mut languages = BTreeSet::new();
     let mut file_summaries = Vec::new();
 
-    for (i, result) in results.iter().enumerate() {
+    for (i, (_job_id, result)) in results.iter().enumerate() {
         match result {
             Ok(output) => {
                 if let Some(ref data) = output.response {

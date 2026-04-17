@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use agentwerk::{AgentBuilder, Event, EventKind, SpawnAgentTool, WebFetchTool};
+use agentwerk::{Agent, Event, EventKind, WebFetchTool};
 
 // ---------------------------------------------------------------------------
 // Prompts
@@ -34,7 +34,7 @@ One line per model. Nothing else.";
 const ORCHESTRATOR_PROMPT: &str = "\
 You coordinate pricing research. You MUST use the spawn_agent tool with the 'agent' parameter.\n\n\
 Step 1: Call spawn_agent with {\"agent\": \"pricing_researcher\", \"description\": \"fetch pricing\", \
-\"prompt\": \"Fetch current model pricing from all provider websites\"}.\n\n\
+\"instruction\": \"Fetch current model pricing from all provider websites\"}.\n\n\
 Step 2: After it returns, produce your structured output listing every model found. \
 Include provider, model_id, input_per_million, output_per_million for each.\n\n\
 CRITICAL: Always set the 'agent' field to 'pricing_researcher'. \
@@ -77,24 +77,18 @@ async fn main() {
 
     eprintln!("Model Pricing Tracker\n");
 
-    let pricing_researcher = AgentBuilder::new()
+    let pricing_researcher = Agent::new()
         .name("pricing_researcher")
         .model(&model)
         .identity_prompt(PRICING_RESEARCHER_PROMPT)
         .tool(WebFetchTool)
-        .max_turns(10)
-        .build()
-        .expect("Failed to build pricing_researcher");
+        .max_turns(10);
 
-    let output = match AgentBuilder::new()
+    let output = match Agent::new()
         .name("pricing_tracker")
         .model(&model)
         .identity_prompt(ORCHESTRATOR_PROMPT)
-        .tool(
-            SpawnAgentTool::new()
-                .sub_agent(pricing_researcher)
-                .default_model(&model),
-        )
+        .sub_agents([pricing_researcher])
         .output_schema(output_schema())
         .max_turns(10)
         .provider(provider)

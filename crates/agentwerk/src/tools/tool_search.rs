@@ -82,7 +82,8 @@ impl Tool for ToolSearchTool {
                 content.push_str("\n```\n\n---\n\n");
             }
 
-            Ok(ToolResult::success(content))
+            let discovered: Vec<String> = results.iter().map(|d| d.name.clone()).collect();
+            Ok(ToolResult::success(content).with_discovered_tools(discovered))
         })
     }
 }

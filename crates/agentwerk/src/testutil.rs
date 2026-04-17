@@ -6,7 +6,8 @@ use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-use crate::agent::{Agent, AgentOutput, Event, EventKind, RuntimeContext};
+use crate::agent::queue::CommandQueue;
+use crate::agent::{Agent, AgentOutput, Event, EventKind};
 use crate::error::{AgenticError, Result};
 use crate::provider::types::{ContentBlock, ModelResponse, StopReason, StreamEvent, TokenUsage};
 use crate::provider::{CompletionRequest, LlmProvider};
@@ -267,7 +268,7 @@ impl EventCollector {
             .unwrap()
             .iter()
             .filter_map(|e| match &e.kind {
-                EventKind::AgentStart => Some(e.agent_name.clone()),
+                EventKind::AgentStart { .. } => Some(e.agent_name.clone()),
                 _ => None,
             })
             .collect()
@@ -300,17 +301,29 @@ pub struct TestHarness {
     template_variables: HashMap<String, serde_json::Value>,
     working_directory: PathBuf,
     cancel_signal: Arc<AtomicBool>,
+    command_queue: Option<Arc<CommandQueue>>,
 }
 
 impl TestHarness {
     pub fn new(provider: MockProvider) -> Self {
+        Self::with_provider(Arc::new(provider))
+    }
+
+    pub fn with_provider(provider: Arc<MockProvider>) -> Self {
         Self {
-            provider: Arc::new(provider),
+            provider,
             events: EventCollector::new(),
             template_variables: HashMap::new(),
             working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             cancel_signal: Arc::new(AtomicBool::new(false)),
+            command_queue: None,
         }
+    }
+
+    pub fn with_provider_and_queue(provider: Arc<MockProvider>, queue: Arc<CommandQueue>) -> Self {
+        let mut h = Self::with_provider(provider);
+        h.command_queue = Some(queue);
+        h
     }
 
     pub fn with_state(mut self, key: &str, value: serde_json::Value) -> Self {
@@ -318,20 +331,39 @@ impl TestHarness {
         self
     }
 
-    pub fn build_context(&self, input: &str) -> RuntimeContext {
-        let mut ctx = RuntimeContext::new(self.provider.clone())
+    /// Fully configure the given `Agent` with this harness's runtime bits
+    /// (provider / event handler / wd / cancel / template vars), then run it
+    /// against the supplied prompt.
+    pub async fn run_agent(&self, agent: &Agent, input: &str) -> Result<AgentOutput> {
+        let mut prepared = agent
+            .clone()
+            .provider(self.provider.clone())
             .instruction_prompt(input)
             .working_directory(self.working_directory.clone())
             .event_handler(self.events.callback())
-            .cancel_signal(self.cancel_signal.clone())
-            .agent_name("test");
-        ctx.template_variables = self.template_variables.clone();
-        ctx
-    }
-
-    pub async fn run_agent(&self, agent: &Agent, input: &str) -> Result<AgentOutput> {
-        let ctx = self.build_context(input);
-        agent.execute(ctx).await
+            .cancel_signal(self.cancel_signal.clone());
+        for (k, v) in &self.template_variables {
+            prepared = prepared.template_variable(k.clone(), v.clone());
+        }
+        // If the harness carries a pre-built command queue, we need to share
+        // it with the agent's Runtime. We do that by running via run_with_parts.
+        if let Some(queue) = &self.command_queue {
+            use crate::agent::{AgentSpec, Runtime};
+            let runtime = Runtime {
+                provider: self.provider.clone(),
+                event_handler: self.events.callback(),
+                cancel_signal: self.cancel_signal.clone(),
+                working_directory: self.working_directory.clone(),
+                command_queue: Some(queue.clone()),
+                session_store: None,
+                environment_prompt: None,
+            };
+            let spec = AgentSpec::compile(&prepared, &runtime, None)?;
+            return prepared
+                .run_with_parts(Arc::new(runtime), Arc::new(spec))
+                .await;
+        }
+        prepared.run().await
     }
 
     pub fn events(&self) -> &EventCollector {

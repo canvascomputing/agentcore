@@ -1,12 +1,12 @@
 mod common;
 
-use agentwerk::{AgentBuilder, GlobTool, ReadFileTool};
+use agentwerk::{Agent, GlobTool, ReadFileTool};
 
 #[tokio::test]
 async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let (provider, model) = common::build_provider();
 
-    let output = AgentBuilder::new()
+    let output = Agent::new()
         .provider(provider)
         .model(&model)
         .instruction_prompt("Find all Rust source files and describe what this project does.")

@@ -14,7 +14,9 @@ impl Event {
 
 #[derive(Debug, Clone)]
 pub enum EventKind {
-    AgentStart,
+    /// Agent begins execution. `description` carries the LLM-supplied label when
+    /// an agent was spawned via `SpawnAgentTool`; `None` for root runs.
+    AgentStart { description: Option<String> },
     AgentEnd { turns: u32 },
     TurnStart { turn: u32 },
     TurnEnd { turn: u32 },

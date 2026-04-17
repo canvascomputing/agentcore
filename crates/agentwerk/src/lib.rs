@@ -26,5 +26,6 @@ pub use tools::{
 
 // Agent
 pub use agent::{
-    Agent, AgentBuilder, AgentOutput, BehaviorPrompt, Event, EventKind, Pipeline, Statistics,
+    Agent, AgentOutput, AgentPool, BehaviorPrompt, Event, EventKind, JobId, PoolOrdering,
+    Statistics,
 };

@@ -36,14 +36,11 @@ crates/agentwerk/src/
 
   agent/
     mod.rs                re-exports
-    trait.rs              Agent trait
-    builder.rs            AgentBuilder
-    loop.rs               AgentLoop struct, impl Agent, execute(), helpers, tests
-    context.rs            RuntimeContext (internal)
-    event.rs              Event enum
+    werk.rs               Agent (config+runtime split), Runtime, AgentSpec, LoopState, run_loop
+    event.rs              Event enum (AgentStart carries description for spawned children)
     output.rs             AgentOutput, OutputSchema, StructuredOutputTool, validate_value
-    prompts.rs            BehaviorPrompt (TaskExecution, ToolUsage, SafetyConcerns, Communication), ContextBuilder, EnvironmentContext
-    pipeline.rs           Pipeline (batch execution with concurrency control)
+    prompts.rs            BehaviorPrompt (TaskExecution, ToolUsage, SafetyConcerns, Communication), interpolate, environment context helper
+    pool.rs               AgentPool, PoolOrdering, JobId (dynamic execution with concurrency control)
     queue.rs              CommandQueue, QueuePriority, QueuedCommand (internal)
 
   tools/
@@ -82,18 +79,18 @@ Use cases are in `crates/use-cases/src/cli/`. Run with `make use_case name=<name
 ## Key conventions
 
 - **No new dependencies without asking.** The crate is intentionally minimal (tokio, serde, serde_json, libc, reqwest, futures-util). Providers own a `reqwest::Client` directly — no transport abstraction.
-- **No ad-hoc changes to critical types without a plan.** These types form the public API and are used across the entire codebase: `Agent`, `ToolContext`, `Event`, `Tool` trait, `AgentBuilder`, `CompletionRequest`, `AgentOutput`. Propose changes in a plan first.
-- **Tools capture dependencies at construction time** via closures or struct fields. The `ToolContext` extension bag (`set_extension`/`get_extension`) exists solely for the agent loop to pass `RuntimeContext` to `SpawnAgentTool` — do not use it for new tools.
+- **No ad-hoc changes to critical types without a plan.** These types form the public API and are used across the entire codebase: `Agent`, `ToolContext`, `Event`, `Tool` trait, `CompletionRequest`, `AgentOutput`, `AgentPool`. Propose changes in a plan first.
+- **Tools capture dependencies at construction time** via closures or struct fields. The internal `ToolContext` handles (`runtime: Arc<Runtime>`, `caller_spec: Arc<AgentSpec>`) exist solely for the agent loop to give `SpawnAgentTool` / `ToolSearchTool` read access to loop state — do not use them for new tools.
 - **`tools/tool.rs` vs `tools/`**: `tool.rs` defines the trait and infrastructure (Tool, ToolRegistry, ToolBuilder, execute_tool_calls). Other files in `tools/` are concrete implementations.
-- **`agent/` vs `provider/` vs `persistence/`**: `agent/` contains the agent loop, builder, context, events, output, and prompts. `provider/` contains LLM communication and estimated costs. `persistence/` contains internal disk storage (session transcripts, tasks).
-- **Prompt `_file` variants**: All prompt builder methods (`identity_prompt`, `instruction_prompt`, `behavior_prompt`, `context_prompt`) have `_file` counterparts (e.g. `identity_prompt_file(path)`) that load the prompt from disk. File-read errors are collected and surfaced at `build()`/`run()` time.
+- **`agent/` vs `provider/` vs `persistence/`**: `agent/` contains the agent definition (`Agent`), execution loop (`Runtime` / `AgentSpec` / `LoopState` / `run_loop`), events, output, and prompts. `provider/` contains LLM communication and estimated costs. `persistence/` contains internal disk storage (session transcripts, tasks).
+- **Prompt `_file` variants**: All prompt builder methods (`identity_prompt`, `instruction_prompt`, `behavior_prompt`, `context_prompt`) have `_file` counterparts (e.g. `identity_prompt_file(path)`) that load the prompt from disk. File-read errors are collected on the `Agent` and surfaced when `run()` is called.
 - **Tests live inline** in each module as `#[cfg(test)] mod tests`. Use `MockProvider` and `TestHarness` from `testutil.rs`.
 
 ## Naming conventions
 
 - **Builder methods**: bare nouns or compound nouns. No `with_` prefix.
   Exception: when the method name clashes with a trait method (e.g. `with_description` on BashTool).
-  Examples: `.name()`, `.model()`, `.tool()`, `.sub_agent()`, `.read_only()`.
+  Examples: `.name()`, `.model()`, `.tool()`, `.sub_agents()`, `.read_only()`.
 - **Constructors**: `new()` for the primary/simple constructor. `with_client()` for custom-client variants. Named constructors for semantics: `open()`, `unrestricted()`, `success()`, `error()`, `empty()`.
 - **Getters/setters on mutable refs**: `set_`/`get_` prefix to distinguish from builder methods.
   Example: `set_extension()`, `get_extension()`.

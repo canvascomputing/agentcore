@@ -2,7 +2,7 @@ mod common;
 
 use std::sync::Arc;
 
-use agentwerk::{AgentBuilder, BashTool, Event, EventKind};
+use agentwerk::{Agent, BashTool, Event, EventKind};
 
 #[tokio::test]
 async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -36,7 +36,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let cat = BashTool::new("cat", "cat *").read_only(true);
     let wc = BashTool::new("wc", "wc *").read_only(true);
 
-    let output = AgentBuilder::new()
+    let output = Agent::new()
         .provider(provider)
         .model(&model)
         .identity_prompt(
