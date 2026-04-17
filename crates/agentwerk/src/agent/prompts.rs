@@ -38,6 +38,10 @@ pub const DEFAULT_BEHAVIOR_PROMPT: &str = "\
 // Structured output constants
 // ---------------------------------------------------------------------------
 
+pub(crate) const MAX_TOKENS_CONTINUATION: &str =
+    "Your previous response was cut off because it reached the output token limit. \
+     Resume exactly where you left off — do not repeat, apologize, or recap.";
+
 pub(crate) const STRUCTURED_OUTPUT_INSTRUCTION: &str =
     "\n\nIMPORTANT: You must provide your final response using the StructuredOutput tool \
      with the required structured format. After using any other tools needed to complete \

@@ -18,7 +18,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
             eprintln!("\n[{}] tool: {tool_name}", event.agent_name)
         }
         EventKind::AgentStart { .. } => eprintln!("[{}] started", event.agent_name),
-        EventKind::AgentEnd { turns } => eprintln!("[{}] done ({turns} turns)", event.agent_name),
+        EventKind::AgentEnd { turns, .. } => eprintln!("[{}] done ({turns} turns)", event.agent_name),
         _ => {}
     });
 

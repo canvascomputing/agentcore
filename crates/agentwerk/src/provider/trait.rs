@@ -15,7 +15,7 @@ pub struct CompletionRequest {
     pub system_prompt: String,
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDefinition>,
-    pub max_tokens: Option<u32>,
+    pub max_output_tokens: Option<u32>,
     pub tool_choice: Option<ToolChoice>,
 }
 

@@ -28,7 +28,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
         EventKind::ToolCallStart { tool_name, input, .. } => {
             eprintln!("[tool] {tool_name}({input})")
         }
-        EventKind::AgentEnd { turns } => eprintln!("[done in {turns} turn(s)]"),
+        EventKind::AgentEnd { turns, .. } => eprintln!("[done in {turns} turn(s)]"),
         _ => {}
     });
 

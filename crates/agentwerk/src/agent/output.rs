@@ -7,6 +7,26 @@ use crate::error::{AgenticError, Result};
 use super::prompts::{STRUCTURED_OUTPUT_TOOL_DESCRIPTION, STRUCTURED_OUTPUT_TOOL_NAME};
 use crate::tools::{Tool, ToolContext, ToolResult};
 
+/// Why the agent loop exited.
+///
+/// Distinct from [`crate::provider::types::ResponseStatus`], which describes
+/// what the LLM API reported. `Status` describes the agent-level outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    /// Model chose to stop — responded without tool calls (`EndTurn`).
+    Completed,
+    /// MaxTokens continuations exhausted — output remains incomplete.
+    OutputLimitReached,
+    /// External cancel signal was set.
+    Cancelled,
+    /// Configured `max_turns` limit reached.
+    TurnLimitReached { limit: u32 },
+    /// Configured `max_input_tokens` budget exceeded.
+    BudgetExhausted { usage: u64, limit: u64 },
+    /// A turn hook callback halted the agent.
+    HaltRequested,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Statistics {
     pub input_tokens: u64,
@@ -21,6 +41,7 @@ pub struct AgentOutput {
     pub response: Option<Value>,
     pub response_raw: String,
     pub statistics: Statistics,
+    pub status: Status,
 }
 
 impl AgentOutput {
@@ -29,6 +50,7 @@ impl AgentOutput {
             response: None,
             response_raw: String::new(),
             statistics: Statistics::default(),
+            status: Status::Completed,
         }
     }
 }

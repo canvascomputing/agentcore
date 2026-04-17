@@ -12,7 +12,7 @@ use crate::error::{AgenticError, Result};
 
 use super::r#trait::{CompletionRequest, LlmProvider, ToolChoice};
 use super::stream::{SseEvent, StreamParser};
-use super::types::{ContentBlock, Message, ModelResponse, StopReason, StreamEvent, TokenUsage};
+use super::types::{ContentBlock, Message, ModelResponse, ResponseStatus, StreamEvent, TokenUsage};
 
 /// OpenAI-compatible LLM provider.
 pub struct OpenAiProvider {
@@ -154,7 +154,7 @@ async fn stream_response(
     let mut parser = StreamParser::new();
     let mut text = String::new();
     let mut tool_calls: HashMap<usize, ToolCallAccumulator> = HashMap::new();
-    let mut stop_reason = StopReason::EndTurn;
+    let mut status = ResponseStatus::EndTurn;
     let mut usage = TokenUsage::default();
     let mut model = String::from("unknown");
 
@@ -210,11 +210,7 @@ async fn stream_response(
 
                     // Finish reason
                     if let Some(reason) = choice["finish_reason"].as_str() {
-                        stop_reason = match reason {
-                            "tool_calls" => StopReason::ToolUse,
-                            "length" => StopReason::MaxTokens,
-                            _ => StopReason::EndTurn,
-                        };
+                        status = parse_status_str(reason);
                     }
 
                     // Usage (appears on final chunk when stream_options.include_usage is set)
@@ -252,13 +248,13 @@ async fn stream_response(
     }
 
     on_event(StreamEvent::MessageDelta {
-        stop_reason: stop_reason.clone(),
+        status: status.clone(),
         usage: usage.clone(),
     });
 
     Ok(ModelResponse {
         content,
-        stop_reason,
+        status,
         usage,
         model,
     })
@@ -293,7 +289,7 @@ fn serialize_request(request: &CompletionRequest) -> Value {
         "messages": messages,
     });
 
-    if let Some(n) = request.max_tokens {
+    if let Some(n) = request.max_output_tokens {
         body["max_tokens"] = Value::from(n);
     }
 
@@ -422,7 +418,7 @@ fn parse_response(json: Value, cache_tokens: bool) -> ModelResponse {
 
     ModelResponse {
         content: parse_content(message),
-        stop_reason: parse_stop_reason(choice),
+        status: parse_status(choice),
         usage: parse_usage(&json, cache_tokens),
         model: json["model"].as_str().unwrap_or("unknown").to_string(),
     }
@@ -454,11 +450,17 @@ fn parse_content(message: &Value) -> Vec<ContentBlock> {
     content
 }
 
-fn parse_stop_reason(choice: &Value) -> StopReason {
-    match choice["finish_reason"].as_str().unwrap_or("stop") {
-        "tool_calls" => StopReason::ToolUse,
-        "length" => StopReason::MaxTokens,
-        _ => StopReason::EndTurn,
+fn parse_status(choice: &Value) -> ResponseStatus {
+    parse_status_str(choice["finish_reason"].as_str().unwrap_or("stop"))
+}
+
+fn parse_status_str(raw: &str) -> ResponseStatus {
+    match raw {
+        "stop" => ResponseStatus::EndTurn,
+        "tool_calls" => ResponseStatus::ToolUse,
+        "length" => ResponseStatus::OutputTruncated,
+        "content_filter" => ResponseStatus::Refused,
+        _ => ResponseStatus::EndTurn,
     }
 }
 
@@ -493,7 +495,7 @@ mod tests {
                 content: vec![ContentBlock::Text { text: "Hello".into() }],
             }],
             tools: vec![],
-            max_tokens: Some(1024),
+            max_output_tokens: Some(1024),
             tool_choice: None,
         }
     }
@@ -527,7 +529,7 @@ mod tests {
                 description: "Get weather".into(),
                 input_schema: serde_json::json!({"type": "object", "properties": {"city": {"type": "string"}}}),
             }],
-            max_tokens: Some(1024),
+            max_output_tokens: Some(1024),
             tool_choice: Some(ToolChoice::Auto),
         };
         let body = serialize_request(&request);
@@ -544,7 +546,7 @@ mod tests {
             system_prompt: String::new(),
             messages: vec![],
             tools: vec![],
-            max_tokens: Some(1024),
+            max_output_tokens: Some(1024),
             tool_choice: Some(ToolChoice::Specific { name: "read_file".into() }),
         };
         let body = serialize_request(&request);
@@ -564,7 +566,7 @@ mod tests {
         let resp = parse_response(json, false);
         assert_eq!(resp.content.len(), 1);
         assert!(matches!(&resp.content[0], ContentBlock::Text { text } if text == "Hello!"));
-        assert_eq!(resp.stop_reason, StopReason::EndTurn);
+        assert_eq!(resp.status, ResponseStatus::EndTurn);
         assert_eq!(resp.usage.input_tokens, 10);
         assert_eq!(resp.model, "gpt-4");
     }
@@ -587,7 +589,7 @@ mod tests {
             "model": "gpt-4"
         });
         let resp = parse_response(json, true);
-        assert_eq!(resp.stop_reason, StopReason::ToolUse);
+        assert_eq!(resp.status, ResponseStatus::ToolUse);
         match &resp.content[0] {
             ContentBlock::ToolUse { id, name, input } => {
                 assert_eq!(id, "call_abc");
@@ -601,16 +603,17 @@ mod tests {
     #[test]
     fn parse_finish_reason_mapping() {
         for (reason, expected) in [
-            ("stop", StopReason::EndTurn),
-            ("tool_calls", StopReason::ToolUse),
-            ("length", StopReason::MaxTokens),
+            ("stop", ResponseStatus::EndTurn),
+            ("tool_calls", ResponseStatus::ToolUse),
+            ("length", ResponseStatus::OutputTruncated),
+            ("content_filter", ResponseStatus::Refused),
         ] {
             let json = serde_json::json!({
                 "choices": [{"message": {"content": "x"}, "finish_reason": reason}],
                 "usage": {"prompt_tokens": 0, "completion_tokens": 0},
                 "model": "m"
             });
-            assert_eq!(parse_response(json, false).stop_reason, expected, "Failed for {reason}");
+            assert_eq!(parse_response(json, false).status, expected, "Failed for {reason}");
         }
     }
 

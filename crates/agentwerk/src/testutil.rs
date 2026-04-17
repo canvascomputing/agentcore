@@ -7,9 +7,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use crate::agent::queue::CommandQueue;
-use crate::agent::{Agent, AgentOutput, Event, EventKind};
+use crate::agent::{Agent, AgentOutput, Event, EventKind, Status};
 use crate::error::{AgenticError, Result};
-use crate::provider::types::{ContentBlock, ModelResponse, StopReason, StreamEvent, TokenUsage};
+use crate::provider::types::{ContentBlock, ModelResponse, ResponseStatus, StreamEvent, TokenUsage};
 use crate::provider::{CompletionRequest, LlmProvider};
 use crate::tools::{Tool, ToolContext, ToolResult};
 
@@ -105,7 +105,18 @@ pub fn text_response(text: &str) -> ModelResponse {
         content: vec![ContentBlock::Text {
             text: text.to_string(),
         }],
-        stop_reason: StopReason::EndTurn,
+        status: ResponseStatus::EndTurn,
+        usage: TokenUsage::default(),
+        model: "mock".to_string(),
+    }
+}
+
+pub fn truncated_response(text: &str) -> ModelResponse {
+    ModelResponse {
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
+        status: ResponseStatus::OutputTruncated,
         usage: TokenUsage::default(),
         model: "mock".to_string(),
     }
@@ -118,11 +129,12 @@ pub fn tool_response(tool_name: &str, id: &str, input: serde_json::Value) -> Mod
             name: tool_name.to_string(),
             input,
         }],
-        stop_reason: StopReason::ToolUse,
+        status: ResponseStatus::ToolUse,
         usage: TokenUsage::default(),
         model: "mock".to_string(),
     }
 }
+
 
 // ---------------------------------------------------------------------------
 // MockTool
@@ -278,13 +290,13 @@ impl EventCollector {
         self.events.lock().unwrap().clone()
     }
 
-    pub fn agent_ends(&self) -> Vec<(String, u32)> {
+    pub fn agent_ends(&self) -> Vec<(String, u32, Status)> {
         self.events
             .lock()
             .unwrap()
             .iter()
             .filter_map(|e| match &e.kind {
-                EventKind::AgentEnd { turns } => Some((e.agent_name.clone(), *turns)),
+                EventKind::AgentEnd { turns, status } => Some((e.agent_name.clone(), *turns, status.clone())),
                 _ => None,
             })
             .collect()

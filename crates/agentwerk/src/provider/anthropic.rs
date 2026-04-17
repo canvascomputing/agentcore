@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::error::{AgenticError, Result};
 
-use super::types::{ContentBlock, Message, ModelResponse, StopReason, StreamEvent, TokenUsage};
+use super::types::{ContentBlock, Message, ModelResponse, ResponseStatus, StreamEvent, TokenUsage};
 use super::r#trait::{CompletionRequest, LlmProvider, ToolChoice};
 
 pub struct AnthropicProvider {
@@ -63,7 +63,7 @@ impl AnthropicProvider {
             "messages": messages,
         });
 
-        if let Some(n) = request.max_tokens {
+        if let Some(n) = request.max_output_tokens {
             body["max_tokens"] = Value::from(n);
         }
 
@@ -80,7 +80,7 @@ impl AnthropicProvider {
     fn parse_response(&self, json: Value) -> Result<ModelResponse> {
         Ok(ModelResponse {
             content: parse_content(&json),
-            stop_reason: parse_stop_reason(&json),
+            status: parse_status(&json),
             usage: parse_usage(&json),
             model: json["model"].as_str().unwrap_or("unknown").to_string(),
         })
@@ -146,7 +146,7 @@ async fn stream_response(
     let mut parser = StreamParser::new();
     let mut model = String::from("unknown");
     let mut usage = TokenUsage::default();
-    let mut stop_reason = StopReason::EndTurn;
+    let mut status = ResponseStatus::EndTurn;
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
 
     // Per-block accumulators, keyed by content block index
@@ -261,15 +261,11 @@ async fn stream_response(
                     on_event(StreamEvent::ContentBlockStop { index: idx });
                 }
                 "message_delta" => {
-                    stop_reason = match json["delta"]["stop_reason"].as_str() {
-                        Some("tool_use") => StopReason::ToolUse,
-                        Some("max_tokens") => StopReason::MaxTokens,
-                        _ => StopReason::EndTurn,
-                    };
+                    status = parse_status_str(json["delta"]["stop_reason"].as_str().unwrap_or("end_turn"));
                     usage.output_tokens =
                         json["usage"]["output_tokens"].as_u64().unwrap_or(0);
                     on_event(StreamEvent::MessageDelta {
-                        stop_reason: stop_reason.clone(),
+                        status: status.clone(),
                         usage: usage.clone(),
                     });
                 }
@@ -283,7 +279,7 @@ async fn stream_response(
 
     Ok(ModelResponse {
         content: content_blocks,
-        stop_reason,
+        status,
         usage,
         model,
     })
@@ -363,11 +359,20 @@ fn parse_content(json: &Value) -> Vec<ContentBlock> {
         .collect()
 }
 
-fn parse_stop_reason(json: &Value) -> StopReason {
-    match json["stop_reason"].as_str().unwrap_or("end_turn") {
-        "tool_use" => StopReason::ToolUse,
-        "max_tokens" => StopReason::MaxTokens,
-        _ => StopReason::EndTurn,
+fn parse_status(json: &Value) -> ResponseStatus {
+    parse_status_str(json["stop_reason"].as_str().unwrap_or("end_turn"))
+}
+
+fn parse_status_str(raw: &str) -> ResponseStatus {
+    match raw {
+        "end_turn" => ResponseStatus::EndTurn,
+        "stop_sequence" => ResponseStatus::StopSequence,
+        "tool_use" => ResponseStatus::ToolUse,
+        "max_tokens" => ResponseStatus::OutputTruncated,
+        "model_context_window_exceeded" => ResponseStatus::ContextWindowExceeded,
+        "refusal" => ResponseStatus::Refused,
+        "pause_turn" => ResponseStatus::PauseTurn,
+        _ => ResponseStatus::EndTurn,
     }
 }
 
@@ -395,7 +400,7 @@ mod tests {
                 content: vec![ContentBlock::Text { text: "Hi".into() }],
             }],
             tools: vec![],
-            max_tokens: Some(1024),
+            max_output_tokens: Some(1024),
             tool_choice: None,
         }
     }
@@ -441,7 +446,7 @@ mod tests {
         let resp = provider().parse_response(json).unwrap();
         assert_eq!(resp.content.len(), 1);
         assert!(matches!(&resp.content[0], ContentBlock::Text { text } if text == "Hello!"));
-        assert_eq!(resp.stop_reason, StopReason::EndTurn);
+        assert_eq!(resp.status, ResponseStatus::EndTurn);
         assert_eq!(resp.usage.input_tokens, 10);
     }
 
@@ -454,7 +459,7 @@ mod tests {
             "model": "mock"
         });
         let resp = provider().parse_response(json).unwrap();
-        assert_eq!(resp.stop_reason, StopReason::ToolUse);
+        assert_eq!(resp.status, ResponseStatus::ToolUse);
         match &resp.content[0] {
             ContentBlock::ToolUse { name, input, .. } => {
                 assert_eq!(name, "read");
@@ -477,17 +482,21 @@ mod tests {
     }
 
     #[test]
-    fn parse_response_maps_stop_reasons() {
+    fn parse_response_maps_status() {
         for (reason, expected) in [
-            ("end_turn", StopReason::EndTurn),
-            ("tool_use", StopReason::ToolUse),
-            ("max_tokens", StopReason::MaxTokens),
+            ("end_turn", ResponseStatus::EndTurn),
+            ("stop_sequence", ResponseStatus::StopSequence),
+            ("tool_use", ResponseStatus::ToolUse),
+            ("max_tokens", ResponseStatus::OutputTruncated),
+            ("model_context_window_exceeded", ResponseStatus::ContextWindowExceeded),
+            ("refusal", ResponseStatus::Refused),
+            ("pause_turn", ResponseStatus::PauseTurn),
         ] {
             let json = serde_json::json!({
                 "content": [], "stop_reason": reason,
                 "usage": {"input_tokens": 0, "output_tokens": 0}, "model": "m"
             });
-            assert_eq!(provider().parse_response(json).unwrap().stop_reason, expected);
+            assert_eq!(provider().parse_response(json).unwrap().status, expected);
         }
     }
 }

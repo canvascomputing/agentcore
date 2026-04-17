@@ -25,13 +25,13 @@ use crate::error::{AgenticError, Result};
 use crate::persistence::session::{EntryType, SessionStore, TranscriptEntry};
 use crate::provider::model::ModelSpec;
 use crate::provider::retry::{compute_delay, DEFAULT_BACKOFF_MS, DEFAULT_MAX_REQUEST_RETRIES};
-use crate::provider::types::{ContentBlock, Message, ModelResponse, StopReason, StreamEvent, TokenUsage};
+use crate::provider::types::{ContentBlock, Message, ModelResponse, ResponseStatus, StreamEvent, TokenUsage};
 use crate::provider::{CompletionRequest, LlmProvider, ToolChoice};
 use crate::tools::{execute_tool_calls, SpawnAgentTool, Tool, ToolCall, ToolContext, ToolRegistry};
 use crate::util::{generate_agent_name, now_millis};
 
 use super::event::{Event, EventKind};
-use super::output::{AgentOutput, OutputSchema, Statistics, StructuredOutputTool};
+use super::output::{AgentOutput, OutputSchema, Statistics, Status, StructuredOutputTool};
 use super::prompts::{
     self as prompts, interpolate, DEFAULT_BEHAVIOR_PROMPT, STRUCTURED_OUTPUT_TOOL_NAME,
 };
@@ -60,16 +60,18 @@ pub(crate) struct AgentConfig {
     pub name: Option<String>,
     pub model: ModelSpec,
     pub identity_prompt: String,
-    pub max_tokens: Option<u32>,
-    pub max_turns: Option<u32>,
-    pub output_schema: Option<OutputSchema>,
-    pub max_schema_retries: Option<u32>,
     pub behavior_prompt: String,
     pub context_prompts: Vec<String>,
     pub tools: ToolRegistry,
+    pub sub_agents: Vec<Agent>,
+    pub output_schema: Option<OutputSchema>,
+    pub max_output_tokens: Option<u32>,
+    pub max_input_tokens: Option<u64>,
+    pub max_turns: Option<u32>,
+    pub max_continuations: Option<u32>,
+    pub max_schema_retries: Option<u32>,
     pub max_request_retries: u32,
     pub request_retry_backoff_ms: u64,
-    pub sub_agents: Vec<Agent>,
 }
 
 impl Default for AgentConfig {
@@ -78,16 +80,18 @@ impl Default for AgentConfig {
             name: None,
             model: ModelSpec::Inherit,
             identity_prompt: String::new(),
-            max_tokens: None,
-            max_turns: None,
-            output_schema: None,
-            max_schema_retries: Some(10),
             behavior_prompt: DEFAULT_BEHAVIOR_PROMPT.to_string(),
             context_prompts: Vec::new(),
             tools: ToolRegistry::new(),
+            sub_agents: Vec::new(),
+            output_schema: None,
+            max_output_tokens: None,
+            max_input_tokens: None,
+            max_turns: None,
+            max_continuations: Some(5),
+            max_schema_retries: Some(10),
             max_request_retries: DEFAULT_MAX_REQUEST_RETRIES,
             request_retry_backoff_ms: DEFAULT_BACKOFF_MS,
-            sub_agents: Vec::new(),
         }
     }
 }
@@ -98,16 +102,18 @@ impl Clone for AgentConfig {
             name: self.name.clone(),
             model: self.model.clone(),
             identity_prompt: self.identity_prompt.clone(),
-            max_tokens: self.max_tokens,
-            max_turns: self.max_turns,
-            output_schema: self.output_schema.clone(),
-            max_schema_retries: self.max_schema_retries,
             behavior_prompt: self.behavior_prompt.clone(),
             context_prompts: self.context_prompts.clone(),
             tools: self.tools.clone(),
+            sub_agents: self.sub_agents.clone(),
+            output_schema: self.output_schema.clone(),
+            max_output_tokens: self.max_output_tokens,
+            max_input_tokens: self.max_input_tokens,
+            max_turns: self.max_turns,
+            max_continuations: self.max_continuations,
+            max_schema_retries: self.max_schema_retries,
             max_request_retries: self.max_request_retries,
             request_retry_backoff_ms: self.request_retry_backoff_ms,
-            sub_agents: self.sub_agents.clone(),
         }
     }
 }
@@ -190,13 +196,23 @@ impl Agent {
     }
 
     /// Maximum output tokens per LLM request. Omit to use the provider default.
-    pub fn max_tokens(self, n: u32) -> Self {
-        self.with_config(|c| c.max_tokens = Some(n))
+    pub fn max_output_tokens(self, n: u32) -> Self {
+        self.with_config(|c| c.max_output_tokens = Some(n))
     }
 
     /// Maximum agentic loop iterations. Omit for no limit.
     pub fn max_turns(self, n: u32) -> Self {
         self.with_config(|c| c.max_turns = Some(n))
+    }
+
+    /// Maximum auto-continuations when the model output is truncated. Default: 5.
+    pub fn max_continuations(self, n: u32) -> Self {
+        self.with_config(|c| c.max_continuations = Some(n))
+    }
+
+    /// Maximum cumulative input tokens before the agent stops.
+    pub fn max_input_tokens(self, n: u64) -> Self {
+        self.with_config(|c| c.max_input_tokens = Some(n))
     }
 
     /// Register a tool.
@@ -373,8 +389,8 @@ impl Agent {
         if let Some(i) = overrides.get("identity").and_then(Value::as_str) {
             self = self.identity_prompt(i);
         }
-        if let Some(t) = overrides.get("max_tokens").and_then(Value::as_u64) {
-            self = self.max_tokens(t as u32);
+        if let Some(t) = overrides.get("max_output_tokens").and_then(Value::as_u64) {
+            self = self.max_output_tokens(t as u32);
         }
         if let Some(mt) = overrides.get("max_turns").and_then(Value::as_u64) {
             self = self.max_turns(mt as u32);
@@ -504,12 +520,14 @@ pub(crate) struct AgentSpec {
     pub tools: Arc<ToolRegistry>,
     pub tool_choice: Option<ToolChoice>,
     pub sub_agents: Vec<Agent>,
+    pub output_schema: Option<OutputSchema>,
+    pub max_output_tokens: Option<u32>,
+    pub max_input_tokens: Option<u64>,
     pub max_turns: Option<u32>,
-    pub max_tokens: Option<u32>,
+    pub max_continuations: Option<u32>,
     pub max_schema_retries: Option<u32>,
     pub max_request_retries: u32,
     pub request_retry_backoff_ms: u64,
-    pub output_schema: Option<OutputSchema>,
 }
 
 impl AgentSpec {
@@ -550,12 +568,14 @@ impl AgentSpec {
             tools,
             tool_choice,
             sub_agents: agent.config.sub_agents.clone(),
+            output_schema: agent.config.output_schema.clone(),
+            max_output_tokens: agent.config.max_output_tokens,
+            max_input_tokens: agent.config.max_input_tokens,
             max_turns: agent.config.max_turns,
-            max_tokens: agent.config.max_tokens,
+            max_continuations: agent.config.max_continuations,
             max_schema_retries: agent.config.max_schema_retries,
             max_request_retries: agent.config.max_request_retries,
             request_retry_backoff_ms: agent.config.request_retry_backoff_ms,
-            output_schema: agent.config.output_schema.clone(),
         })
     }
 }
@@ -629,6 +649,8 @@ pub(crate) struct LoopState {
     pub tool_call_count: u64,
     pub turn: u32,
     pub schema_retries: u32,
+    pub continuations: u32,
+    pub paused: bool,
     pub discovered_tools: HashSet<String>,
     pub structured_output: Option<Value>,
 }
@@ -651,6 +673,50 @@ impl LoopState {
 // run_loop — the execution loop itself
 // ---------------------------------------------------------------------------
 
+/// The agent execution loop.
+///
+/// Each iteration is one "turn": call the LLM, process its response, decide
+/// whether to continue.
+///
+/// ```text
+/// loop {
+///     // 1. GUARD CHECK — can we even start this turn?
+///     //    Check: cancel_signal, max_turns, token_budget
+///     //    If any guard fires → exit with partial output + reason
+///
+///     // 2. CALL LLM — get the model's response
+///     //    The model returns: text content, tool_use blocks, and a status
+///
+///     // 3. COMPLETION DECISION — based on what the model returned:
+///     //
+///     //    ┌─ ResponseStatus::ToolUse + non-empty tool calls
+///     //    │   → Execute tools, push results to messages, CONTINUE loop
+///     //    │
+///     //    ├─ ResponseStatus::OutputTruncated + no tool calls
+///     //    │   → Model was CUT OFF mid-response (did NOT decide to stop)
+///     //    │   → Send continuation message, CONTINUE loop
+///     //    │   → Give up after max_continuations
+///     //    │
+///     //    ├─ ResponseStatus::ContextWindowExceeded
+///     //    │   → Input too large — EXIT with error
+///     //    │
+///     //    ├─ ResponseStatus::Refused
+///     //    │   → Model declined on safety grounds — EXIT with error
+///     //    │
+///     //    └─ ResponseStatus::EndTurn / StopSequence + no tool calls
+///     //        → Model DECIDED it is finished → EXIT with output
+/// }
+/// ```
+///
+/// **The fundamental signal is: the model responds without making tool calls
+/// and status is `EndTurn`.** This means the model has nothing left to do —
+/// no files to read, no commands to run, no sub-agents to spawn. It has
+/// completed its task (or believes it has).
+///
+/// `OutputTruncated` is NOT a completion signal — it means the model ran out
+/// of output space. `ToolUse` is NOT a completion signal — it means the model
+/// needs tools to make progress. Only `EndTurn` (with no tool calls) means
+/// the model chose to stop.
 pub(crate) fn run_loop(
     runtime: Arc<Runtime>,
     spec: Arc<AgentSpec>,
@@ -658,75 +724,89 @@ pub(crate) fn run_loop(
 ) -> Pin<Box<dyn Future<Output = Result<AgentOutput>> + Send>> {
     Box::pin(async move {
         runtime.provider.prewarm().await;
-
         let mut state = LoopState::init(&spec);
-        record_transcript(
-            &runtime,
-            EntryType::UserMessage,
-            state.messages.last().unwrap(),
-            None,
-        );
-
-        emit(
-            &runtime,
-            &spec.name,
-            EventKind::AgentStart { description },
-        );
+        record_transcript(&runtime, EntryType::UserMessage, state.messages.last().unwrap(), None);
+        emit(&runtime, &spec.name, EventKind::AgentStart { description });
 
         loop {
-            check_guards(&runtime, &spec, &state)?;
-            state.turn += 1;
-            emit(&runtime, &spec.name, EventKind::TurnStart { turn: state.turn });
+            // Guards: cancel signal, max turns, token budget
+            if let Some(status) = check_guards(&runtime, &spec, &state) {
+                return Ok(finish_early(&runtime, &spec, &mut state, status));
+            }
 
+            state.turn += 1;
+            let turn = state.turn;
+
+            // LLM request
             let model = spec.model.clone();
+            emit(&runtime, &spec.name, EventKind::TurnStart { turn });
             emit(&runtime, &spec.name, EventKind::RequestStart { model: model.clone() });
             let response = call_llm_with_retry(&runtime, &spec, &state).await?;
             emit(&runtime, &spec.name, EventKind::RequestEnd { model });
             record_usage(&runtime, &spec, &mut state, &response);
 
+            // Record assistant message
             let (text, tool_calls) = parse_response(&response);
-            state.messages.push(Message::Assistant {
-                content: response.content.clone(),
-            });
+            state.messages.push(Message::Assistant { content: response.content.clone() });
             record_transcript(
-                &runtime,
-                EntryType::AssistantMessage,
-                state.messages.last().unwrap(),
-                Some((&response.usage, &response.model)),
+                &runtime, EntryType::AssistantMessage,
+                state.messages.last().unwrap(), Some((&response.usage, &response.model)),
             );
 
-            if response.stop_reason != StopReason::ToolUse || tool_calls.is_empty() {
-                if let Some(output) = try_finish(&runtime, &spec, &mut state, text)? {
-                    emit(&runtime, &spec.name, EventKind::TurnEnd { turn: state.turn });
-                    return Ok(output);
-                }
-            } else {
+            // Decision: what did the model return?
+            let has_tool_calls = response.status == ResponseStatus::ToolUse && !tool_calls.is_empty();
+            let is_truncated = response.status == ResponseStatus::OutputTruncated && tool_calls.is_empty();
+
+            if has_tool_calls {
                 let results = execute_tools(&runtime, &spec, &mut state, &tool_calls).await;
                 state.messages.push(Message::User { content: results });
-                record_transcript(
-                    &runtime,
-                    EntryType::ToolResult,
-                    state.messages.last().unwrap(),
-                    None,
-                );
+                record_transcript(&runtime, EntryType::ToolResult, state.messages.last().unwrap(), None);
                 drain_command_queue(&runtime, &spec, &mut state);
+            } else if is_truncated {
+                emit(&runtime, &spec.name, EventKind::TurnPaused { turn });
+                state.paused = true;
+                state.continuations += 1;
+                if spec.max_continuations.is_some_and(|limit| state.continuations > limit) {
+                    return Ok(finish_early(&runtime, &spec, &mut state, Status::OutputLimitReached));
+                }
+                debug_assert!(state.paused, "TurnResumed without preceding TurnPaused");
+                state.paused = false;
+                emit(&runtime, &spec.name, EventKind::TurnResumed { turn, continuation: state.continuations });
+                state.messages.push(Message::user(prompts::MAX_TOKENS_CONTINUATION));
+            } else if let Some(output) = try_finish(&runtime, &spec, &mut state, text)? {
+                emit(&runtime, &spec.name, EventKind::TurnEnd { turn });
+                return Ok(output);
             }
 
-            emit(&runtime, &spec.name, EventKind::TurnEnd { turn: state.turn });
+            emit(&runtime, &spec.name, EventKind::TurnEnd { turn });
         }
     })
 }
 
-fn check_guards(runtime: &Runtime, spec: &AgentSpec, state: &LoopState) -> Result<()> {
+fn finish_early(runtime: &Runtime, spec: &AgentSpec, state: &mut LoopState, status: Status) -> AgentOutput {
+    let text = last_assistant_text(&state.messages);
+    emit(runtime, &spec.name, EventKind::AgentEnd { turns: state.turn, status: status.clone() });
+    build_output(state, text, status)
+}
+
+fn check_guards(runtime: &Runtime, spec: &AgentSpec, state: &LoopState) -> Option<Status> {
     if runtime.cancel_signal.load(Ordering::Relaxed) {
-        return Err(AgenticError::Aborted);
+        return Some(Status::Cancelled);
     }
     if let Some(limit) = spec.max_turns {
         if state.turn >= limit {
-            return Err(AgenticError::MaxTurnsExceeded(limit));
+            return Some(Status::TurnLimitReached { limit });
         }
     }
-    Ok(())
+    if let Some(limit) = spec.max_input_tokens {
+        if state.total_usage.input_tokens >= limit {
+            return Some(Status::BudgetExhausted {
+                usage: state.total_usage.input_tokens,
+                limit,
+            });
+        }
+    }
+    None
 }
 
 async fn call_llm(runtime: &Runtime, spec: &AgentSpec, state: &LoopState) -> Result<ModelResponse> {
@@ -736,7 +816,7 @@ async fn call_llm(runtime: &Runtime, spec: &AgentSpec, state: &LoopState) -> Res
         system_prompt: spec.system_prompt.clone(),
         messages: state.messages.clone(),
         tools: tool_defs,
-        max_tokens: spec.max_tokens,
+        max_output_tokens: spec.max_output_tokens,
         tool_choice: spec.tool_choice.clone(),
     };
 
@@ -822,18 +902,8 @@ fn try_finish(
         return Ok(None);
     }
 
-    emit(runtime, &spec.name, EventKind::AgentEnd { turns: state.turn });
-    Ok(Some(AgentOutput {
-        response: state.structured_output.take(),
-        response_raw: text,
-        statistics: Statistics {
-            input_tokens: state.total_usage.input_tokens,
-            output_tokens: state.total_usage.output_tokens,
-            requests: state.request_count,
-            tool_calls: state.tool_call_count,
-            turns: state.turn,
-        },
-    }))
+    emit(runtime, &spec.name, EventKind::AgentEnd { turns: state.turn, status: Status::Completed });
+    Ok(Some(build_output(state, text, Status::Completed)))
 }
 
 async fn execute_tools(
@@ -933,6 +1003,41 @@ fn record_transcript(
         .ok();
 }
 
+fn build_output(state: &mut LoopState, text: String, status: Status) -> AgentOutput {
+    AgentOutput {
+        response: state.structured_output.take(),
+        response_raw: text,
+        statistics: Statistics {
+            input_tokens: state.total_usage.input_tokens,
+            output_tokens: state.total_usage.output_tokens,
+            requests: state.request_count,
+            tool_calls: state.tool_call_count,
+            turns: state.turn,
+        },
+        status,
+    }
+}
+
+fn last_assistant_text(messages: &[Message]) -> String {
+    messages
+        .iter()
+        .rev()
+        .find_map(|m| match m {
+            Message::Assistant { content } => {
+                let text: String = content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                Some(text)
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -993,8 +1098,9 @@ mod tests {
             .tool(MockTool::new("t", false, "ok"));
 
         let harness = TestHarness::new(provider);
-        let err = harness.run_agent(&agent, "go").await.unwrap_err();
-        assert!(matches!(err, AgenticError::MaxTurnsExceeded(2)));
+        let output = harness.run_agent(&agent, "go").await.unwrap();
+        assert_eq!(output.status, Status::TurnLimitReached { limit: 2 });
+        assert_eq!(output.statistics.turns, 2);
     }
 
     #[tokio::test]
@@ -1009,8 +1115,8 @@ mod tests {
 
         let harness = TestHarness::new(provider);
         harness.cancel();
-        let err = harness.run_agent(&agent, "go").await.unwrap_err();
-        assert!(matches!(err, AgenticError::Aborted));
+        let output = harness.run_agent(&agent, "go").await.unwrap();
+        assert_eq!(output.status, Status::Cancelled);
     }
 
     #[tokio::test]
@@ -1282,6 +1388,124 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn simple_text_response_status_completed() {
+        let harness = TestHarness::new(MockProvider::text("Hello!"));
+        let output = harness.run_agent(&simple_agent(), "Hi").await.unwrap();
+        assert_eq!(output.status, Status::Completed);
+    }
+
+    #[tokio::test]
+    async fn max_tokens_auto_continuation() {
+        let provider = MockProvider::new(vec![
+            truncated_response("partial response..."),
+            text_response("...completed response"),
+        ]);
+        let harness = TestHarness::new(provider);
+        let output = harness.run_agent(&simple_agent(), "write a long essay").await.unwrap();
+
+        assert_eq!(output.status, Status::Completed);
+        assert_eq!(output.response_raw, "...completed response");
+        assert_eq!(harness.provider().request_count(), 2);
+
+        // Verify continuation message was injected
+        let req = &harness.provider().requests.lock().unwrap()[1];
+        let has_continuation = req.messages.iter().any(|m| match m {
+            Message::User { content } => content.iter().any(|b| match b {
+                ContentBlock::Text { text } => text.contains("cut off"),
+                _ => false,
+            }),
+            _ => false,
+        });
+        assert!(has_continuation);
+    }
+
+    #[tokio::test]
+    async fn max_tokens_continuation_exhausted() {
+        let provider = MockProvider::new(vec![
+            truncated_response("part 1"),
+            truncated_response("part 2"),
+            truncated_response("part 3"),
+        ]);
+        let agent = Agent::new()
+            .name("test").model("mock").identity_prompt("")
+            .max_continuations(2);
+        let harness = TestHarness::new(provider);
+        let output = harness.run_agent(&agent, "go").await.unwrap();
+
+        assert_eq!(output.status, Status::OutputLimitReached);
+    }
+
+    #[tokio::test]
+    async fn max_tokens_continuation_events() {
+        let provider = MockProvider::new(vec![
+            truncated_response("partial"),
+            text_response("done"),
+        ]);
+        let harness = TestHarness::new(provider);
+        harness.run_agent(&simple_agent(), "go").await.unwrap();
+
+        let events = harness.events().all();
+        let paused: Vec<u32> = events.iter().filter_map(|e| match &e.kind {
+            EventKind::TurnPaused { turn } => Some(*turn),
+            _ => None,
+        }).collect();
+        let resumed: Vec<(u32, u32)> = events.iter().filter_map(|e| match &e.kind {
+            EventKind::TurnResumed { turn, continuation } => Some((*turn, *continuation)),
+            _ => None,
+        }).collect();
+        assert_eq!(paused, vec![1]);
+        assert_eq!(resumed, vec![(1, 1)]);
+    }
+
+    #[tokio::test]
+    async fn token_budget_guard() {
+        let mut response = tool_response("t", "c1", serde_json::json!({}));
+        response.usage = TokenUsage { input_tokens: 5000, output_tokens: 100, ..Default::default() };
+        let provider = MockProvider::new(vec![response, text_response("done")]);
+
+        let agent = Agent::new()
+            .name("test").model("mock").identity_prompt("")
+            .max_input_tokens(4000)
+            .tool(MockTool::new("t", false, "ok"));
+
+        let harness = TestHarness::new(provider);
+        let output = harness.run_agent(&agent, "go").await.unwrap();
+        assert_eq!(output.status, Status::BudgetExhausted { usage: 5000, limit: 4000 });
+    }
+
+    #[tokio::test]
+    async fn agent_end_event_carries_status() {
+        let provider = MockProvider::text("done");
+        let harness = TestHarness::new(provider);
+        harness.run_agent(&simple_agent(), "go").await.unwrap();
+
+        let ends = harness.events().agent_ends();
+        assert_eq!(ends.len(), 1);
+        assert_eq!(ends[0].2, Status::Completed);
+    }
+
+    #[tokio::test]
+    async fn turn_resumed_always_follows_turn_paused() {
+        let provider = MockProvider::new(vec![
+            truncated_response("p1"),
+            truncated_response("p2"),
+            text_response("done"),
+        ]);
+        let harness = TestHarness::new(provider);
+        harness.run_agent(&simple_agent(), "go").await.unwrap();
+
+        let events = harness.events().all();
+        for (i, event) in events.iter().enumerate() {
+            if matches!(event.kind, EventKind::TurnResumed { .. }) {
+                assert!(
+                    i > 0 && matches!(events[i - 1].kind, EventKind::TurnPaused { .. }),
+                    "TurnResumed at index {i} not preceded by TurnPaused"
+                );
+            }
+        }
+    }
+
     #[test]
     fn context_prompt_appended_after_metadata() {
         let agent = Agent::new()
@@ -1411,6 +1635,8 @@ mod retry_and_events_tests {
             EventKind::ToolCallStart { .. } => "ToolCallStart",
             EventKind::ToolCallEnd { .. } => "ToolCallEnd",
             EventKind::TokenUsage { .. } => "TokenUsage",
+            EventKind::TurnPaused { .. } => "TurnPaused",
+            EventKind::TurnResumed { .. } => "TurnResumed",
         }
     }
 }

@@ -1,3 +1,4 @@
+use crate::agent::output::Status;
 use crate::provider::types::TokenUsage;
 
 #[derive(Debug, Clone)]
@@ -17,7 +18,7 @@ pub enum EventKind {
     /// Agent begins execution. `description` carries the LLM-supplied label when
     /// an agent was spawned via `SpawnAgentTool`; `None` for root runs.
     AgentStart { description: Option<String> },
-    AgentEnd { turns: u32 },
+    AgentEnd { turns: u32, status: Status },
     TurnStart { turn: u32 },
     TurnEnd { turn: u32 },
     ToolCallStart { tool_name: String, call_id: String, input: serde_json::Value },
@@ -26,4 +27,6 @@ pub enum EventKind {
     ResponseTextChunk { content: String },
     RequestStart { model: String },
     RequestEnd { model: String },
+    TurnPaused { turn: u32 },
+    TurnResumed { turn: u32, continuation: u32 },
 }

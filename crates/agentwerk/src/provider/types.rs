@@ -51,12 +51,43 @@ pub enum ContentBlock {
     },
 }
 
+/// What the LLM API reported about why token generation ended.
+///
+/// Provider-agnostic superset of stop/finish reasons across LLM APIs.
+///
+/// References:
+/// - <https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons>
+/// - <https://github.com/BerriAI/litellm/issues/21348>
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum StopReason {
+pub enum ResponseStatus {
+    /// Model finished generating naturally.
+    /// Anthropic: `end_turn` | OpenAI: `stop` | Mistral: `stop`
     EndTurn,
+
+    /// Model hit a caller-provided stop sequence.
+    /// Anthropic: `stop_sequence` | OpenAI: `stop` (with stop param)
+    StopSequence,
+
+    /// Model emitted tool_use blocks and expects execution.
+    /// Anthropic: `tool_use` | OpenAI: `tool_calls` | Mistral: `tool_calls`
     ToolUse,
-    MaxTokens,
+
+    /// Output was truncated by the max_tokens limit.
+    /// Anthropic: `max_tokens` | OpenAI: `length` | Mistral: `length`
+    OutputTruncated,
+
+    /// Input exceeded the model's context window.
+    /// Anthropic: `model_context_window_exceeded`
+    ContextWindowExceeded,
+
+    /// Model refused to respond due to safety policy.
+    /// Anthropic: `refusal` | OpenAI: `content_filter`
+    Refused,
+
+    /// Server-side tool loop hit its iteration limit.
+    /// Anthropic: `pause_turn`
+    PauseTurn,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -81,7 +112,7 @@ impl std::ops::AddAssign<&TokenUsage> for TokenUsage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelResponse {
     pub content: Vec<ContentBlock>,
-    pub stop_reason: StopReason,
+    pub status: ResponseStatus,
     pub usage: TokenUsage,
     pub model: String,
 }
@@ -92,7 +123,7 @@ pub enum StreamEvent {
     TextDelta { index: usize, text: String },
     InputJsonDelta { index: usize, partial_json: String },
     ContentBlockStop { index: usize },
-    MessageDelta { stop_reason: StopReason, usage: TokenUsage },
+    MessageDelta { status: ResponseStatus, usage: TokenUsage },
     MessageDone,
 }
 
