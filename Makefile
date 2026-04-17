@@ -58,9 +58,14 @@ bump:
 	sed -i '' "s/^version = \"$$current\"/version = \"$$new\"/" crates/agentwerk/Cargo.toml; \
 	echo "$$current → $$new"
 
-# Publish to crates.io: make publish
+# Publish to crates.io via trusted publishing: make publish
+# Commits, tags, and prints push commands — GitHub Actions handles the actual publish
 publish: test
-	cargo publish -p agentwerk
+	@version=$$(grep '^version' crates/agentwerk/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
+	git add -A && git commit -m "v$$version" && \
+	git tag "v$$version" && \
+	echo "Tagged v$$version — now run:" && \
+	echo "  git push && git push --tags"
 
 # Start a LiteLLM proxy on localhost:4000
 # Forwards the provider's API key from your environment (never leaked in commands)
