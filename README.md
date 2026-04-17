@@ -181,7 +181,7 @@ that vary per run. The `AgentPool` example below shows this.
 | `instruction_prompt` | `instruction_prompt_file` | Task for the current run |
 | `context_prompt` | `context_prompt_file` | Additional context alongside the instruction |
 | `environment_prompt` | `environment_prompt_file` | Working directory, platform, date |
-| `behavior_prompt` | `behavior_prompt_file` | Behavioral directives appended to the system prompt (see [Behavior prompt](#behavior-prompt)) |
+| `behavior_prompt` | `behavior_prompt_file` | Override the default behavioral directives (`DEFAULT_BEHAVIOR_PROMPT`) |
 
 ```rust
 Agent::new()
@@ -252,15 +252,6 @@ can override any of these for a single spawn.
 To abort from outside the agent, use `.cancel_signal(signal)` — see
 [Inheritance](#inheritance) for how it propagates across sub-agents.
 
-#### Behavior prompt
-
-A default behavior prompt (`DEFAULT_BEHAVIOR_PROMPT`) is appended to the identity prompt. It covers task execution, tool usage, safety, and communication style. Override it to change how the agent behaves:
-
-```rust
-Agent::new()
-    .behavior_prompt("Follow instructions exactly. Always respond in JSON.")
-```
-
 ### AgentPool
 
 Executes agents concurrently with a configurable concurrency limit. Each
@@ -326,7 +317,7 @@ let handler = Arc::new(|event: Event| match &event.kind {
 
 ### Tools
 
-Tools are functions the agent can call. Implement the `Tool` trait or use `ToolBuilder` for closures. Read-only tools run concurrently.
+Tools are functions the agent can call. Implement the `Tool` trait or use `ToolBuilder` for closures.
 
 ```rust
 use agentwerk::{ToolBuilder, ToolResult};
@@ -339,6 +330,10 @@ let tool = ToolBuilder::new("greet", "Say hello")
     }))
     .build();
 ```
+
+> Mark a tool as `.read_only(true)` when it has no side effects. When the LLM
+> calls several tools in a single response, read-only calls run in parallel;
+> everything else runs serially in order. Default is `false`.
 
 Built-in tools:
 
