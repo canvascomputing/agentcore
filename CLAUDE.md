@@ -3,6 +3,19 @@
 > Keep this file up to date when the project structure or conventions change.
 > Update `README.md` when the public API changes.
 
+## Vision
+
+> agentwerk makes agents as simple as function calls. Build one in a few lines, call it, get a result — yet behind that surface, the same agent can run shell commands, search the web, read files, or orchestrate a fleet of sub-agents. The API stays small; the capabilities don't.
+
+## Design philosophy
+
+1. **Library, not framework.** agentwerk provides building blocks — you compose them in your own application. No runtime to boot, no traits to implement to get started, no opinions about how you structure your code.
+2. **Minimal by design.** Few dependencies, no transport abstractions, no plugin registries. Every abstraction must earn its place by removing real complexity, not by adding indirection.
+3. **Composable.** Clone a template, tweak one field, run it. This is how you get from one agent to a pool of fifty — no registration, no global state.
+4. **Provider-agnostic.** The same agent code works across Anthropic, OpenAI, Mistral. Swap one line, keep everything else.
+5. **Observe, don't prescribe.** The execution loop emits events. The caller decides what to do with them — log, stream, ignore. No built-in UI, no forced logging.
+6. **Correctness over convenience.** Zero warnings. Schema validation with retries. Typed errors. No silent fallbacks.
+
 ## Build and test
 
 ```bash
