@@ -129,7 +129,7 @@ Output:
 
 ## API
 
-An agent is configured with a provider, model, tools, and prompt. Running it returns an output with the response and statistics. Events are emitted during execution for streaming and observability.
+This crate provides a core implementation of agentic behavior: execution loop, built-in tools, agent orchestration, multi-provider support, schema-based output, and retry mechanisms.
 
 ### Supported Providers
 

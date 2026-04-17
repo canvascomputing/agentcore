@@ -55,28 +55,44 @@ impl OpenAiProvider {
 
     pub(crate) fn litellm_from_env() -> Result<(Self, String)> {
         use super::environment::env_or;
-        let provider = Self::new_with(
-            env_or("LITELLM_API_KEY", ""),
-            "http://localhost:4000",
-            reqwest::Client::new(),
-            true,
-        )
-        .base_url(env_or("LITELLM_BASE_URL", "http://localhost:4000"));
+        let provider = LiteLLMProvider::new(env_or("LITELLM_API_KEY", ""))
+            .base_url(env_or("LITELLM_BASE_URL", "http://localhost:4000"));
         let model = env_or("LITELLM_MODEL", "claude-sonnet-4-20250514");
         Ok((provider, model))
     }
 
     pub(crate) fn mistral_from_env() -> Result<(Self, String)> {
         use super::environment::{env_or, env_required};
-        let provider = Self::new_with(
-            env_required("MISTRAL_API_KEY")?,
-            "https://api.mistral.ai",
-            reqwest::Client::new(),
-            false,
-        )
-        .base_url(env_or("MISTRAL_BASE_URL", "https://api.mistral.ai"));
+        let provider = MistralProvider::new(env_required("MISTRAL_API_KEY")?)
+            .base_url(env_or("MISTRAL_BASE_URL", "https://api.mistral.ai"));
         let model = env_or("MISTRAL_MODEL", "mistral-medium-2508");
         Ok((provider, model))
+    }
+}
+
+/// Mistral-compatible LLM provider.
+pub struct MistralProvider;
+
+impl MistralProvider {
+    pub fn new(api_key: impl Into<String>) -> OpenAiProvider {
+        OpenAiProvider::new_with(api_key, "https://api.mistral.ai", reqwest::Client::new(), false)
+    }
+
+    pub fn with_client(api_key: impl Into<String>, client: reqwest::Client) -> OpenAiProvider {
+        OpenAiProvider::new_with(api_key, "https://api.mistral.ai", client, false)
+    }
+}
+
+/// LiteLLM proxy provider.
+pub struct LiteLLMProvider;
+
+impl LiteLLMProvider {
+    pub fn new(api_key: impl Into<String>) -> OpenAiProvider {
+        OpenAiProvider::new_with(api_key, "http://localhost:4000", reqwest::Client::new(), true)
+    }
+
+    pub fn with_client(api_key: impl Into<String>, client: reqwest::Client) -> OpenAiProvider {
+        OpenAiProvider::new_with(api_key, "http://localhost:4000", client, true)
     }
 }
 
