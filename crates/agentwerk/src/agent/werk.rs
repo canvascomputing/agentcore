@@ -152,6 +152,20 @@ impl Agent {
         }
     }
 
+    fn read_json_file(&mut self, path: PathBuf) -> Option<Value> {
+        let content = self.read_file(path);
+        if content.is_empty() {
+            return None;
+        }
+        match serde_json::from_str(&content) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                self.prompt_errors.push(format!("invalid JSON: {e}"));
+                None
+            }
+        }
+    }
+
     // --- Definition (static) builders — route through with_config ---
 
     /// Set the agent's name. If unset, a generated name like `agent-a3f1` is used.
@@ -199,6 +213,14 @@ impl Agent {
                 self.prompt_errors.push(format!("invalid output schema: {e}"));
                 self
             }
+        }
+    }
+
+    /// Load a structured output schema from a JSON file.
+    pub fn output_schema_file(mut self, path: impl Into<PathBuf>) -> Self {
+        match self.read_json_file(path.into()) {
+            Some(schema) => self.output_schema(schema),
+            None => self,
         }
     }
 
@@ -1197,6 +1219,31 @@ mod tests {
     #[test]
     fn missing_prompt_file_surfaces_at_run() {
         let agent = Agent::new().identity_prompt_file("/nonexistent/xxx.txt");
+        assert_eq!(agent.prompt_errors.len(), 1);
+    }
+
+    #[test]
+    fn output_schema_file_loads_valid_schema() {
+        let dir = std::env::temp_dir().join("agentwerk_test_werk_schema");
+        let path = dir.join("schema.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"type":"object","properties":{"answer":{"type":"string"}}}"#,
+        )
+        .unwrap();
+
+        let agent = Agent::new().output_schema_file(&path);
+        assert!(agent.prompt_errors.is_empty());
+        assert!(agent.config.output_schema.is_some());
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir(&dir).ok();
+    }
+
+    #[test]
+    fn output_schema_file_missing_file_surfaces_error() {
+        let agent = Agent::new().output_schema_file("/nonexistent/schema.json");
         assert_eq!(agent.prompt_errors.len(), 1);
     }
 

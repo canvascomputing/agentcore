@@ -382,6 +382,14 @@ let output = Agent::new()
 output.response.unwrap()["category"]  // "billing"
 ```
 
+Or load the schema from a file:
+
+```rust
+let output = Agent::new()
+    .output_schema_file("schemas/category.json")
+    .run().await?;
+```
+
 ### LLM Request Composition
 
 Each LLM request is assembled from four parts. Fields are listed in the order they appear in the request.
