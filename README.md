@@ -16,7 +16,9 @@
   <a href="#development">Development</a>
 </p>
 
-<p align="center">Most agentic applications reimplement the same core: an execution loop, tool dispatch, and provider integration. This crate provides that foundation as a library — agentic execution loop, built-in tools, agent orchestration, Anthropic/Mistral/OpenAI/LiteLLM integration, schema-based output, and retry mechanisms.</p>
+<p align="center">Most agentic applications reimplement the same core. This crate provides that foundation: execution loop, built-in tools, agent orchestration, multi-provider support, schema-based output, and retry mechanisms.</p>
+
+<p align="center"><em>Agentwerk combines "agent" with the German "Werk" (factory) — machinery for building agentic systems.</em></p>
 
 ---
 
@@ -222,8 +224,8 @@ Three rules are specific to running as a sub-agent:
 |---|---|
 | Inherited | `provider`, `model`, `working_directory`, `event_handler`, `cancel_signal` |
 | Shared | `command_queue`, `session_store` |
-| Own | `behavior_prompt`, `context_prompt`, `tools`, `output_schema` |
-| Per-spawn | `instruction_prompt` (required), `model`, `identity_prompt`, `max_turns`, `max_tokens`, `max_schema_retries`, `max_request_retries`, `request_retry_backoff_ms` |
+| Per-agent | `identity_prompt`, `behavior_prompt`, `context_prompt`, `tools`, `output_schema`, `max_turns`, `max_tokens`, `max_schema_retries`, `max_request_retries`, `request_retry_backoff_ms` |
+| Per-invocation | `instruction_prompt` |
 
 #### Guardrails
 
