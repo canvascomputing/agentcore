@@ -25,7 +25,7 @@ pub enum ToolChoice {
 }
 
 /// Core LLM provider trait. Object-safe via boxed futures.
-pub trait LlmProvider: Send + Sync {
+pub trait Provider: Send + Sync {
     /// One-shot completion. Returns the full response after the model stops.
     fn complete(
         &self,

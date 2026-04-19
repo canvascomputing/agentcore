@@ -12,7 +12,7 @@ use serde_json::Value;
 use crate::error::Result;
 
 use super::error::{ProviderError, ProviderResult};
-use super::r#trait::{CompletionRequest, LlmProvider, ToolChoice};
+use super::r#trait::{CompletionRequest, Provider, ToolChoice};
 use super::stream::{SseEvent, StreamParser};
 use super::types::{ContentBlock, Message, ModelResponse, ResponseStatus, StreamEvent, TokenUsage};
 
@@ -64,7 +64,7 @@ impl OpenAiProvider {
     }
 }
 
-impl LlmProvider for OpenAiProvider {
+impl Provider for OpenAiProvider {
     fn prewarm(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async { super::r#trait::prewarm_connection(&self.client, &self.base_url).await })
     }

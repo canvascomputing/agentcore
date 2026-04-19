@@ -1,6 +1,6 @@
 //! Provider-layer error type.
 //!
-//! Errors a `LlmProvider` raises before returning a successful
+//! Errors a `Provider` raises before returning a successful
 //! [`ModelResponse`](super::types::ModelResponse). Anything that maps to a
 //! valid response-with-status belongs on
 //! [`ResponseStatus`](super::types::ResponseStatus), not here.
@@ -106,7 +106,7 @@ impl fmt::Display for ProviderError {
 
 impl std::error::Error for ProviderError {}
 
-/// Result alias for [`LlmProvider`](super::r#trait::LlmProvider) calls.
+/// Result alias for [`Provider`](super::r#trait::Provider) calls.
 pub type ProviderResult<T> = std::result::Result<T, ProviderError>;
 
 #[cfg(test)]

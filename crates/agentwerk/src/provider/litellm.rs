@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use super::error::ProviderResult;
 use super::openai::OpenAiProvider;
-use super::r#trait::{CompletionRequest, LlmProvider};
+use super::r#trait::{CompletionRequest, Provider};
 use super::types::{ModelResponse, StreamEvent};
 use crate::error::Result;
 
@@ -43,7 +43,7 @@ impl LiteLLMProvider {
     }
 }
 
-impl LlmProvider for LiteLLMProvider {
+impl Provider for LiteLLMProvider {
     fn complete(
         &self,
         request: CompletionRequest,

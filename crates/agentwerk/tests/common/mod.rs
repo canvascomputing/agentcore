@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use agentwerk::{AgentOutput, LlmProvider, provider_from_env};
+use agentwerk::{AgentOutput, Provider, provider_from_env};
 
-pub fn build_provider() -> (Arc<dyn LlmProvider>, String) {
+pub fn build_provider() -> (Arc<dyn Provider>, String) {
     provider_from_env().expect("LLM provider required for integration tests")
 }
 

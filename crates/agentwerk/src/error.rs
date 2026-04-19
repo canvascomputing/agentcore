@@ -6,7 +6,7 @@ pub type Result<T> = std::result::Result<T, AgenticError>;
 
 #[derive(Debug)]
 pub enum AgenticError {
-    /// Anything raised by a [`LlmProvider`](crate::provider::LlmProvider) call.
+    /// Anything raised by a [`Provider`](crate::provider::Provider) call.
     Provider(ProviderError),
     Tool {
         tool_name: String,

@@ -16,7 +16,7 @@ pub use error::{ProviderError, ProviderResult};
 pub use litellm::LiteLLMProvider;
 pub use mistral::MistralProvider;
 pub use openai::OpenAiProvider;
-pub use r#trait::{CompletionRequest, LlmProvider, ToolChoice};
+pub use r#trait::{CompletionRequest, Provider, ToolChoice};
 pub use types::{ContentBlock, Message, TokenUsage};
 
 pub(crate) fn retry_after_ms_from_headers(resp: &reqwest::Response) -> Option<u64> {

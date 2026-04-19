@@ -26,7 +26,7 @@ use crate::persistence::session::{EntryType, SessionStore, TranscriptEntry};
 use crate::provider::model::ModelSpec;
 use crate::provider::retry::{compute_delay, DEFAULT_BACKOFF_MS, DEFAULT_MAX_REQUEST_RETRIES};
 use crate::provider::types::{ContentBlock, Message, ModelResponse, ResponseStatus, StreamEvent, TokenUsage};
-use crate::provider::{CompletionRequest, LlmProvider, ProviderError, ToolChoice};
+use crate::provider::{CompletionRequest, Provider, ProviderError, ToolChoice};
 use crate::tools::{execute_tool_calls, SpawnAgentTool, Tool, ToolCall, ToolContext, ToolRegistry};
 use crate::util::{generate_agent_name, now_millis};
 
@@ -118,7 +118,7 @@ impl Clone for AgentConfig {
 /// Per-run configuration. Owned per `Agent` clone — no COW, cheap direct mutation.
 #[derive(Clone, Default)]
 pub(crate) struct AgentRuntime {
-    pub provider: Option<Arc<dyn LlmProvider>>,
+    pub provider: Option<Arc<dyn Provider>>,
     pub instruction_prompt: String,
     pub template_variables: HashMap<String, Value>,
     pub working_directory: Option<PathBuf>,
@@ -280,7 +280,7 @@ impl Agent {
 
     // --- Per-run (runtime) builders — route through with_runtime ---
 
-    pub fn provider(self, p: Arc<dyn LlmProvider>) -> Self {
+    pub fn provider(self, p: Arc<dyn Provider>) -> Self {
         self.with_runtime(|r| r.provider = Some(p))
     }
 
@@ -409,7 +409,7 @@ impl Agent {
 /// the loop's perspective — mutability is only via the interior atomics and
 /// mutexes inside.
 pub(crate) struct Runtime {
-    pub provider: Arc<dyn LlmProvider>,
+    pub provider: Arc<dyn Provider>,
     pub event_handler: Arc<dyn Fn(Event) + Send + Sync>,
     pub cancel_signal: Arc<AtomicBool>,
     pub working_directory: PathBuf,

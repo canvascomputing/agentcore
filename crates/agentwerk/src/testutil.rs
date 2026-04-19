@@ -10,7 +10,7 @@ use crate::agent::queue::CommandQueue;
 use crate::agent::{Agent, AgentOutput, Event, EventKind, Status};
 use crate::error::Result;
 use crate::provider::types::{ContentBlock, ModelResponse, ResponseStatus, StreamEvent, TokenUsage};
-use crate::provider::{CompletionRequest, LlmProvider, ProviderError, ProviderResult};
+use crate::provider::{CompletionRequest, Provider, ProviderError, ProviderResult};
 use crate::tools::{Tool, ToolContext, ToolResult};
 
 /// A mock LLM provider that returns pre-configured responses in order.
@@ -66,7 +66,7 @@ impl MockProvider {
     }
 }
 
-impl LlmProvider for MockProvider {
+impl Provider for MockProvider {
     fn complete(
         &self,
         request: CompletionRequest,

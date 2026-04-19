@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::error::{AgenticError, Result};
 
-use super::{AnthropicProvider, LiteLLMProvider, LlmProvider, MistralProvider, OpenAiProvider};
+use super::{AnthropicProvider, LiteLLMProvider, Provider, MistralProvider, OpenAiProvider};
 
 /// Detected provider name, before constructing the actual provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,12 +39,12 @@ pub(crate) fn env_required(name: &str) -> Result<String> {
 ///   4. `OPENAI_API_KEY`   → OpenAI
 ///
 /// Empty env vars are treated as unset.
-pub fn provider_from_env() -> Result<(Arc<dyn LlmProvider>, String)> {
+pub fn provider_from_env() -> Result<(Arc<dyn Provider>, String)> {
     let detected = detect_provider_name(|name| {
         std::env::var(name).ok().filter(|v| !v.is_empty())
     })?;
 
-    let (provider, model): (Arc<dyn LlmProvider>, String) = match detected {
+    let (provider, model): (Arc<dyn Provider>, String) = match detected {
         DetectedProvider::Anthropic => { let (p, m) = AnthropicProvider::from_env()?; (Arc::new(p), m) }
         DetectedProvider::Mistral   => { let (p, m) = MistralProvider::from_env()?;   (Arc::new(p), m) }
         DetectedProvider::OpenAi    => { let (p, m) = OpenAiProvider::from_env()?;    (Arc::new(p), m) }

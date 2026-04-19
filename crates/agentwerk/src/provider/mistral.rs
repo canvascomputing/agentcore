@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::error::ProviderResult;
 use super::openai::OpenAiProvider;
-use super::r#trait::{CompletionRequest, LlmProvider};
+use super::r#trait::{CompletionRequest, Provider};
 use super::types::{ModelResponse, StreamEvent};
 use crate::error::Result;
 
@@ -39,7 +39,7 @@ impl MistralProvider {
     }
 }
 
-impl LlmProvider for MistralProvider {
+impl Provider for MistralProvider {
     fn complete(
         &self,
         request: CompletionRequest,

@@ -39,7 +39,7 @@ crates/agentwerk/src/
 
   provider/
     mod.rs                re-exports
-    trait.rs              LlmProvider trait, CompletionRequest, ToolChoice, prewarm_connection
+    trait.rs              Provider trait, CompletionRequest, ToolChoice, prewarm_connection
     types.rs              Message, ContentBlock, TokenUsage, StopReason, ModelResponse, StreamEvent
     model.rs              ModelSpec (Exact, Inherit)
     anthropic.rs          AnthropicProvider (with SSE streaming)

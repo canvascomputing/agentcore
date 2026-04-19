@@ -8,7 +8,7 @@ use crate::error::Result;
 
 use super::error::{ProviderError, ProviderResult};
 use super::types::{ContentBlock, Message, ModelResponse, ResponseStatus, StreamEvent, TokenUsage};
-use super::r#trait::{CompletionRequest, LlmProvider, ToolChoice};
+use super::r#trait::{CompletionRequest, Provider, ToolChoice};
 
 pub struct AnthropicProvider {
     api_key: String,
@@ -126,7 +126,7 @@ fn classify_400(body: &str) -> Option<ProviderError> {
     }
 }
 
-impl LlmProvider for AnthropicProvider {
+impl Provider for AnthropicProvider {
     fn prewarm(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async { super::r#trait::prewarm_connection(&self.client, &self.base_url).await })
     }
