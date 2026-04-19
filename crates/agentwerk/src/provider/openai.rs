@@ -69,6 +69,10 @@ impl Provider for OpenAiProvider {
         Box::pin(async { super::r#trait::prewarm_connection(&self.client, &self.base_url).await })
     }
 
+    fn context_window(&self, model: &str) -> Option<u64> {
+        super::openai_models::context_window(model)
+    }
+
     fn complete(
         &self,
         request: CompletionRequest,

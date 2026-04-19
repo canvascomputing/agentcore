@@ -20,6 +20,7 @@ use crate::tools::{Tool, ToolContext, ToolResult};
 pub struct MockProvider {
     results: Mutex<VecDeque<ProviderResult<ModelResponse>>>,
     pub requests: Mutex<Vec<CompletionRequest>>,
+    context_window: Mutex<Option<u64>>,
 }
 
 impl MockProvider {
@@ -27,6 +28,7 @@ impl MockProvider {
         Self {
             results: Mutex::new(responses.into_iter().map(Ok).collect()),
             requests: Mutex::new(Vec::new()),
+            context_window: Mutex::new(None),
         }
     }
 
@@ -34,7 +36,15 @@ impl MockProvider {
         Self {
             results: Mutex::new(VecDeque::from(results)),
             requests: Mutex::new(Vec::new()),
+            context_window: Mutex::new(None),
         }
+    }
+
+    /// Configure the value returned from `Provider::context_window`. Drives
+    /// the compaction seam under test; leave unset to keep the seam dormant.
+    pub fn with_context_window(mut self, window: Option<u64>) -> Self {
+        self.context_window = Mutex::new(window);
+        self
     }
 
     pub fn text(text: &str) -> Self {
@@ -67,6 +77,10 @@ impl MockProvider {
 }
 
 impl Provider for MockProvider {
+    fn context_window(&self, _model: &str) -> Option<u64> {
+        *self.context_window.lock().unwrap()
+    }
+
     fn complete(
         &self,
         request: CompletionRequest,

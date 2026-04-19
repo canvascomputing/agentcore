@@ -1,10 +1,12 @@
 mod anthropic;
+mod anthropic_models;
 pub mod environment;
 mod error;
 mod litellm;
 mod mistral;
 pub(crate) mod model;
 mod openai;
+mod openai_models;
 pub(crate) mod retry;
 pub(crate) mod stream;
 mod r#trait;

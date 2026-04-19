@@ -58,4 +58,8 @@ impl Provider for MistralProvider {
     fn prewarm(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         self.0.prewarm()
     }
+
+    fn context_window(&self, model: &str) -> Option<u64> {
+        self.0.context_window(model)
+    }
 }
