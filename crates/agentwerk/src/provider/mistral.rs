@@ -5,6 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use super::error::ProviderResult;
+use super::model::ModelLookup;
 use super::openai::OpenAiProvider;
 use super::r#trait::{CompletionRequest, Provider};
 use super::types::{ModelResponse, StreamEvent};
@@ -39,6 +40,22 @@ impl MistralProvider {
     }
 }
 
+impl ModelLookup for MistralProvider {
+    fn lookup_context_window_size(id: &str) -> Option<u64> {
+        let m = id.to_ascii_lowercase();
+        if m.contains("codestral") {
+            return Some(256_000);
+        }
+        if m.contains("mistral-large")
+            || m.contains("mistral-medium")
+            || m.contains("mistral-small")
+        {
+            return Some(131_072);
+        }
+        None
+    }
+}
+
 impl Provider for MistralProvider {
     fn complete(
         &self,
@@ -58,8 +75,31 @@ impl Provider for MistralProvider {
     fn prewarm(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         self.0.prewarm()
     }
+}
 
-    fn context_window(&self, model: &str) -> Option<u64> {
-        self.0.context_window(model)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lookup_codestral_returns_256k() {
+        let lookup = MistralProvider::lookup_context_window_size;
+        assert_eq!(lookup("codestral-latest"), Some(256_000));
+    }
+
+    #[test]
+    fn lookup_mistral_families_return_131k() {
+        let lookup = MistralProvider::lookup_context_window_size;
+        assert_eq!(lookup("mistral-large-2411"), Some(131_072));
+        assert_eq!(lookup("mistral-medium-2508"), Some(131_072));
+        assert_eq!(lookup("mistral-small-latest"), Some(131_072));
+    }
+
+    #[test]
+    fn lookup_unknown_models_return_none() {
+        let lookup = MistralProvider::lookup_context_window_size;
+        assert_eq!(lookup("claude-sonnet-4-20250514"), None);
+        assert_eq!(lookup("gpt-5"), None);
+        assert_eq!(lookup("llama-3-70b"), None);
     }
 }

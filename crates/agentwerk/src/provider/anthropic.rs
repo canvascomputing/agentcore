@@ -7,6 +7,7 @@ use serde_json::Value;
 use crate::error::Result;
 
 use super::error::{ProviderError, ProviderResult};
+use super::model::ModelLookup;
 use super::types::{ContentBlock, Message, ModelResponse, ResponseStatus, StreamEvent, TokenUsage};
 use super::r#trait::{CompletionRequest, Provider, ToolChoice};
 
@@ -126,13 +127,31 @@ fn classify_400(body: &str) -> Option<ProviderError> {
     }
 }
 
+impl ModelLookup for AnthropicProvider {
+    fn lookup_context_window_size(id: &str) -> Option<u64> {
+        let m = id.to_ascii_lowercase();
+        if m.contains("[1m]") {
+            return Some(1_000_000);
+        }
+        if m.contains("claude-opus-4")
+            || m.contains("claude-sonnet-4")
+            || m.contains("claude-haiku-4")
+            || m.contains("claude-3-7-sonnet")
+            || m.contains("claude-3-5-sonnet")
+            || m.contains("claude-3-5-haiku")
+            || m.contains("claude-3-opus")
+            || m.contains("claude-3-sonnet")
+            || m.contains("claude-3-haiku")
+        {
+            return Some(200_000);
+        }
+        None
+    }
+}
+
 impl Provider for AnthropicProvider {
     fn prewarm(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async { super::r#trait::prewarm_connection(&self.client, &self.base_url).await })
-    }
-
-    fn context_window(&self, model: &str) -> Option<u64> {
-        super::anthropic_models::context_window(model)
     }
 
     fn complete(
@@ -610,5 +629,41 @@ mod tests {
             panic!("expected AuthenticationFailed");
         };
         assert_eq!(provider_message, "your api key is revoked");
+    }
+
+    // --- ModelLookup ----------------------------------------------------
+
+    #[test]
+    fn lookup_claude_4_family_returns_200k() {
+        let lookup = AnthropicProvider::lookup_context_window_size;
+        assert_eq!(lookup("claude-sonnet-4-20250514"), Some(200_000));
+        assert_eq!(lookup("claude-opus-4-20250101"), Some(200_000));
+        assert_eq!(lookup("claude-haiku-4-5-20251001"), Some(200_000));
+    }
+
+    #[test]
+    fn lookup_claude_3_family_returns_200k() {
+        let lookup = AnthropicProvider::lookup_context_window_size;
+        assert_eq!(lookup("claude-3-5-sonnet-20241022"), Some(200_000));
+        assert_eq!(lookup("claude-3-opus-20240229"), Some(200_000));
+    }
+
+    #[test]
+    fn lookup_one_million_suffix_overrides_base_family() {
+        let lookup = AnthropicProvider::lookup_context_window_size;
+        assert_eq!(
+            lookup("claude-opus-4-7[1m]"),
+            Some(1_000_000),
+            "explicit [1m] opt-in promotes to 1M"
+        );
+        assert_eq!(lookup("claude-sonnet-4-20250514[1m]"), Some(1_000_000));
+    }
+
+    #[test]
+    fn lookup_unknown_models_return_none() {
+        let lookup = AnthropicProvider::lookup_context_window_size;
+        assert_eq!(lookup("gpt-4"), None);
+        assert_eq!(lookup("mistral-large-2411"), None);
+        assert_eq!(lookup("some-future-model"), None);
     }
 }

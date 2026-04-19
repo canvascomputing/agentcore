@@ -23,13 +23,16 @@ use serde_json::Value;
 
 use crate::error::{AgenticError, Result};
 use crate::persistence::session::{EntryType, SessionStore, TranscriptEntry};
-use crate::provider::model::ModelSpec;
+use crate::provider::model::{Model, ModelSpec};
 use crate::provider::retry::{compute_delay, DEFAULT_BACKOFF_MS, DEFAULT_MAX_REQUEST_RETRIES};
-use crate::provider::types::{ContentBlock, Message, ModelResponse, ResponseStatus, StreamEvent, TokenUsage};
+use crate::provider::types::{
+    ContentBlock, Message, ModelResponse, ResponseStatus, StreamEvent, TokenUsage,
+};
 use crate::provider::{CompletionRequest, Provider, ProviderError, ToolChoice};
 use crate::tools::{execute_tool_calls, SpawnAgentTool, Tool, ToolCall, ToolContext, ToolRegistry};
 use crate::util::{generate_agent_name, now_millis};
 
+use super::compact::{self, CompactReason};
 use super::event::{Event, EventKind};
 use super::output::{AgentOutput, OutputSchema, Statistics, Status, StructuredOutputTool};
 use super::prompts::{
@@ -177,8 +180,23 @@ impl Agent {
     }
 
     /// Set the model ID. If not called, the agent inherits the parent's model.
+    /// The model's context window size is auto-detected from the built-in
+    /// registry (see `Model::from_id`); use `.model_with_context_window_size`
+    /// to override.
     pub fn model(self, m: impl Into<String>) -> Self {
-        self.with_config(|c| c.model = ModelSpec::Exact(m.into()))
+        self.with_config(|c| c.model = ModelSpec::Exact(Model::from_id(m)))
+    }
+
+    /// Set the model ID together with an explicit context window size.
+    /// Use this for local proxies, private deployments, or any id the
+    /// built-in registry doesn't cover.
+    pub fn model_with_context_window_size(
+        self,
+        id: impl Into<String>,
+        context_window_size: u64,
+    ) -> Self {
+        let model = Model::from_id(id).with_context_window_size(Some(context_window_size));
+        self.with_config(|c| c.model = ModelSpec::Exact(model))
     }
 
     /// The agent's persistent identity — who it is and how it behaves.
@@ -339,12 +357,13 @@ impl Agent {
     }
 
     /// Crate-internal: run this agent as a child under a parent's `Runtime`.
-    /// `parent_model` resolves `ModelSpec::Inherit` on the child. `description`
-    /// becomes the `AgentStart` event's human-readable label.
+    /// `parent_model` resolves `ModelSpec::Inherit` on the child (id *and*
+    /// context window size both inherit). `description` becomes the
+    /// `AgentStart` event's human-readable label.
     pub(crate) async fn run_child(
         &self,
         parent_runtime: &Runtime,
-        parent_model: &str,
+        parent_model: &Model,
         description: Option<String>,
     ) -> Result<AgentOutput> {
         self.check_prompt_errors()?;
@@ -505,7 +524,7 @@ impl Runtime {
 /// child agents compile their own spec.
 pub(crate) struct AgentSpec {
     pub name: String,
-    pub model: String,
+    pub model: Model,
     pub system_prompt: String,
     pub instruction_prompt: String,
     pub context_prompt: Option<String>,
@@ -525,7 +544,7 @@ impl AgentSpec {
     pub(crate) fn compile(
         agent: &Agent,
         runtime: &Runtime,
-        fallback_model: Option<&str>,
+        fallback_model: Option<&Model>,
     ) -> Result<Self> {
         let name = agent
             .config
@@ -540,7 +559,8 @@ impl AgentSpec {
                         .into(),
                 ));
             }
-            (spec, fallback) => spec.resolve(fallback.unwrap_or("")),
+            (spec, Some(parent)) => spec.resolve(parent),
+            (ModelSpec::Exact(m), None) => m.clone(),
         };
 
         let (tools, tool_choice) = compile_tools(agent);
@@ -712,46 +732,83 @@ pub(crate) fn run_loop(
     Box::pin(async move {
         runtime.provider.prewarm().await;
         let mut state = LoopState::init(&spec);
-        record_transcript(&runtime, EntryType::UserMessage, state.messages.last().unwrap(), None);
+        record_transcript(
+            &runtime,
+            EntryType::UserMessage,
+            state.messages.last().unwrap(),
+            None,
+        );
         emit(&runtime, &spec.name, EventKind::AgentStart { description });
 
         loop {
-            // Guards: cancel signal, max turns, token budget
             if let Some(status) = check_guards(&runtime, &spec, &state) {
                 return Ok(finish_early(&runtime, &spec, &mut state, status));
             }
 
             state.turn += 1;
             let turn = state.turn;
+            let model_id = spec.model.id.clone();
 
-            // LLM request
-            let model = spec.model.clone();
             emit(&runtime, &spec.name, EventKind::TurnStart { turn });
-            emit(&runtime, &spec.name, EventKind::RequestStart { model: model.clone() });
-            let response = call_llm_with_retry(&runtime, &spec, &state).await?;
-            emit(&runtime, &spec.name, EventKind::RequestEnd { model });
-            record_usage(&runtime, &spec, &mut state, &response);
-
-            // Record assistant message
-            let (text, tool_calls) = parse_response(&response);
-            state.messages.push(Message::Assistant { content: response.content.clone() });
-            record_transcript(
-                &runtime, EntryType::AssistantMessage,
-                state.messages.last().unwrap(), Some((&response.usage, &response.model)),
+            emit(
+                &runtime,
+                &spec.name,
+                EventKind::RequestStart {
+                    model: model_id.clone(),
+                },
             );
 
-            // Decision: what did the model return?
-            let has_tool_calls = response.status == ResponseStatus::ToolUse && !tool_calls.is_empty();
-            let is_truncated = response.status == ResponseStatus::OutputTruncated && tool_calls.is_empty();
+            let response = request_turn_response(&runtime, &spec, &mut state, turn).await?;
+
+            emit(
+                &runtime,
+                &spec.name,
+                EventKind::RequestEnd { model: model_id },
+            );
+            record_usage(&runtime, &spec, &mut state, &response);
+
+            let (text, tool_calls) = parse_response(&response);
+            state.messages.push(Message::Assistant {
+                content: response.content.clone(),
+            });
+            record_transcript(
+                &runtime,
+                EntryType::AssistantMessage,
+                state.messages.last().unwrap(),
+                Some((&response.usage, &response.model)),
+            );
+
+            // Rare path: model signalled mid-generation overflow via
+            // `model_context_window_exceeded` stop_reason. Route through the
+            // same reactive seam as the pre-flight error.
+            if response.status == ResponseStatus::ContextWindowExceeded
+                && spec.model.context_window_size.is_some()
+            {
+                fire_reactive_compact_trigger(&runtime, &spec, &mut state, turn).await?;
+            }
+
+            compact::run_if_over_threshold(&runtime, &spec, &mut state).await?;
+
+            let has_tool_calls =
+                response.status == ResponseStatus::ToolUse && !tool_calls.is_empty();
+            let is_truncated =
+                response.status == ResponseStatus::OutputTruncated && tool_calls.is_empty();
 
             if has_tool_calls {
                 let results = execute_tools(&runtime, &spec, &mut state, &tool_calls).await;
                 state.messages.push(Message::User { content: results });
-                record_transcript(&runtime, EntryType::ToolResult, state.messages.last().unwrap(), None);
+                record_transcript(
+                    &runtime,
+                    EntryType::ToolResult,
+                    state.messages.last().unwrap(),
+                    None,
+                );
                 drain_command_queue(&runtime, &spec, &mut state);
             } else if is_truncated {
                 emit(&runtime, &spec.name, EventKind::OutputTruncated { turn });
-                state.messages.push(Message::user(prompts::MAX_TOKENS_CONTINUATION));
+                state
+                    .messages
+                    .push(Message::user(prompts::MAX_TOKENS_CONTINUATION));
             } else if let Some(output) = try_finish(&runtime, &spec, &mut state, text)? {
                 emit(&runtime, &spec.name, EventKind::TurnEnd { turn });
                 return Ok(output);
@@ -762,9 +819,70 @@ pub(crate) fn run_loop(
     })
 }
 
-fn finish_early(runtime: &Runtime, spec: &AgentSpec, state: &mut LoopState, status: Status) -> AgentOutput {
+/// Fetch the LLM response for `turn`. Wraps [`call_llm_with_retry`] with
+/// the pre-flight reactive compaction seam: a provider-reported
+/// `ContextWindowExceeded` fires [`fire_reactive_compact_trigger`] before
+/// the error surfaces unchanged.
+async fn request_turn_response(
+    runtime: &Runtime,
+    spec: &AgentSpec,
+    state: &mut LoopState,
+    turn: u32,
+) -> Result<ModelResponse> {
+    match call_llm_with_retry(runtime, spec, state).await {
+        Ok(response) => Ok(response),
+        Err(AgenticError::Provider(ProviderError::ContextWindowExceeded { provider_message }))
+            if spec.model.context_window_size.is_some() =>
+        {
+            fire_reactive_compact_trigger(runtime, spec, state, turn).await?;
+            // compact::run currently returns `NotImplemented` and exits
+            // via `?` above; once implemented, this branch will retry the
+            // turn instead of surfacing the error.
+            Err(AgenticError::Provider(
+                ProviderError::ContextWindowExceeded { provider_message },
+            ))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Emit a reactive [`EventKind::CompactTriggered`] (sentinel token/threshold
+/// of `0`) and invoke [`compact::run`]. Shared between the two reactive
+/// seams: provider-reported pre-flight error and mid-generation overflow.
+async fn fire_reactive_compact_trigger(
+    runtime: &Runtime,
+    spec: &AgentSpec,
+    state: &mut LoopState,
+    turn: u32,
+) -> Result<()> {
+    emit(
+        runtime,
+        &spec.name,
+        EventKind::CompactTriggered {
+            turn,
+            token_count: 0,
+            threshold: 0,
+            reason: CompactReason::Reactive,
+        },
+    );
+    compact::run(runtime, spec, state, CompactReason::Reactive).await
+}
+
+fn finish_early(
+    runtime: &Runtime,
+    spec: &AgentSpec,
+    state: &mut LoopState,
+    status: Status,
+) -> AgentOutput {
     let text = last_assistant_text(&state.messages);
-    emit(runtime, &spec.name, EventKind::AgentEnd { turns: state.turn, status: status.clone() });
+    emit(
+        runtime,
+        &spec.name,
+        EventKind::AgentEnd {
+            turns: state.turn,
+            status: status.clone(),
+        },
+    );
     build_output(state, text, status)
 }
 
@@ -791,7 +909,7 @@ fn check_guards(runtime: &Runtime, spec: &AgentSpec, state: &LoopState) -> Optio
 async fn call_llm(runtime: &Runtime, spec: &AgentSpec, state: &LoopState) -> Result<ModelResponse> {
     let tool_defs = spec.tools.definitions(&state.discovered_tools);
     let request = CompletionRequest {
-        model: spec.model.clone(),
+        model: spec.model.id.clone(),
         system_prompt: spec.system_prompt.clone(),
         messages: state.messages.clone(),
         tools: tool_defs,
@@ -805,7 +923,9 @@ async fn call_llm(runtime: &Runtime, spec: &AgentSpec, state: &LoopState) -> Res
         if let StreamEvent::TextDelta { text, .. } = &event {
             event_handler(Event::new(
                 agent_name.clone(),
-                EventKind::ResponseTextChunk { content: text.clone() },
+                EventKind::ResponseTextChunk {
+                    content: text.clone(),
+                },
             ));
         }
     });
@@ -838,7 +958,12 @@ async fn call_llm_with_retry(
     Err(last_err.unwrap_or_else(|| AgenticError::Other("retry loop ended unexpectedly".into())))
 }
 
-fn record_usage(runtime: &Runtime, spec: &AgentSpec, state: &mut LoopState, response: &ModelResponse) {
+fn record_usage(
+    runtime: &Runtime,
+    spec: &AgentSpec,
+    state: &mut LoopState,
+    response: &ModelResponse,
+) {
     state.total_usage += &response.usage;
     state.request_count += 1;
     emit(
@@ -881,11 +1006,20 @@ fn try_finish(
                 return Err(AgenticError::SchemaRetryExhausted { retries: limit });
             }
         }
-        state.messages.push(Message::user(prompts::STRUCTURED_OUTPUT_RETRY));
+        state
+            .messages
+            .push(Message::user(prompts::STRUCTURED_OUTPUT_RETRY));
         return Ok(None);
     }
 
-    emit(runtime, &spec.name, EventKind::AgentEnd { turns: state.turn, status: Status::Completed });
+    emit(
+        runtime,
+        &spec.name,
+        EventKind::AgentEnd {
+            turns: state.turn,
+            status: Status::Completed,
+        },
+    );
     Ok(Some(build_output(state, text, Status::Completed)))
 }
 
@@ -955,7 +1089,8 @@ fn drain_command_queue(runtime: &Runtime, spec: &AgentSpec, state: &mut LoopStat
     let Some(queue) = runtime.command_queue.as_ref() else {
         return;
     };
-    while let Some(cmd) = queue.dequeue_if(Some(&spec.name), |c| c.priority != QueuePriority::Later) {
+    while let Some(cmd) = queue.dequeue_if(Some(&spec.name), |c| c.priority != QueuePriority::Later)
+    {
         state.messages.push(Message::user(cmd.content));
     }
 }
@@ -1047,17 +1182,29 @@ mod tests {
             EventKind::AgentEnd { status, .. } => Some(status.clone()),
             _ => None,
         });
-        assert_eq!(agent_end_status.as_ref(), Some(&output.status),
-            "AgentEnd status must match output.status");
+        assert_eq!(
+            agent_end_status.as_ref(),
+            Some(&output.status),
+            "AgentEnd status must match output.status"
+        );
 
-        let last_significant = events.iter().rev()
+        let last_significant = events
+            .iter()
+            .rev()
             .find(|e| !matches!(e.kind, EventKind::TurnEnd { .. }));
-        assert!(matches!(last_significant.map(|e| &e.kind), Some(EventKind::AgentEnd { .. })),
-            "AgentEnd must be the last significant event");
+        assert!(
+            matches!(
+                last_significant.map(|e| &e.kind),
+                Some(EventKind::AgentEnd { .. })
+            ),
+            "AgentEnd must be the last significant event"
+        );
 
         for (i, event) in events.iter().enumerate() {
             if matches!(event.kind, EventKind::OutputTruncated { .. }) {
-                let after_agent_end = events[..i].iter().any(|e| matches!(e.kind, EventKind::AgentEnd { .. }));
+                let after_agent_end = events[..i]
+                    .iter()
+                    .any(|e| matches!(e.kind, EventKind::AgentEnd { .. }));
                 assert!(!after_agent_end, "OutputTruncated at {i} after AgentEnd");
             }
         }
@@ -1074,11 +1221,8 @@ mod tests {
 
     #[tokio::test]
     async fn simple_tool_execution() {
-        let provider = MockProvider::tool_then_text(
-            "echo_tool",
-            serde_json::json!({"text": "ping"}),
-            "Done!",
-        );
+        let provider =
+            MockProvider::tool_then_text("echo_tool", serde_json::json!({"text": "ping"}), "Done!");
         let agent = Agent::new()
             .name("test-agent")
             .model("mock-model")
@@ -1099,7 +1243,9 @@ mod tests {
             tool_response("t", "c3", serde_json::json!({})),
         ]);
         let agent = Agent::new()
-            .name("test").model("mock").identity_prompt("")
+            .name("test")
+            .model("mock")
+            .identity_prompt("")
             .max_turns(2)
             .tool(MockTool::new("t", false, "ok"));
 
@@ -1117,7 +1263,9 @@ mod tests {
             text_response("done"),
         ]);
         let agent = Agent::new()
-            .name("test").model("mock").identity_prompt("")
+            .name("test")
+            .model("mock")
+            .identity_prompt("")
             .tool(MockTool::new("t", false, "ok"));
 
         let harness = TestHarness::new(provider);
@@ -1131,7 +1279,8 @@ mod tests {
     async fn template_variable_interpolates_in_system_prompt() {
         let provider = MockProvider::text("Answer about rust");
         let agent = Agent::new()
-            .name("test").model("mock")
+            .name("test")
+            .model("mock")
             .identity_prompt("You are an expert on {topic}.");
 
         let harness = TestHarness::new(provider).with_state("topic", serde_json::json!("rust"));
@@ -1145,7 +1294,9 @@ mod tests {
     async fn events_emitted() {
         let provider = MockProvider::tool_then_text("read", serde_json::json!({}), "Done");
         let agent = Agent::new()
-            .name("assistant").model("mock").identity_prompt("")
+            .name("assistant")
+            .model("mock")
+            .identity_prompt("")
             .tool(MockTool::new("read", true, "file contents"));
 
         let harness = TestHarness::new(provider);
@@ -1166,7 +1317,9 @@ mod tests {
             text_response("final"),
         ]);
         let agent = Agent::new()
-            .name("test").model("mock").identity_prompt("")
+            .name("test")
+            .model("mock")
+            .identity_prompt("")
             .tool(MockTool::new("t", false, "ok"));
 
         let queue = Arc::new(CommandQueue::new());
@@ -1200,14 +1353,18 @@ mod tests {
             text_response("final"),
         ]);
         let agent = Agent::new()
-            .name("test").model("mock").identity_prompt("")
+            .name("test")
+            .model("mock")
+            .identity_prompt("")
             .tool(MockTool::new("t", false, "ok"));
 
         let queue = Arc::new(CommandQueue::new());
         queue.enqueue(QueuedCommand {
             content: "later task".into(),
             priority: QueuePriority::Later,
-            source: CommandSource::TaskNotification { task_id: "42".into() },
+            source: CommandSource::TaskNotification {
+                task_id: "42".into(),
+            },
             agent_name: Some("test".into()),
         });
 
@@ -1223,7 +1380,9 @@ mod tests {
     async fn deferred_tool_filtering() {
         let provider = MockProvider::text("ok");
         let agent = Agent::new()
-            .name("test").model("mock").identity_prompt("")
+            .name("test")
+            .model("mock")
+            .identity_prompt("")
             .tool(MockTool::new("always", true, "ok"))
             .tool(DeferredMockTool::new("deferred"));
 
@@ -1243,7 +1402,9 @@ mod tests {
             text_response("done"),
         ]);
         let agent = Agent::new()
-            .name("classifier").model("mock").identity_prompt("Classify.")
+            .name("classifier")
+            .model("mock")
+            .identity_prompt("Classify.")
             .output_schema(serde_json::json!({
                 "type": "object",
                 "properties": { "category": {"type": "string"}, "priority": {"type": "string"} },
@@ -1266,7 +1427,9 @@ mod tests {
             text_response("last nope"),
         ]);
         let agent = Agent::new()
-            .name("test").model("mock").identity_prompt("")
+            .name("test")
+            .model("mock")
+            .identity_prompt("")
             .output_schema(serde_json::json!({
                 "type": "object",
                 "properties": {"x": {"type": "string"}},
@@ -1276,7 +1439,10 @@ mod tests {
 
         let harness = TestHarness::new(provider);
         let err = harness.run_agent(&agent, "go").await.unwrap_err();
-        assert!(matches!(err, AgenticError::SchemaRetryExhausted { retries: 3 }));
+        assert!(matches!(
+            err,
+            AgenticError::SchemaRetryExhausted { retries: 3 }
+        ));
     }
 
     #[tokio::test]
@@ -1297,8 +1463,10 @@ mod tests {
         harness.run_agent(&agent, "go").await.unwrap();
 
         let req = harness.provider().last_request().unwrap();
-        assert!(req.tools.iter().any(|t| t.name == "spawn_agent"),
-            ".sub_agents() should register spawn_agent automatically");
+        assert!(
+            req.tools.iter().any(|t| t.name == "spawn_agent"),
+            ".sub_agents() should register spawn_agent automatically"
+        );
     }
 
     #[tokio::test]
@@ -1379,7 +1547,7 @@ mod tests {
         }));
         assert_eq!(applied.config.max_turns, Some(7));
         match &applied.config.model {
-            ModelSpec::Exact(m) => assert_eq!(m, "overridden"),
+            ModelSpec::Exact(m) => assert_eq!(m.id, "overridden"),
             _ => panic!("expected Exact model"),
         }
     }
@@ -1411,7 +1579,10 @@ mod tests {
             text_response("...completed response"),
         ]);
         let harness = TestHarness::new(provider);
-        let output = harness.run_agent(&simple_agent(), "write a long essay").await.unwrap();
+        let output = harness
+            .run_agent(&simple_agent(), "write a long essay")
+            .await
+            .unwrap();
 
         assert_eq!(output.status, Status::Completed);
         assert_eq!(output.response_raw, "...completed response");
@@ -1431,42 +1602,59 @@ mod tests {
 
     #[tokio::test]
     async fn max_tokens_continuation_events() {
-        let provider = MockProvider::new(vec![
-            truncated_response("partial"),
-            text_response("done"),
-        ]);
+        let provider =
+            MockProvider::new(vec![truncated_response("partial"), text_response("done")]);
         let harness = TestHarness::new(provider);
         let output = harness.run_agent(&simple_agent(), "go").await.unwrap();
         assert_lifecycle_events(&harness, &output);
 
-        let truncated: Vec<u32> = harness.events().all().iter().filter_map(|e| match &e.kind {
-            EventKind::OutputTruncated { turn } => Some(*turn),
-            _ => None,
-        }).collect();
+        let truncated: Vec<u32> = harness
+            .events()
+            .all()
+            .iter()
+            .filter_map(|e| match &e.kind {
+                EventKind::OutputTruncated { turn } => Some(*turn),
+                _ => None,
+            })
+            .collect();
         assert_eq!(truncated, vec![1]);
     }
 
     #[tokio::test]
     async fn token_budget_guard() {
         let mut response = tool_response("t", "c1", serde_json::json!({}));
-        response.usage = TokenUsage { input_tokens: 5000, output_tokens: 100, ..Default::default() };
+        response.usage = TokenUsage {
+            input_tokens: 5000,
+            output_tokens: 100,
+            ..Default::default()
+        };
         let provider = MockProvider::new(vec![response, text_response("done")]);
 
         let agent = Agent::new()
-            .name("test").model("mock").identity_prompt("")
+            .name("test")
+            .model("mock")
+            .identity_prompt("")
             .max_input_tokens(4000)
             .tool(MockTool::new("t", false, "ok"));
 
         let harness = TestHarness::new(provider);
         let output = harness.run_agent(&agent, "go").await.unwrap();
-        assert_eq!(output.status, Status::BudgetExhausted { usage: 5000, limit: 4000 });
+        assert_eq!(
+            output.status,
+            Status::BudgetExhausted {
+                usage: 5000,
+                limit: 4000
+            }
+        );
         assert_lifecycle_events(&harness, &output);
     }
 
     #[test]
     fn context_prompt_appended_after_metadata() {
         let agent = Agent::new()
-            .name("test").model("mock").identity_prompt("")
+            .name("test")
+            .model("mock")
+            .identity_prompt("")
             .context_prompt("user-provided context");
 
         let runtime = runtime_with_metadata("<environment>\ntest metadata\n</environment>");
@@ -1474,16 +1662,21 @@ mod tests {
 
         let ctx = spec.context_prompt.unwrap();
         let meta_pos = ctx.find("<environment>").expect("metadata missing");
-        let user_pos = ctx.find("<context>\nuser-provided context\n</context>")
+        let user_pos = ctx
+            .find("<context>\nuser-provided context\n</context>")
             .expect("context_prompt missing");
-        assert!(meta_pos < user_pos,
-            "metadata should appear before context_prompt:\n{ctx}");
+        assert!(
+            meta_pos < user_pos,
+            "metadata should appear before context_prompt:\n{ctx}"
+        );
     }
 
     #[test]
     fn multiple_context_prompts_stacked() {
         let agent = Agent::new()
-            .name("test").model("mock").identity_prompt("")
+            .name("test")
+            .model("mock")
+            .identity_prompt("")
             .context_prompt("first block")
             .context_prompt("second block");
 
@@ -1495,7 +1688,10 @@ mod tests {
         let first_pos = ctx.find("<context>\nfirst block\n</context>").unwrap();
         let second_pos = ctx.find("<context>\nsecond block\n</context>").unwrap();
         assert!(meta_pos < first_pos, "metadata before first context");
-        assert!(first_pos < second_pos, "first context before second context");
+        assert!(
+            first_pos < second_pos,
+            "first context before second context"
+        );
     }
 }
 
@@ -1522,8 +1718,11 @@ mod retry_and_events_tests {
             Ok(text_response("hello")),
         ]);
         let agent = Agent::new()
-            .name("test").model("mock").identity_prompt("")
-            .max_request_retries(3).request_retry_backoff_ms(10);
+            .name("test")
+            .model("mock")
+            .identity_prompt("")
+            .max_request_retries(3)
+            .request_retry_backoff_ms(10);
 
         let harness = TestHarness::new(provider);
         let output = harness.run_agent(&agent, "go").await.unwrap();
@@ -1537,8 +1736,11 @@ mod retry_and_events_tests {
             provider_message: "unauthorized".into(),
         })]);
         let agent = Agent::new()
-            .name("test").model("mock").identity_prompt("")
-            .max_request_retries(3).request_retry_backoff_ms(10);
+            .name("test")
+            .model("mock")
+            .identity_prompt("")
+            .max_request_retries(3)
+            .request_retry_backoff_ms(10);
 
         let harness = TestHarness::new(provider);
         let err = harness.run_agent(&agent, "go").await.unwrap_err();
@@ -1553,7 +1755,9 @@ mod retry_and_events_tests {
     async fn event_sequence_complete() {
         let provider = MockProvider::tool_then_text("read", serde_json::json!({}), "done");
         let agent = Agent::new()
-            .name("test").model("mock").identity_prompt("")
+            .name("test")
+            .model("mock")
+            .identity_prompt("")
             .tool(MockTool::new("read", true, "file contents"));
 
         let harness = TestHarness::new(provider);
@@ -1561,23 +1765,26 @@ mod retry_and_events_tests {
 
         let events = harness.events().all();
         let names: Vec<&str> = events.iter().map(event_name).collect();
-        assert_eq!(names, vec![
-            "AgentStart",
-            "TurnStart",
-            "RequestStart",
-            "RequestEnd",
-            "TokenUsage",
-            "ToolCallStart",
-            "ToolCallEnd",
-            "TurnEnd",
-            "TurnStart",
-            "RequestStart",
-            "ResponseTextChunk",
-            "RequestEnd",
-            "TokenUsage",
-            "AgentEnd",
-            "TurnEnd",
-        ]);
+        assert_eq!(
+            names,
+            vec![
+                "AgentStart",
+                "TurnStart",
+                "RequestStart",
+                "RequestEnd",
+                "TokenUsage",
+                "ToolCallStart",
+                "ToolCallEnd",
+                "TurnEnd",
+                "TurnStart",
+                "RequestStart",
+                "ResponseTextChunk",
+                "RequestEnd",
+                "TokenUsage",
+                "AgentEnd",
+                "TurnEnd",
+            ]
+        );
     }
 
     fn event_name(event: &Event) -> &'static str {
@@ -1593,6 +1800,7 @@ mod retry_and_events_tests {
             EventKind::ToolCallEnd { .. } => "ToolCallEnd",
             EventKind::TokenUsage { .. } => "TokenUsage",
             EventKind::OutputTruncated { .. } => "OutputTruncated",
+            EventKind::CompactTriggered { .. } => "CompactTriggered",
         }
     }
 }

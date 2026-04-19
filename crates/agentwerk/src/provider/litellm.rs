@@ -62,12 +62,4 @@ impl Provider for LiteLLMProvider {
     fn prewarm(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         self.0.prewarm()
     }
-
-    /// LiteLLM proxies arbitrary upstream providers, so a model id passed
-    /// through it could belong to any family. Consult both tables and
-    /// return the first hit.
-    fn context_window(&self, model: &str) -> Option<u64> {
-        super::openai_models::context_window(model)
-            .or_else(|| super::anthropic_models::context_window(model))
-    }
 }

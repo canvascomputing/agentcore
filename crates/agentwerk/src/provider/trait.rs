@@ -60,19 +60,6 @@ pub trait Provider: Send + Sync {
     fn prewarm(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async {})
     }
-
-    /// Maximum input-token context window for the given model id, if known.
-    ///
-    /// Drives the compaction seam: when `Some(w)`, the agent loop fires
-    /// [`EventKind::CompactTriggered`] as the estimated next-request size
-    /// approaches `w`; when `None`, the seam stays dormant and a pre-flight
-    /// overflow is a hard error.
-    ///
-    /// Default returns `None`. Built-in providers override with a per-model
-    /// static table.
-    fn context_window(&self, _model: &str) -> Option<u64> {
-        None
-    }
 }
 
 /// Fire-and-forget HEAD request to warm the TCP+TLS connection pool.

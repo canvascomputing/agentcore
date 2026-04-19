@@ -67,7 +67,9 @@ make use_case name=<name>    # run one
 
 ## API
 
-- [Provider Integrations](#provider-integrations): multi-provider support
+- [Providers](#providers): multi-provider support
+- [Agent](#agent): the base interface
+- [Models](#models): context window auto-detection
 - [Prompting](#prompting): identity, instruction, context, behavior
 - [Sub-agents](#sub-agents): orchestrate nested workers
 - [Guardrails](#guardrails): retries, token caps, and turn limits
@@ -78,7 +80,7 @@ make use_case name=<name>    # run one
 - [LLM Request Composition](#llm-request-composition): how a request is assembled
 - [Todo](#todo): planned work
 
-### Provider Integrations
+### Providers
 
 You can integrate your agentic application with the following providers:
 
@@ -91,9 +93,34 @@ let provider = OpenAiProvider::new(key);
 let provider = LiteLLMProvider::new(key);
 ```
 
+### Agents
+
+The `Agent` interface is the main entry point. Build with `Agent::new()`, chain configurations, then call `.run()`:
+
+```rust
+let output = Agent::new()
+    .provider(provider)
+    .model("claude-sonnet-4-20250514")
+    .instruction_prompt("Summarize src/main.rs")
+    .tool(ReadFileTool)
+    .run()
+    .await?;
+```
+
+### Models
+
+You can configure each agent to use a single model:
+
+```rust
+Agent::new().model("claude-sonnet-4-20250514")
+Agent::new().model_with_context_window_size("custom-model", 100_000)
+```
+
+`.model(id)` detects the context window size for models from supported providers. Use `.model_with_context_window_size` in case you need to set the context window size explicitly.
+
 ### Prompting
 
-The main interface for launching an agent:
+Prompts are the core ingredient of every agentic application. Here are different prompt types which can be used to drive your agent's behavior.
 
 ```rust
 use agentwerk::Agent;
@@ -108,7 +135,7 @@ let output = Agent::new()
     .await?;
 ```
 
-Prompts are the core piece of every agentic application.
+The following prompts can be configured:
 
 | Method | Purpose |
 |--------|---------|
@@ -232,9 +259,11 @@ let handler = Arc::new(|event: Event| match &event.kind {
 | **Agent** | `AgentStart` | Agent begins execution |
 | | `AgentEnd` | Agent finishes execution |
 | | `TurnStart` / `TurnEnd` | Turn boundaries |
-| **LLM Provider** | `RequestStart` / `RequestEnd` | LLM request lifecycle |
+| | `CompactTriggered` | Context approached maximum window length and compaction was invoked |
+| **Provider** | `RequestStart` / `RequestEnd` | LLM request lifecycle |
 | | `ResponseTextChunk` | Streamed text token arrived |
-| | `TokenUsage` | Token counts for a request changed |
+| | `TokenUsage` | Update on token counts due to provider requests |
+| | `OutputTruncated` | Response was cut off because it exceeded allowed length |
 | **Tool Usage** | `ToolCallStart` / `ToolCallEnd` | Tool execution lifecycle |
 
 
