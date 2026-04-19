@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::error::{AgenticError, Result};
+use crate::error::Result;
 
+use super::error::{ProviderError, ProviderResult};
 use super::types::{ContentBlock, Message, ModelResponse, ResponseStatus, StreamEvent, TokenUsage};
 use super::r#trait::{CompletionRequest, LlmProvider, ToolChoice};
 
@@ -54,52 +55,74 @@ impl AnthropicProvider {
     }
 
     fn serialize_request(&self, request: &CompletionRequest) -> Value {
-        let messages = serialize_messages(&request.messages);
-        let tools: Vec<Value> = request.tools.iter().map(serialize_tool_definition).collect();
-
         let mut body = serde_json::json!({
             "model": request.model,
             "system": request.system_prompt,
-            "messages": messages,
+            "messages": serialize_messages(&request.messages),
         });
-
         if let Some(n) = request.max_output_tokens {
             body["max_tokens"] = Value::from(n);
         }
-
-        if !tools.is_empty() {
+        if !request.tools.is_empty() {
+            let tools: Vec<Value> = request.tools.iter().map(serialize_tool_definition).collect();
             body["tools"] = Value::Array(tools);
         }
         if let Some(ref choice) = request.tool_choice {
             body["tool_choice"] = serialize_tool_choice(choice);
         }
-
         body
     }
 
-    fn parse_response(&self, json: Value) -> Result<ModelResponse> {
-        Ok(ModelResponse {
+    fn parse_response(&self, json: Value) -> ModelResponse {
+        ModelResponse {
             content: parse_content(&json),
             status: parse_status(&json),
             usage: parse_usage(&json),
             model: json["model"].as_str().unwrap_or("unknown").to_string(),
-        })
+        }
     }
 
-    async fn send_request(&self, body: Value) -> Result<reqwest::Response> {
+    async fn send_request(&self, body: Value) -> ProviderResult<reqwest::Response> {
         let url = format!("{}/v1/messages", self.base_url);
         let mut req = self.client.post(&url).json(&body);
         for (k, v) in self.api_headers() {
             req = req.header(k, v);
         }
-        let resp = req.send().await.map_err(|e| AgenticError::Api {
-            message: e.to_string(),
-            status: None,
-            retryable: true,
-            retry_after_ms: None,
-        })?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ProviderError::ConnectionFailed { reason: e.to_string() })?;
 
-        super::check_http_error(resp).await
+        super::map_http_errors(resp, classify_error).await
+    }
+}
+
+/// Map Anthropic-specific error signatures to typed [`ProviderError`]
+/// variants. Any status/body combination the match doesn't recognise
+/// returns `None`, causing `map_http_errors` to fall through to
+/// [`ProviderError::UnexpectedStatus`] (or [`ProviderError::RateLimited`]
+/// for 429/529).
+fn classify_error(status: u16, body: &str) -> Option<ProviderError> {
+    match status {
+        401 => Some(ProviderError::AuthenticationFailed { provider_message: body.into() }),
+        403 => Some(ProviderError::PermissionDenied { provider_message: body.into() }),
+        404 => Some(ProviderError::ModelNotFound { provider_message: body.into() }),
+        400 => classify_400(body),
+        _ => None,
+    }
+}
+
+fn classify_400(body: &str) -> Option<ProviderError> {
+    let json: Value = serde_json::from_str(body).ok()?;
+    let err = &json["error"];
+    let type_ = err["type"].as_str().unwrap_or("");
+    let message = err["message"].as_str().unwrap_or("").to_string();
+    match type_ {
+        "invalid_request_error" if message.contains("prompt is too long") => {
+            Some(ProviderError::ContextWindowExceeded { provider_message: message })
+        }
+        "not_found_error" => Some(ProviderError::ModelNotFound { provider_message: message }),
+        _ => None,
     }
 }
 
@@ -111,13 +134,16 @@ impl LlmProvider for AnthropicProvider {
     fn complete(
         &self,
         request: CompletionRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<ModelResponse>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
         let body = self.serialize_request(&request);
 
         Box::pin(async move {
             let resp = self.send_request(body).await?;
-            let json: Value = resp.json().await.map_err(|e| AgenticError::Other(e.to_string()))?;
-            self.parse_response(json)
+            let json: Value = resp
+                .json()
+                .await
+                .map_err(|e| ProviderError::InvalidResponse { reason: e.to_string() })?;
+            Ok(self.parse_response(json))
         })
     }
 
@@ -125,7 +151,7 @@ impl LlmProvider for AnthropicProvider {
         &self,
         request: CompletionRequest,
         on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
-    ) -> Pin<Box<dyn Future<Output = Result<ModelResponse>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
         let mut body = self.serialize_request(&request);
         body["stream"] = Value::Bool(true);
 
@@ -139,150 +165,157 @@ impl LlmProvider for AnthropicProvider {
 async fn stream_response(
     response: reqwest::Response,
     on_event: &Arc<dyn Fn(StreamEvent) + Send + Sync>,
-) -> Result<ModelResponse> {
+) -> ProviderResult<ModelResponse> {
     use futures_util::StreamExt;
     use super::stream::{SseEvent, StreamParser};
 
+    let mut state = StreamState::default();
     let mut parser = StreamParser::new();
-    let mut model = String::from("unknown");
-    let mut usage = TokenUsage::default();
-    let mut status = ResponseStatus::EndTurn;
-    let mut content_blocks: Vec<ContentBlock> = Vec::new();
-
-    // Per-block accumulators, keyed by content block index
-    let mut texts: Vec<Option<String>> = Vec::new();
-    let mut tool_ids: Vec<Option<String>> = Vec::new();
-    let mut tool_names: Vec<Option<String>> = Vec::new();
-    let mut tool_inputs: Vec<Option<String>> = Vec::new();
-
     let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| AgenticError::Other(e.to_string()))?;
 
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk
+            .map_err(|e| ProviderError::ConnectionFailed { reason: e.to_string() })?;
         for event in parser.push(&chunk) {
             match event {
-                SseEvent::Done => {
-                    on_event(StreamEvent::MessageDone);
-                    continue;
-                }
-                SseEvent::Data(json) => {
-
-            let event_type = json["type"].as_str().unwrap_or("");
-            match event_type {
-                "message_start" => {
-                    model = json["message"]["model"]
-                        .as_str()
-                        .unwrap_or("unknown")
-                        .to_string();
-                    usage.input_tokens =
-                        json["message"]["usage"]["input_tokens"].as_u64().unwrap_or(0);
-                    usage.cache_read_input_tokens = json["message"]["usage"]
-                        ["cache_read_input_tokens"]
-                        .as_u64()
-                        .unwrap_or(0);
-                    usage.cache_creation_input_tokens = json["message"]["usage"]
-                        ["cache_creation_input_tokens"]
-                        .as_u64()
-                        .unwrap_or(0);
-                }
-                "content_block_start" => {
-                    let idx = json["index"].as_u64().unwrap_or(0) as usize;
-                    let block = &json["content_block"];
-
-                    // Grow accumulators to fit this index
-                    while texts.len() <= idx {
-                        texts.push(None);
-                        tool_ids.push(None);
-                        tool_names.push(None);
-                        tool_inputs.push(None);
-                    }
-
-                    match block["type"].as_str().unwrap_or("") {
-                        "tool_use" => {
-                            tool_ids[idx] =
-                                Some(block["id"].as_str().unwrap_or("").to_string());
-                            tool_names[idx] =
-                                Some(block["name"].as_str().unwrap_or("").to_string());
-                            tool_inputs[idx] = Some(String::new());
-                        }
-                        _ => {
-                            texts[idx] = Some(String::new());
-                        }
-                    }
-                }
-                "content_block_delta" => {
-                    let idx = json["index"].as_u64().unwrap_or(0) as usize;
-                    let delta = &json["delta"];
-
-                    match delta["type"].as_str().unwrap_or("") {
-                        "text_delta" => {
-                            let text = delta["text"].as_str().unwrap_or("").to_string();
-                            if let Some(Some(ref mut buf)) = texts.get_mut(idx) {
-                                buf.push_str(&text);
-                            }
-                            on_event(StreamEvent::TextDelta { index: idx, text });
-                        }
-                        "input_json_delta" => {
-                            let partial = delta["partial_json"].as_str().unwrap_or("");
-                            if let Some(Some(ref mut buf)) = tool_inputs.get_mut(idx) {
-                                buf.push_str(partial);
-                            }
-                            on_event(StreamEvent::InputJsonDelta {
-                                index: idx,
-                                partial_json: partial.to_string(),
-                            });
-                        }
-                        _ => {}
-                    }
-                }
-                "content_block_stop" => {
-                    let idx = json["index"].as_u64().unwrap_or(0) as usize;
-
-                    if let Some(Some(text)) = texts.get_mut(idx).map(|t| t.take()) {
-                        content_blocks.push(ContentBlock::Text { text });
-                    } else if let Some(Some(json_input)) =
-                        tool_inputs.get_mut(idx).map(|t| t.take())
-                    {
-                        let input = serde_json::from_str(&json_input)
-                            .unwrap_or(Value::Object(Default::default()));
-                        content_blocks.push(ContentBlock::ToolUse {
-                            id: tool_ids
-                                .get_mut(idx)
-                                .and_then(|t| t.take())
-                                .unwrap_or_default(),
-                            name: tool_names
-                                .get_mut(idx)
-                                .and_then(|t| t.take())
-                                .unwrap_or_default(),
-                            input,
-                        });
-                    }
-
-                    on_event(StreamEvent::ContentBlockStop { index: idx });
-                }
-                "message_delta" => {
-                    status = parse_status_str(json["delta"]["stop_reason"].as_str().unwrap_or("end_turn"));
-                    usage.output_tokens =
-                        json["usage"]["output_tokens"].as_u64().unwrap_or(0);
-                    on_event(StreamEvent::MessageDelta {
-                        status: status.clone(),
-                        usage: usage.clone(),
-                    });
-                }
-                _ => {}
+                SseEvent::Done => on_event(StreamEvent::MessageDone),
+                SseEvent::Data(json) => handle_stream_event(&json, &mut state, on_event),
             }
+        }
+    }
 
-                } // SseEvent::Data
-            } // match event
-        } // for event
-    } // while chunk
+    Ok(state.into_response())
+}
 
-    Ok(ModelResponse {
-        content: content_blocks,
-        status,
-        usage,
-        model,
-    })
+/// Accumulator for a single Anthropic content block. Replaces four parallel
+/// `Vec<Option<String>>` lookups with one typed slot per index.
+enum BlockAcc {
+    Text(String),
+    Tool { id: String, name: String, input: String },
+}
+
+#[derive(Default)]
+struct StreamState {
+    model: String,
+    usage: TokenUsage,
+    status: ResponseStatus,
+    content_blocks: Vec<ContentBlock>,
+    blocks: Vec<Option<BlockAcc>>,
+}
+
+impl StreamState {
+    fn slot(&mut self, idx: usize) -> &mut Option<BlockAcc> {
+        if self.blocks.len() <= idx {
+            self.blocks.resize_with(idx + 1, || None);
+        }
+        &mut self.blocks[idx]
+    }
+
+    fn into_response(self) -> ModelResponse {
+        ModelResponse {
+            content: self.content_blocks,
+            status: self.status,
+            usage: self.usage,
+            model: if self.model.is_empty() { "unknown".into() } else { self.model },
+        }
+    }
+}
+
+fn handle_stream_event(
+    json: &Value,
+    state: &mut StreamState,
+    on_event: &Arc<dyn Fn(StreamEvent) + Send + Sync>,
+) {
+    match json["type"].as_str().unwrap_or("") {
+        "message_start" => handle_message_start(json, state),
+        "content_block_start" => handle_block_start(json, state),
+        "content_block_delta" => handle_block_delta(json, state, on_event),
+        "content_block_stop" => handle_block_stop(json, state, on_event),
+        "message_delta" => handle_message_delta(json, state, on_event),
+        _ => {}
+    }
+}
+
+fn handle_message_start(json: &Value, state: &mut StreamState) {
+    let message = &json["message"];
+    state.model = message["model"].as_str().unwrap_or("unknown").to_string();
+    let u = &message["usage"];
+    state.usage.input_tokens = u["input_tokens"].as_u64().unwrap_or(0);
+    state.usage.cache_read_input_tokens = u["cache_read_input_tokens"].as_u64().unwrap_or(0);
+    state.usage.cache_creation_input_tokens = u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+}
+
+fn handle_block_start(json: &Value, state: &mut StreamState) {
+    let idx = json["index"].as_u64().unwrap_or(0) as usize;
+    let block = &json["content_block"];
+    let acc = match block["type"].as_str().unwrap_or("") {
+        "tool_use" => BlockAcc::Tool {
+            id: block["id"].as_str().unwrap_or("").to_string(),
+            name: block["name"].as_str().unwrap_or("").to_string(),
+            input: String::new(),
+        },
+        _ => BlockAcc::Text(String::new()),
+    };
+    *state.slot(idx) = Some(acc);
+}
+
+fn handle_block_delta(
+    json: &Value,
+    state: &mut StreamState,
+    on_event: &Arc<dyn Fn(StreamEvent) + Send + Sync>,
+) {
+    let idx = json["index"].as_u64().unwrap_or(0) as usize;
+    let delta = &json["delta"];
+    match delta["type"].as_str().unwrap_or("") {
+        "text_delta" => {
+            let text = delta["text"].as_str().unwrap_or("").to_string();
+            if let Some(Some(BlockAcc::Text(buf))) = state.blocks.get_mut(idx) {
+                buf.push_str(&text);
+            }
+            on_event(StreamEvent::TextDelta { index: idx, text });
+        }
+        "input_json_delta" => {
+            let partial = delta["partial_json"].as_str().unwrap_or("");
+            if let Some(Some(BlockAcc::Tool { input, .. })) = state.blocks.get_mut(idx) {
+                input.push_str(partial);
+            }
+            on_event(StreamEvent::InputJsonDelta {
+                index: idx,
+                partial_json: partial.to_string(),
+            });
+        }
+        _ => {}
+    }
+}
+
+fn handle_block_stop(
+    json: &Value,
+    state: &mut StreamState,
+    on_event: &Arc<dyn Fn(StreamEvent) + Send + Sync>,
+) {
+    let idx = json["index"].as_u64().unwrap_or(0) as usize;
+    match state.blocks.get_mut(idx).and_then(Option::take) {
+        Some(BlockAcc::Text(text)) => state.content_blocks.push(ContentBlock::Text { text }),
+        Some(BlockAcc::Tool { id, name, input }) => {
+            let input = serde_json::from_str(&input).unwrap_or(Value::Object(Default::default()));
+            state.content_blocks.push(ContentBlock::ToolUse { id, name, input });
+        }
+        None => {}
+    }
+    on_event(StreamEvent::ContentBlockStop { index: idx });
+}
+
+fn handle_message_delta(
+    json: &Value,
+    state: &mut StreamState,
+    on_event: &Arc<dyn Fn(StreamEvent) + Send + Sync>,
+) {
+    state.status = parse_status_str(json["delta"]["stop_reason"].as_str().unwrap_or("end_turn"));
+    state.usage.output_tokens = json["usage"]["output_tokens"].as_u64().unwrap_or(0);
+    on_event(StreamEvent::MessageDelta {
+        status: state.status.clone(),
+        usage: state.usage.clone(),
+    });
 }
 
 fn serialize_messages(messages: &[Message]) -> Vec<Value> {
@@ -443,7 +476,7 @@ mod tests {
             "usage": {"input_tokens": 10, "output_tokens": 5},
             "model": "claude-sonnet-4-20250514"
         });
-        let resp = provider().parse_response(json).unwrap();
+        let resp = provider().parse_response(json);
         assert_eq!(resp.content.len(), 1);
         assert!(matches!(&resp.content[0], ContentBlock::Text { text } if text == "Hello!"));
         assert_eq!(resp.status, ResponseStatus::EndTurn);
@@ -458,7 +491,7 @@ mod tests {
             "usage": {"input_tokens": 0, "output_tokens": 0},
             "model": "mock"
         });
-        let resp = provider().parse_response(json).unwrap();
+        let resp = provider().parse_response(json);
         assert_eq!(resp.status, ResponseStatus::ToolUse);
         match &resp.content[0] {
             ContentBlock::ToolUse { name, input, .. } => {
@@ -477,7 +510,7 @@ mod tests {
             "usage": {"input_tokens": 0, "output_tokens": 0},
             "model": "mock"
         });
-        let resp = provider().parse_response(json).unwrap();
+        let resp = provider().parse_response(json);
         assert!(resp.content.is_empty());
     }
 
@@ -496,7 +529,82 @@ mod tests {
                 "content": [], "stop_reason": reason,
                 "usage": {"input_tokens": 0, "output_tokens": 0}, "model": "m"
             });
-            assert_eq!(provider().parse_response(json).unwrap().status, expected);
+            assert_eq!(provider().parse_response(json).status, expected);
         }
+    }
+
+    // --- Error classification -------------------------------------------
+    //
+    // One test per variant Anthropic's `classify_error` maps, plus a
+    // negative guardrail and a message-preservation check. Tests feed
+    // `classify_error(status, body)` a literal HTTP body so each case shows
+    // exactly what makes it different.
+
+    fn invalid_request(message: &str) -> String {
+        serde_json::json!({
+            "error": { "type": "invalid_request_error", "message": message }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn context_window_exceeded_when_prompt_is_too_long() {
+        let body = invalid_request("prompt is too long: 205000 > 200000");
+        assert!(matches!(
+            classify_error(400, &body),
+            Some(ProviderError::ContextWindowExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn maps_400_not_found_error_to_model_not_found() {
+        let body = serde_json::json!({
+            "error": { "type": "not_found_error", "message": "model opus-9 not found" }
+        })
+        .to_string();
+        assert!(matches!(
+            classify_error(400, &body),
+            Some(ProviderError::ModelNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn maps_http_401_to_authentication_failed() {
+        assert!(matches!(
+            classify_error(401, "boom"),
+            Some(ProviderError::AuthenticationFailed { .. })
+        ));
+    }
+
+    #[test]
+    fn maps_http_403_to_permission_denied() {
+        assert!(matches!(
+            classify_error(403, "boom"),
+            Some(ProviderError::PermissionDenied { .. })
+        ));
+    }
+
+    #[test]
+    fn maps_http_404_to_model_not_found() {
+        assert!(matches!(
+            classify_error(404, "boom"),
+            Some(ProviderError::ModelNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn unrelated_400_falls_through() {
+        let body = invalid_request("max_tokens must be a positive integer");
+        assert!(classify_error(400, &body).is_none());
+    }
+
+    #[test]
+    fn preserves_provider_message() {
+        let Some(ProviderError::AuthenticationFailed { provider_message }) =
+            classify_error(401, "your api key is revoked")
+        else {
+            panic!("expected AuthenticationFailed");
+        };
+        assert_eq!(provider_message, "your api key is revoked");
     }
 }

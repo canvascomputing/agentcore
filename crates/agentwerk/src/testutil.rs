@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::agent::queue::CommandQueue;
 use crate::agent::{Agent, AgentOutput, Event, EventKind, Status};
-use crate::error::{AgenticError, Result};
+use crate::error::Result;
 use crate::provider::types::{ContentBlock, ModelResponse, ResponseStatus, StreamEvent, TokenUsage};
-use crate::provider::{CompletionRequest, LlmProvider};
+use crate::provider::{CompletionRequest, LlmProvider, ProviderError, ProviderResult};
 use crate::tools::{Tool, ToolContext, ToolResult};
 
 /// A mock LLM provider that returns pre-configured responses in order.
@@ -18,7 +18,7 @@ use crate::tools::{Tool, ToolContext, ToolResult};
 /// Use `new()` for simple response sequences, or `with_results()` to interleave
 /// errors and successes (useful for testing retry logic).
 pub struct MockProvider {
-    results: Mutex<VecDeque<Result<ModelResponse>>>,
+    results: Mutex<VecDeque<ProviderResult<ModelResponse>>>,
     pub requests: Mutex<Vec<CompletionRequest>>,
 }
 
@@ -30,7 +30,7 @@ impl MockProvider {
         }
     }
 
-    pub fn with_results(results: Vec<Result<ModelResponse>>) -> Self {
+    pub fn with_results(results: Vec<ProviderResult<ModelResponse>>) -> Self {
         Self {
             results: Mutex::new(VecDeque::from(results)),
             requests: Mutex::new(Vec::new()),
@@ -70,15 +70,15 @@ impl LlmProvider for MockProvider {
     fn complete(
         &self,
         request: CompletionRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<ModelResponse>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
         self.requests.lock().unwrap().push(request);
 
         Box::pin(async move {
-            self.results
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or_else(|| Err(AgenticError::Other("no more mock responses".into())))
+            self.results.lock().unwrap().pop_front().unwrap_or_else(|| {
+                Err(ProviderError::InvalidResponse {
+                    reason: "no more mock responses".into(),
+                })
+            })
         })
     }
 
@@ -86,7 +86,7 @@ impl LlmProvider for MockProvider {
         &self,
         request: CompletionRequest,
         on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
-    ) -> Pin<Box<dyn Future<Output = Result<ModelResponse>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
         Box::pin(async move {
             let response = self.complete(request).await?;
             for block in &response.content {
@@ -313,6 +313,9 @@ pub struct TestHarness {
     template_variables: HashMap<String, serde_json::Value>,
     working_directory: PathBuf,
     cancel_signal: Arc<AtomicBool>,
+    // Only read from the cfg(test) branch in `run_agent` — in non-test builds
+    // the field is always None and the reader is compiled out.
+    #[allow(dead_code)]
     command_queue: Option<Arc<CommandQueue>>,
 }
 
@@ -332,7 +335,8 @@ impl TestHarness {
         }
     }
 
-    pub fn with_provider_and_queue(provider: Arc<MockProvider>, queue: Arc<CommandQueue>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_provider_and_queue(provider: Arc<MockProvider>, queue: Arc<CommandQueue>) -> Self {
         let mut h = Self::with_provider(provider);
         h.command_queue = Some(queue);
         h
@@ -359,6 +363,7 @@ impl TestHarness {
         }
         // If the harness carries a pre-built command queue, we need to share
         // it with the agent's Runtime. We do that by running via run_with_parts.
+        #[cfg(test)]
         if let Some(queue) = &self.command_queue {
             use crate::agent::{AgentSpec, Runtime};
             let runtime = Runtime {

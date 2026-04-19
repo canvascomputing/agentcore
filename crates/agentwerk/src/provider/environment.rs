@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::error::{AgenticError, Result};
 
-use super::{AnthropicProvider, LlmProvider, OpenAiProvider};
+use super::{AnthropicProvider, LiteLLMProvider, LlmProvider, MistralProvider, OpenAiProvider};
 
 /// Detected provider name, before constructing the actual provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,9 +46,9 @@ pub fn provider_from_env() -> Result<(Arc<dyn LlmProvider>, String)> {
 
     let (provider, model): (Arc<dyn LlmProvider>, String) = match detected {
         DetectedProvider::Anthropic => { let (p, m) = AnthropicProvider::from_env()?; (Arc::new(p), m) }
-        DetectedProvider::Mistral   => { let (p, m) = OpenAiProvider::mistral_from_env()?;  (Arc::new(p), m) }
-        DetectedProvider::OpenAi    => { let (p, m) = OpenAiProvider::from_env()?;     (Arc::new(p), m) }
-        DetectedProvider::LiteLlm   => { let (p, m) = OpenAiProvider::litellm_from_env()?; (Arc::new(p), m) }
+        DetectedProvider::Mistral   => { let (p, m) = MistralProvider::from_env()?;   (Arc::new(p), m) }
+        DetectedProvider::OpenAi    => { let (p, m) = OpenAiProvider::from_env()?;    (Arc::new(p), m) }
+        DetectedProvider::LiteLlm   => { let (p, m) = LiteLLMProvider::from_env()?;   (Arc::new(p), m) }
     };
     Ok((provider, model))
 }

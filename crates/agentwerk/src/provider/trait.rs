@@ -4,8 +4,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
-
+use super::error::ProviderResult;
 use super::types::{Message, ModelResponse, StreamEvent};
 use crate::tools::tool::ToolDefinition;
 
@@ -27,18 +26,21 @@ pub enum ToolChoice {
 
 /// Core LLM provider trait. Object-safe via boxed futures.
 pub trait LlmProvider: Send + Sync {
+    /// One-shot completion. Returns the full response after the model stops.
     fn complete(
         &self,
         request: CompletionRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<ModelResponse>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>>;
 
-    /// Streaming variant that emits incremental events via callback.
-    /// Default implementation falls back to `complete()` and emits `MessageDone`.
+    /// Streaming completion. Emits incremental [`StreamEvent`]s via the
+    /// callback as the model generates, then returns the assembled response.
+    /// Default implementation falls back to [`Self::complete`] and emits a
+    /// single `MessageDone`.
     fn complete_streaming(
         &self,
         request: CompletionRequest,
         on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
-    ) -> Pin<Box<dyn Future<Output = Result<ModelResponse>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
         Box::pin(async move {
             let response = self.complete(request).await?;
             on_event(StreamEvent::MessageDone);
@@ -48,13 +50,13 @@ pub trait LlmProvider: Send + Sync {
 
     /// Warm the TCP+TLS connection pool before the first API request.
     ///
-    /// Sends a fire-and-forget HEAD request to the provider's base URL.
-    /// This overlaps the TLS handshake (~100-200ms) with agent startup,
-    /// so the first real LLM call reuses the already-established connection.
+    /// Called automatically by the agent loop before the first turn. Sends
+    /// a fire-and-forget HEAD request to the provider's base URL so the
+    /// TLS handshake (~100-200 ms) overlaps with agent startup, letting
+    /// the first real LLM call reuse the already-established connection.
     ///
-    /// Called automatically by the agent loop before the first turn.
-    /// Default implementation is a no-op — override in providers that
-    /// own a `reqwest::Client`.
+    /// Default implementation is a no-op — override in providers that own
+    /// a `reqwest::Client`.
     fn prewarm(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async {})
     }

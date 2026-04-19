@@ -58,11 +58,12 @@ pub enum ContentBlock {
 /// References:
 /// - <https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons>
 /// - <https://github.com/BerriAI/litellm/issues/21348>
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResponseStatus {
     /// Model finished generating naturally.
     /// Anthropic: `end_turn` | OpenAI: `stop` | Mistral: `stop`
+    #[default]
     EndTurn,
 
     /// Model hit a caller-provided stop sequence.

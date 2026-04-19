@@ -1,15 +1,13 @@
 use std::fmt;
 
+use crate::provider::ProviderError;
+
 pub type Result<T> = std::result::Result<T, AgenticError>;
 
 #[derive(Debug)]
 pub enum AgenticError {
-    Api {
-        message: String,
-        status: Option<u16>,
-        retryable: bool,
-        retry_after_ms: Option<u64>,
-    },
+    /// Anything raised by a [`LlmProvider`](crate::provider::LlmProvider) call.
+    Provider(ProviderError),
     Tool {
         tool_name: String,
         message: String,
@@ -29,17 +27,18 @@ pub enum AgenticError {
     SchemaRetryExhausted {
         retries: u32,
     },
+    NotImplemented(&'static str),
     Other(String),
 }
 
 impl AgenticError {
     pub fn is_retryable(&self) -> bool {
-        matches!(self, AgenticError::Api { retryable: true, .. })
+        matches!(self, AgenticError::Provider(p) if p.is_retryable())
     }
 
     pub fn retry_after_ms(&self) -> Option<u64> {
         match self {
-            AgenticError::Api { retry_after_ms, .. } => *retry_after_ms,
+            AgenticError::Provider(p) => p.retry_after_ms(),
             _ => None,
         }
     }
@@ -48,18 +47,7 @@ impl AgenticError {
 impl fmt::Display for AgenticError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AgenticError::Api {
-                message,
-                status,
-                retryable,
-                ..
-            } => match status {
-                Some(code) => write!(
-                    f,
-                    "API error (status {code}): {message} (retryable: {retryable})"
-                ),
-                None => write!(f, "API error: {message} (retryable: {retryable})"),
-            },
+            AgenticError::Provider(err) => write!(f, "{err}"),
             AgenticError::Tool { tool_name, message } => {
                 write!(f, "Tool error ({tool_name}): {message}")
             }
@@ -79,6 +67,9 @@ impl fmt::Display for AgenticError {
             AgenticError::SchemaRetryExhausted { retries } => {
                 write!(f, "Schema retry exhausted after {retries} attempts")
             }
+            AgenticError::NotImplemented(what) => {
+                write!(f, "Not implemented: {what}")
+            }
             AgenticError::Other(msg) => write!(f, "{msg}"),
         }
     }
@@ -87,10 +78,17 @@ impl fmt::Display for AgenticError {
 impl std::error::Error for AgenticError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            AgenticError::Provider(err) => Some(err),
             AgenticError::Io(err) => Some(err),
             AgenticError::Json(err) => Some(err),
             _ => None,
         }
+    }
+}
+
+impl From<ProviderError> for AgenticError {
+    fn from(err: ProviderError) -> Self {
+        AgenticError::Provider(err)
     }
 }
 
@@ -111,16 +109,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn display_api_error() {
-        let err = AgenticError::Api {
+    fn display_delegates_to_provider_error() {
+        let err = AgenticError::Provider(ProviderError::RateLimited {
             message: "rate limited".into(),
-            status: Some(429),
-            retryable: true,
+            status: 429,
             retry_after_ms: None,
-        };
+        });
         let display = format!("{err}");
         assert!(display.contains("429"));
         assert!(display.contains("rate limited"));
+    }
+
+    #[test]
+    fn retry_delegates_to_provider_error() {
+        let retryable = AgenticError::Provider(ProviderError::RateLimited {
+            message: String::new(),
+            status: 429,
+            retry_after_ms: Some(500),
+        });
+        let terminal = AgenticError::Provider(ProviderError::AuthenticationFailed {
+            provider_message: String::new(),
+        });
+        assert!(retryable.is_retryable());
+        assert_eq!(retryable.retry_after_ms(), Some(500));
+        assert!(!terminal.is_retryable());
+        assert_eq!(terminal.retry_after_ms(), None);
+    }
+
+    #[test]
+    fn non_provider_errors_are_not_retryable() {
+        let err = AgenticError::Aborted;
+        assert!(!err.is_retryable());
+        assert_eq!(err.retry_after_ms(), None);
+    }
+
+    #[test]
+    fn from_provider_error() {
+        let err: AgenticError = ProviderError::ConnectionFailed { reason: "dns".into() }.into();
+        assert!(matches!(
+            err,
+            AgenticError::Provider(ProviderError::ConnectionFailed { .. })
+        ));
     }
 
     #[test]
@@ -141,12 +170,11 @@ mod tests {
     #[test]
     fn all_variants_display_non_empty() {
         let variants: Vec<AgenticError> = vec![
-            AgenticError::Api {
-                message: "msg".into(),
-                status: Some(500),
-                retryable: false,
+            AgenticError::Provider(ProviderError::RateLimited {
+                message: "slow".into(),
+                status: 429,
                 retry_after_ms: None,
-            },
+            }),
             AgenticError::Tool {
                 tool_name: "tool".into(),
                 message: "err".into(),
@@ -164,6 +192,7 @@ mod tests {
                 message: "bad".into(),
             },
             AgenticError::SchemaRetryExhausted { retries: 3 },
+            AgenticError::NotImplemented("context compaction"),
             AgenticError::Other("other".into()),
         ];
         for variant in &variants {

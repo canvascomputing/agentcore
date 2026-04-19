@@ -1,5 +1,8 @@
 mod anthropic;
 pub mod environment;
+mod error;
+mod litellm;
+mod mistral;
 pub(crate) mod model;
 mod openai;
 pub(crate) mod retry;
@@ -9,31 +12,56 @@ pub mod types;
 
 pub use anthropic::AnthropicProvider;
 pub use environment::provider_from_env;
-pub use openai::{LiteLLMProvider, MistralProvider, OpenAiProvider};
-pub use r#trait::LlmProvider;
-pub(crate) use r#trait::{CompletionRequest, ToolChoice};
+pub use error::{ProviderError, ProviderResult};
+pub use litellm::LiteLLMProvider;
+pub use mistral::MistralProvider;
+pub use openai::OpenAiProvider;
+pub use r#trait::{CompletionRequest, LlmProvider, ToolChoice};
 pub use types::{ContentBlock, Message, TokenUsage};
 
-fn parse_retry_after_header(resp: &reqwest::Response) -> Option<u64> {
+pub(crate) fn retry_after_ms_from_headers(resp: &reqwest::Response) -> Option<u64> {
     let value = resp.headers().get("retry-after")?.to_str().ok()?;
     value.parse::<u64>().ok().map(|secs| secs * 1000)
 }
 
-/// Check for HTTP error status and return a structured `AgenticError::Api` if non-2xx.
-pub(crate) async fn check_http_error(
+/// HTTP error handler shared by every provider. Non-2xx responses are passed
+/// to the provider-specific `classify` closure, which maps recognised
+/// `(status, body)` signatures to typed [`ProviderError`] variants. Anything
+/// `classify` returns `None` for falls through: 429/529 become
+/// [`ProviderError::RateLimited`], 5xx become retryable
+/// [`ProviderError::UnexpectedStatus`], and other non-2xx codes become
+/// terminal [`ProviderError::UnexpectedStatus`].
+pub(crate) async fn map_http_errors<F>(
     resp: reqwest::Response,
-) -> crate::error::Result<reqwest::Response> {
+    classify: F,
+) -> ProviderResult<reqwest::Response>
+where
+    F: FnOnce(u16, &str) -> Option<ProviderError>,
+{
     let status = resp.status().as_u16();
-    if status >= 400 {
-        let retry_after_ms = parse_retry_after_header(&resp);
-        let retryable = matches!(status, 429 | 529 | 500 | 502 | 503 | 504);
-        let body_text = resp.text().await.unwrap_or_default();
-        return Err(crate::error::AgenticError::Api {
-            message: body_text,
-            status: Some(status),
-            retryable,
-            retry_after_ms,
-        });
+    if status < 400 {
+        return Ok(resp);
     }
-    Ok(resp)
+    let retry_after_ms = retry_after_ms_from_headers(&resp);
+    let body = resp.text().await.unwrap_or_default();
+    if let Some(e) = classify(status, &body) {
+        return Err(e);
+    }
+    Err(fallback_http_error(status, body, retry_after_ms))
+}
+
+fn fallback_http_error(status: u16, body: String, retry_after_ms: Option<u64>) -> ProviderError {
+    match status {
+        429 | 529 => ProviderError::RateLimited {
+            message: body,
+            status,
+            retry_after_ms,
+        },
+        _ => ProviderError::UnexpectedStatus {
+            status,
+            message: body,
+            retryable: matches!(status, 500 | 502 | 503 | 504),
+            retry_after_ms,
+        },
+    }
 }

@@ -1,5 +1,6 @@
-//! OpenAI-compatible provider supporting LiteLLM, Mistral, and any
-//! API that speaks the OpenAI chat completions format.
+//! OpenAI provider. Sibling modules [`super::mistral`] and
+//! [`super::litellm`] reuse this provider's wire format against their own
+//! base URLs.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -8,8 +9,9 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::error::{AgenticError, Result};
+use crate::error::Result;
 
+use super::error::{ProviderError, ProviderResult};
 use super::r#trait::{CompletionRequest, LlmProvider, ToolChoice};
 use super::stream::{SseEvent, StreamParser};
 use super::types::{ContentBlock, Message, ModelResponse, ResponseStatus, StreamEvent, TokenUsage};
@@ -24,14 +26,22 @@ pub struct OpenAiProvider {
 
 impl OpenAiProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
-        Self::new_with(api_key, "https://api.openai.com", reqwest::Client::new(), false)
+        Self::raw(api_key, "https://api.openai.com", reqwest::Client::new(), false)
     }
 
     pub fn with_client(api_key: impl Into<String>, client: reqwest::Client) -> Self {
-        Self::new_with(api_key, "https://api.openai.com", client, false)
+        Self::raw(api_key, "https://api.openai.com", client, false)
     }
 
-    fn new_with(api_key: impl Into<String>, base_url: &str, client: reqwest::Client, cache_tokens: bool) -> Self {
+    /// Raw constructor used by sibling provider modules (`mistral`,
+    /// `litellm`) to build an `OpenAiProvider` pointed at their own
+    /// endpoint. Not part of the public API.
+    pub(crate) fn raw(
+        api_key: impl Into<String>,
+        base_url: &str,
+        client: reqwest::Client,
+        cache_tokens: bool,
+    ) -> Self {
         Self {
             api_key: api_key.into(),
             base_url: base_url.into(),
@@ -52,48 +62,6 @@ impl OpenAiProvider {
         let model = env_or("OPENAI_MODEL", "gpt-4o");
         Ok((provider, model))
     }
-
-    pub(crate) fn litellm_from_env() -> Result<(Self, String)> {
-        use super::environment::env_or;
-        let provider = LiteLLMProvider::new(env_or("LITELLM_API_KEY", ""))
-            .base_url(env_or("LITELLM_BASE_URL", "http://localhost:4000"));
-        let model = env_or("LITELLM_MODEL", "claude-sonnet-4-20250514");
-        Ok((provider, model))
-    }
-
-    pub(crate) fn mistral_from_env() -> Result<(Self, String)> {
-        use super::environment::{env_or, env_required};
-        let provider = MistralProvider::new(env_required("MISTRAL_API_KEY")?)
-            .base_url(env_or("MISTRAL_BASE_URL", "https://api.mistral.ai"));
-        let model = env_or("MISTRAL_MODEL", "mistral-medium-2508");
-        Ok((provider, model))
-    }
-}
-
-/// Mistral-compatible LLM provider.
-pub struct MistralProvider;
-
-impl MistralProvider {
-    pub fn new(api_key: impl Into<String>) -> OpenAiProvider {
-        OpenAiProvider::new_with(api_key, "https://api.mistral.ai", reqwest::Client::new(), false)
-    }
-
-    pub fn with_client(api_key: impl Into<String>, client: reqwest::Client) -> OpenAiProvider {
-        OpenAiProvider::new_with(api_key, "https://api.mistral.ai", client, false)
-    }
-}
-
-/// LiteLLM proxy provider.
-pub struct LiteLLMProvider;
-
-impl LiteLLMProvider {
-    pub fn new(api_key: impl Into<String>) -> OpenAiProvider {
-        OpenAiProvider::new_with(api_key, "http://localhost:4000", reqwest::Client::new(), true)
-    }
-
-    pub fn with_client(api_key: impl Into<String>, client: reqwest::Client) -> OpenAiProvider {
-        OpenAiProvider::new_with(api_key, "http://localhost:4000", client, true)
-    }
 }
 
 impl LlmProvider for OpenAiProvider {
@@ -104,7 +72,7 @@ impl LlmProvider for OpenAiProvider {
     fn complete(
         &self,
         request: CompletionRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<ModelResponse>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
         let body = serialize_request(&request);
         let url = format!("{}/v1/chat/completions", self.base_url);
 
@@ -118,7 +86,7 @@ impl LlmProvider for OpenAiProvider {
         &self,
         request: CompletionRequest,
         on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
-    ) -> Pin<Box<dyn Future<Output = Result<ModelResponse>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
         let mut body = serialize_request(&request);
         body["stream"] = Value::Bool(true);
         body["stream_options"] = serde_json::json!({"include_usage": true});
@@ -132,27 +100,58 @@ impl LlmProvider for OpenAiProvider {
 }
 
 impl OpenAiProvider {
-    async fn send_json(&self, url: &str, body: Value) -> Result<Value> {
+    async fn send_json(&self, url: &str, body: Value) -> ProviderResult<Value> {
         let resp = self.send_raw(url, body).await?;
-        resp.json().await.map_err(|e| AgenticError::Other(e.to_string()))
+        resp.json()
+            .await
+            .map_err(|e| ProviderError::InvalidResponse { reason: e.to_string() })
     }
 
-    async fn send_raw(&self, url: &str, body: Value) -> Result<reqwest::Response> {
-        let resp = self.client
+    async fn send_raw(&self, url: &str, body: Value) -> ProviderResult<reqwest::Response> {
+        let resp = self
+            .client
             .post(url)
             .header("authorization", format!("Bearer {}", self.api_key))
             .header("content-type", "application/json")
             .json(&body)
             .send()
             .await
-            .map_err(|e| AgenticError::Api {
-                message: e.to_string(),
-                status: None,
-                retryable: true,
-                retry_after_ms: None,
-            })?;
+            .map_err(|e| ProviderError::ConnectionFailed { reason: e.to_string() })?;
 
-        super::check_http_error(resp).await
+        super::map_http_errors(resp, classify_error).await
+    }
+}
+
+/// Map OpenAI-compatible error signatures to typed [`ProviderError`]
+/// variants. Covers the OpenAI shape and the subset of it that LiteLLM /
+/// Mistral reproduce (where `error.code` may be absent, so the message
+/// text is the fallback signal).
+fn classify_error(status: u16, body: &str) -> Option<ProviderError> {
+    match status {
+        401 => Some(ProviderError::AuthenticationFailed { provider_message: body.into() }),
+        403 => Some(ProviderError::PermissionDenied { provider_message: body.into() }),
+        404 => Some(ProviderError::ModelNotFound { provider_message: body.into() }),
+        400 => classify_400(body),
+        _ => None,
+    }
+}
+
+fn classify_400(body: &str) -> Option<ProviderError> {
+    let json: Value = serde_json::from_str(body).ok()?;
+    let err = &json["error"];
+    let code = err["code"].as_str().unwrap_or("");
+    let message = err["message"].as_str().unwrap_or("").to_string();
+
+    let is_context_window = code == "context_length_exceeded"
+        || message.contains("maximum context length")
+        || message.contains("context_length_exceeded");
+    if is_context_window {
+        return Some(ProviderError::ContextWindowExceeded { provider_message: message });
+    }
+    match code {
+        "model_not_found" => Some(ProviderError::ModelNotFound { provider_message: message }),
+        "content_filter" => Some(ProviderError::SafetyFilterTriggered { provider_message: message }),
+        _ => None,
     }
 }
 
@@ -164,131 +163,137 @@ async fn stream_response(
     response: reqwest::Response,
     on_event: &Arc<dyn Fn(StreamEvent) + Send + Sync>,
     cache_tokens: bool,
-) -> Result<ModelResponse> {
+) -> ProviderResult<ModelResponse> {
     use futures_util::StreamExt;
 
+    let mut state = StreamState::default();
     let mut parser = StreamParser::new();
-    let mut text = String::new();
-    let mut tool_calls: HashMap<usize, ToolCallAccumulator> = HashMap::new();
-    let mut status = ResponseStatus::EndTurn;
-    let mut usage = TokenUsage::default();
-    let mut model = String::from("unknown");
-
     let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| AgenticError::Other(e.to_string()))?;
 
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk
+            .map_err(|e| ProviderError::ConnectionFailed { reason: e.to_string() })?;
         for event in parser.push(&chunk) {
             match event {
-                SseEvent::Done => {
-                    on_event(StreamEvent::MessageDone);
-                }
-                SseEvent::Data(json) => {
-                    if let Some(m) = json["model"].as_str() {
-                        model = m.to_string();
-                    }
-
-                    let choice = &json["choices"][0];
-                    let delta = &choice["delta"];
-
-                    // Text content
-                    if let Some(content) = delta["content"].as_str() {
-                        if !content.is_empty() {
-                            text.push_str(content);
-                            on_event(StreamEvent::TextDelta {
-                                index: 0,
-                                text: content.to_string(),
-                            });
-                        }
-                    }
-
-                    // Tool calls (incremental)
-                    if let Some(calls) = delta["tool_calls"].as_array() {
-                        for call in calls {
-                            let idx = call["index"].as_u64().unwrap_or(0) as usize;
-                            let acc = tool_calls.entry(idx).or_insert_with(ToolCallAccumulator::new);
-
-                            if let Some(id) = call["id"].as_str() {
-                                acc.id = id.to_string();
-                            }
-                            if let Some(name) = call["function"]["name"].as_str() {
-                                acc.name = name.to_string();
-                            }
-                            if let Some(args) = call["function"]["arguments"].as_str() {
-                                acc.arguments.push_str(args);
-                                on_event(StreamEvent::InputJsonDelta {
-                                    index: idx,
-                                    partial_json: args.to_string(),
-                                });
-                            }
-                        }
-                    }
-
-                    // Finish reason
-                    if let Some(reason) = choice["finish_reason"].as_str() {
-                        status = parse_status_str(reason);
-                    }
-
-                    // Usage (appears on final chunk when stream_options.include_usage is set)
-                    if json.get("usage").is_some() && !json["usage"].is_null() {
-                        let u = &json["usage"];
-                        usage.input_tokens = u["prompt_tokens"].as_u64().unwrap_or(0);
-                        usage.output_tokens = u["completion_tokens"].as_u64().unwrap_or(0);
-                        if cache_tokens {
-                            usage.cache_read_input_tokens =
-                                u["cache_read_input_tokens"].as_u64().unwrap_or(0);
-                            usage.cache_creation_input_tokens =
-                                u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
-                        }
-                    }
-                }
+                SseEvent::Done => on_event(StreamEvent::MessageDone),
+                SseEvent::Data(json) => ingest_chunk(&json, &mut state, on_event, cache_tokens),
             }
         }
     }
 
-    // Assemble content blocks
-    let mut content = Vec::new();
-    if !text.is_empty() {
-        content.push(ContentBlock::Text { text });
-    }
-    let mut sorted_tools: Vec<_> = tool_calls.into_iter().collect();
-    sorted_tools.sort_by_key(|(idx, _)| *idx);
-    for (_, acc) in sorted_tools {
-        let input = serde_json::from_str(&acc.arguments)
-            .unwrap_or(Value::Object(Default::default()));
-        content.push(ContentBlock::ToolUse {
-            id: acc.id,
-            name: acc.name,
-            input,
-        });
-    }
-
     on_event(StreamEvent::MessageDelta {
-        status: status.clone(),
-        usage: usage.clone(),
+        status: state.status.clone(),
+        usage: state.usage.clone(),
     });
-
-    Ok(ModelResponse {
-        content,
-        status,
-        usage,
-        model,
-    })
+    Ok(state.into_response())
 }
 
+#[derive(Default)]
 struct ToolCallAccumulator {
     id: String,
     name: String,
     arguments: String,
 }
 
-impl ToolCallAccumulator {
-    fn new() -> Self {
-        Self {
-            id: String::new(),
-            name: String::new(),
-            arguments: String::new(),
+#[derive(Default)]
+struct StreamState {
+    text: String,
+    tool_calls: HashMap<usize, ToolCallAccumulator>,
+    status: ResponseStatus,
+    usage: TokenUsage,
+    model: String,
+}
+
+impl StreamState {
+    fn into_response(self) -> ModelResponse {
+        let mut content = Vec::new();
+        if !self.text.is_empty() {
+            content.push(ContentBlock::Text { text: self.text });
         }
+        let mut sorted: Vec<_> = self.tool_calls.into_iter().collect();
+        sorted.sort_by_key(|(idx, _)| *idx);
+        for (_, acc) in sorted {
+            let input = serde_json::from_str(&acc.arguments)
+                .unwrap_or(Value::Object(Default::default()));
+            content.push(ContentBlock::ToolUse { id: acc.id, name: acc.name, input });
+        }
+        ModelResponse {
+            content,
+            status: self.status,
+            usage: self.usage,
+            model: if self.model.is_empty() { "unknown".into() } else { self.model },
+        }
+    }
+}
+
+fn ingest_chunk(
+    json: &Value,
+    state: &mut StreamState,
+    on_event: &Arc<dyn Fn(StreamEvent) + Send + Sync>,
+    cache_tokens: bool,
+) {
+    if let Some(m) = json["model"].as_str() {
+        state.model = m.to_string();
+    }
+    let choice = &json["choices"][0];
+    update_text(&choice["delta"], state, on_event);
+    update_tool_calls(&choice["delta"], state, on_event);
+    if let Some(reason) = choice["finish_reason"].as_str() {
+        state.status = parse_status_str(reason);
+    }
+    if let Some(u) = json.get("usage").filter(|u| !u.is_null()) {
+        parse_streaming_usage(u, cache_tokens, &mut state.usage);
+    }
+}
+
+fn update_text(
+    delta: &Value,
+    state: &mut StreamState,
+    on_event: &Arc<dyn Fn(StreamEvent) + Send + Sync>,
+) {
+    let Some(content) = delta["content"].as_str().filter(|s| !s.is_empty()) else {
+        return;
+    };
+    state.text.push_str(content);
+    on_event(StreamEvent::TextDelta {
+        index: 0,
+        text: content.to_string(),
+    });
+}
+
+fn update_tool_calls(
+    delta: &Value,
+    state: &mut StreamState,
+    on_event: &Arc<dyn Fn(StreamEvent) + Send + Sync>,
+) {
+    let Some(calls) = delta["tool_calls"].as_array() else {
+        return;
+    };
+    for call in calls {
+        let idx = call["index"].as_u64().unwrap_or(0) as usize;
+        let acc = state.tool_calls.entry(idx).or_default();
+        if let Some(id) = call["id"].as_str() {
+            acc.id = id.to_string();
+        }
+        if let Some(name) = call["function"]["name"].as_str() {
+            acc.name = name.to_string();
+        }
+        if let Some(args) = call["function"]["arguments"].as_str() {
+            acc.arguments.push_str(args);
+            on_event(StreamEvent::InputJsonDelta {
+                index: idx,
+                partial_json: args.to_string(),
+            });
+        }
+    }
+}
+
+fn parse_streaming_usage(u: &Value, cache_tokens: bool, dst: &mut TokenUsage) {
+    dst.input_tokens = u["prompt_tokens"].as_u64().unwrap_or(0);
+    dst.output_tokens = u["completion_tokens"].as_u64().unwrap_or(0);
+    if cache_tokens {
+        dst.cache_read_input_tokens = u["cache_read_input_tokens"].as_u64().unwrap_or(0);
+        dst.cache_creation_input_tokens = u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
     }
 }
 
@@ -297,25 +302,20 @@ impl ToolCallAccumulator {
 // ---------------------------------------------------------------------------
 
 fn serialize_request(request: &CompletionRequest) -> Value {
-    let messages = serialize_messages(request);
-    let tools: Vec<Value> = request.tools.iter().map(serialize_tool_definition).collect();
-
     let mut body = serde_json::json!({
         "model": request.model,
-        "messages": messages,
+        "messages": serialize_messages(request),
     });
-
     if let Some(n) = request.max_output_tokens {
         body["max_tokens"] = Value::from(n);
     }
-
-    if !tools.is_empty() {
+    if !request.tools.is_empty() {
+        let tools: Vec<Value> = request.tools.iter().map(serialize_tool_definition).collect();
         body["tools"] = Value::Array(tools);
     }
     if let Some(ref choice) = request.tool_choice {
         body["tool_choice"] = serialize_tool_choice(choice);
     }
-
     body
 }
 
@@ -671,5 +671,118 @@ mod tests {
         let resp = parse_response(json, false);
         assert_eq!(resp.usage.cache_read_input_tokens, 0);
         assert_eq!(resp.usage.cache_creation_input_tokens, 0);
+    }
+
+    // --- Error classification -------------------------------------------
+    //
+    // One test per variant OpenAI-compatible `classify_error` maps, plus a
+    // negative guardrail and a message-preservation check. Tests feed the
+    // classifier a literal HTTP body, showing exactly what makes each case
+    // distinct.
+
+    fn body_400(code: &str, message: &str) -> String {
+        serde_json::json!({
+            "error": {
+                "type": "invalid_request_error",
+                "code": code,
+                "message": message,
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn context_window_exceeded_by_code() {
+        let body = body_400(
+            "context_length_exceeded",
+            "This model's maximum context length is 128000 tokens.",
+        );
+        assert!(matches!(
+            classify_error(400, &body),
+            Some(ProviderError::ContextWindowExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn context_window_exceeded_by_message_fallback() {
+        // Mistral / LiteLLM path — `code` absent, classifier falls back to
+        // matching the message text.
+        let body = serde_json::json!({
+            "error": {
+                "type": "invalid_request_error",
+                "message":
+                    "This model's maximum context length is 32000 tokens, however you requested 40000.",
+            }
+        })
+        .to_string();
+        assert!(matches!(
+            classify_error(400, &body),
+            Some(ProviderError::ContextWindowExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn maps_400_content_filter_to_safety_filter_triggered() {
+        let body = body_400("content_filter", "request blocked by policy");
+        assert!(matches!(
+            classify_error(400, &body),
+            Some(ProviderError::SafetyFilterTriggered { .. })
+        ));
+    }
+
+    #[test]
+    fn maps_400_model_not_found_to_model_not_found() {
+        let body = body_400("model_not_found", "the model `gpt-x` does not exist");
+        assert!(matches!(
+            classify_error(400, &body),
+            Some(ProviderError::ModelNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn maps_http_401_to_authentication_failed() {
+        assert!(matches!(
+            classify_error(401, "boom"),
+            Some(ProviderError::AuthenticationFailed { .. })
+        ));
+    }
+
+    #[test]
+    fn maps_http_403_to_permission_denied() {
+        assert!(matches!(
+            classify_error(403, "boom"),
+            Some(ProviderError::PermissionDenied { .. })
+        ));
+    }
+
+    #[test]
+    fn maps_http_404_to_model_not_found() {
+        assert!(matches!(
+            classify_error(404, "boom"),
+            Some(ProviderError::ModelNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn unrelated_400_falls_through() {
+        let body = body_400("invalid_api_key", "incorrect API key provided");
+        assert!(classify_error(400, &body).is_none());
+    }
+
+    #[test]
+    fn preserves_provider_message() {
+        let body = body_400(
+            "context_length_exceeded",
+            "maximum context length is 8192 tokens; requested 12000",
+        );
+        let Some(ProviderError::ContextWindowExceeded { provider_message }) =
+            classify_error(400, &body)
+        else {
+            panic!("expected ContextWindowExceeded");
+        };
+        assert_eq!(
+            provider_message,
+            "maximum context length is 8192 tokens; requested 12000"
+        );
     }
 }

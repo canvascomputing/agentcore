@@ -26,7 +26,7 @@ use crate::persistence::session::{EntryType, SessionStore, TranscriptEntry};
 use crate::provider::model::ModelSpec;
 use crate::provider::retry::{compute_delay, DEFAULT_BACKOFF_MS, DEFAULT_MAX_REQUEST_RETRIES};
 use crate::provider::types::{ContentBlock, Message, ModelResponse, ResponseStatus, StreamEvent, TokenUsage};
-use crate::provider::{CompletionRequest, LlmProvider, ToolChoice};
+use crate::provider::{CompletionRequest, LlmProvider, ProviderError, ToolChoice};
 use crate::tools::{execute_tool_calls, SpawnAgentTool, Tool, ToolCall, ToolContext, ToolRegistry};
 use crate::util::{generate_agent_name, now_millis};
 
@@ -810,7 +810,11 @@ async fn call_llm(runtime: &Runtime, spec: &AgentSpec, state: &LoopState) -> Res
         }
     });
 
-    runtime.provider.complete_streaming(request, on_event).await
+    runtime
+        .provider
+        .complete_streaming(request, on_event)
+        .await
+        .map_err(AgenticError::from)
 }
 
 async fn call_llm_with_retry(
@@ -1499,13 +1503,13 @@ mod tests {
 mod retry_and_events_tests {
     use super::*;
     use crate::error::AgenticError;
+    use crate::provider::ProviderError;
     use crate::testutil::*;
 
-    fn rate_limit_error() -> AgenticError {
-        AgenticError::Api {
+    fn rate_limit_error() -> ProviderError {
+        ProviderError::RateLimited {
             message: "rate limited".into(),
-            status: Some(429),
-            retryable: true,
+            status: 429,
             retry_after_ms: None,
         }
     }
@@ -1529,11 +1533,8 @@ mod retry_and_events_tests {
 
     #[tokio::test]
     async fn no_retry_on_auth_error() {
-        let provider = MockProvider::with_results(vec![Err(AgenticError::Api {
-            message: "unauthorized".into(),
-            status: Some(401),
-            retryable: false,
-            retry_after_ms: None,
+        let provider = MockProvider::with_results(vec![Err(ProviderError::AuthenticationFailed {
+            provider_message: "unauthorized".into(),
         })]);
         let agent = Agent::new()
             .name("test").model("mock").identity_prompt("")
@@ -1541,7 +1542,10 @@ mod retry_and_events_tests {
 
         let harness = TestHarness::new(provider);
         let err = harness.run_agent(&agent, "go").await.unwrap_err();
-        assert!(matches!(err, AgenticError::Api { status: Some(401), .. }));
+        assert!(matches!(
+            err,
+            AgenticError::Provider(ProviderError::AuthenticationFailed { .. })
+        ));
         assert_eq!(harness.provider().request_count(), 1);
     }
 
