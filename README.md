@@ -16,9 +16,9 @@
   <a href="#development">Development</a>
 </p>
 
-<p align="center">Most agentic applications reimplement the same core. This crate provides that foundation: execution loop, built-in tools, agent orchestration, multi-provider support, schema-based output, and retry mechanisms.</p>
+<p align="center">This crate provides a core implementation for agentic applications: execution loop, built-in tools, agent orchestration, multi-provider support, schema-based output, and retry mechanisms.</p>
 
-<p align="center"><em>Agentwerk combines "agent" with the German "Werk" (factory) — machinery for building agentic systems.</em></p>
+<p align="center"><em>agentwerk combines "agent" with the German "Werk" (factory), thus machinery for building agentic systems.</em></p>
 
 ---
 
@@ -52,86 +52,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Use Cases
 
-Here you find example applications built with this project.
+Example applications built with this project:
+
+- [Project Scanner](crates/use-cases/src/project_scanner/): scan and analyze local files
+- [Deep Research](crates/use-cases/src/deep_research/): multi-agent research with web search (requires `BRAVE_API_KEY`)
+- [Model Pricing Tracker](crates/use-cases/src/model_pricing_tracker/): check model prices
+
+```bash
+make use_case                # list available names
+make use_case name=<name>    # run one
+```
 
 > Consider configuring your LLM provider (see [Environment](#environment)).
 
-### [Project Scanner](crates/use-cases/src/project_scanner/)
-
-A scanner project for scanning and analyzing local files.
-
-```bash
-make use_case name=project-scanner -- ./path
-```
-
-Output:
-```json
-{
-  "languages": ["config", "docs", "rust"],
-  "files": [
-    {
-      "file": "README.md",
-      "summary": "Project documentation for agentwerk, a Rust crate for building agentic LLM applications.",
-      "language": "docs"
-    },
-    {
-      "file": "crates/agentwerk/src/agent/loop.rs",
-      "summary": "Implements the main agent loop that calls an LLM iteratively and executes tool calls.",
-      "language": "rust"
-    }
-  ]
-}
-```
-
-### [Deep Research](crates/use-cases/src/deep_research/)
-
-A simple deep research application. Requires `BRAVE_API_KEY` for web search.
-
-```bash
-make use_case name=deep-research args="What constitutes a good life?"
-```
-
-Output:
-```json
-{
-  "title": "What Constitutes a Good Life: A Multi-Perspective Analysis",
-  "research": "A good life emerges from the convergence of philosophical wisdom, scientific research, and cultural understanding. Key elements include meaningful relationships and social connections, a sense of purpose and personal growth, physical and mental well-being, contributing to something beyond oneself, and living in accordance with personal values. While cultural contexts vary, common themes across traditions emphasize virtue, balance, gratitude, and the cultivation of both inner fulfillment and positive impact on others."
-}
-```
-
-### [Model Pricing Tracker](crates/use-cases/src/model_pricing_tracker/)
-
-A model price checker.
-
-```bash
-make use_case name=model-pricing-tracker
-```
-
-Output:
-```json
-{
-  "models": [
-    {
-      "input_per_million": 3.0,
-      "model_id": "claude-sonnet-4-20250514",
-      "output_per_million": 15.0,
-      "provider": "anthropic"
-    },
-    {
-      "input_per_million": 1.0,
-      "model_id": "claude-haiku-4-5-20251001",
-      "output_per_million": 5.0,
-      "provider": "anthropic"
-    }
-  ]
-}
-```
-
 ## API
 
-This crate provides a core implementation of agentic behavior: execution loop, built-in tools, agent orchestration, multi-provider support, schema-based output, and retry mechanisms.
+- [Provider Integrations](#provider-integrations): multi-provider support
+- [Prompting](#prompting): identity, instruction, context, behavior
+- [Sub-agents](#sub-agents): orchestrate nested workers
+- [Guardrails](#guardrails): retries, token caps, and turn limits
+- [AgentPool](#agentpool): parallel execution
+- [Events](#events): inspect agent and provider activity
+- [Tools](#tools): built-in file, search, shell, and web tools
+- [AgentOutput](#agentoutput): validated, schema-based responses
+- [LLM Request Composition](#llm-request-composition): how a request is assembled
+- [Todo](#todo): planned work
 
-### Supported Providers
+### Provider Integrations
 
 You can integrate your agentic application with the following providers:
 
@@ -144,7 +91,7 @@ let provider = OpenAiProvider::new(key);
 let provider = LiteLLMProvider::new(key);
 ```
 
-### Agent
+### Prompting
 
 The main interface for launching an agent:
 
@@ -161,16 +108,14 @@ let output = Agent::new()
     .await?;
 ```
 
-#### Prompting
-
 Prompts are the core piece of every agentic application.
 
-| Method | File variant | Purpose |
-|--------|-------------|---------|
-| `identity_prompt` | `identity_prompt_file` | Persistent identity of the agent |
-| `instruction_prompt` | `instruction_prompt_file` | Task for the current run |
-| `context_prompt` | `context_prompt_file` | Additional context appended after environment metadata (working directory, platform, OS version, date) |
-| `behavior_prompt` | `behavior_prompt_file` | Override the default behavioral directives (`DEFAULT_BEHAVIOR_PROMPT`) |
+| Method | Purpose |
+|--------|---------|
+| `identity_prompt(_file)` | Persistent identity of the agent |
+| `instruction_prompt(_file)` | Task for the current run |
+| `context_prompt(_file)` | Additional context appended after environment metadata (working directory, platform, OS version, date) |
+| `behavior_prompt(_file)` | Override the default behavioral directives (`DEFAULT_BEHAVIOR_PROMPT`) |
 
 ```rust
 Agent::new()
@@ -188,7 +133,7 @@ Agent::new()
     .template_variable("language", json!("German"))
 ```
 
-#### Sub-agents
+### Sub-agents
 
 Sub-agents allow orchestrator agents to launch her own workers. 
 Orchestrator agents automatically have access to the `SpawnAgentTool`.
@@ -209,7 +154,7 @@ let output = Agent::new()
     .sub_agents([r1, r2])
 ```
 
-##### Inheritance
+#### Inheritance
 
 The following fields are inherited, shared or owned by the sub-agents:
 
@@ -217,10 +162,9 @@ The following fields are inherited, shared or owned by the sub-agents:
 |---|---|
 | Inherited | `provider`, `model`, `working_directory`, `event_handler`, `cancel_signal` |
 | Shared | `command_queue`, `session_store` |
-| Per sub-agent | `identity_prompt`, `behavior_prompt`, `context_prompt`, `tools`, `output_schema`, `max_turns`, `max_tokens`, `max_schema_retries`, `max_request_retries`, `request_retry_backoff_ms` |
-| Per sub-agent invocation | `instruction_prompt` |
+| Per sub-agent | `identity_prompt`, `instruction_prompt`, `behavior_prompt`, `context_prompt`, `tools`, `output_schema`, `max_turns`, `max_tokens`, `max_schema_retries`, `max_request_retries`, `request_retry_backoff_ms` |
 
-#### Guardrails
+### Guardrails
 
 For protecting your budget or data, you can define clear execution rules for typical LLM failures:
 
@@ -392,6 +336,13 @@ Each LLM request is assembled from the following parts:
 | **message** | `Message[]` | `context_prompt()`<br>`instruction_prompt()` | The conversation history between user and assistant, starting with metadata, context, and the task |
 | **tools** | `ToolDefinition[]` | `tool()` | The functions the model can call during execution |
 
+### Todo
+
+Planned additions to the crate:
+
+- Context compression: summarize older messages when a conversation exceeds the LLM context window
+- Session state handling: resume and persist agent sessions across runs
+
 ## Development
 
 ### Building and testing
@@ -416,8 +367,8 @@ make test_integration name=bash_usage     # run one
 ### Use cases
 
 ```bash
-make use_case                                              # list available
-make use_case name=project-scanner -- ./                   # run one
+make use_case                                                 # list available
+make use_case name=project-scanner -- ./                      # run one
 make use_case name=deep-research args="What is a good life?"  # with arguments
 ```
 
@@ -434,7 +385,7 @@ make publish               # publish to crates.io (runs tests first)
 Start a local LiteLLM proxy on port 4000 that forwards to a provider. Requires Docker.
 
 ```bash
-make litellm                       # default: anthropic
+make litellm                               # default: anthropic
 make litellm LITELLM_PROVIDER=openai       # use OpenAI
 make litellm LITELLM_PROVIDER=mistral      # use Mistral
 ```
@@ -443,6 +394,7 @@ make litellm LITELLM_PROVIDER=mistral      # use Mistral
 
 Use cases and integration tests use the following environment variables:
 
+**General**
 | Variable | Description |
 |----------|-------------|
 | `LITELLM_PROVIDER` | Explicit provider selection (`anthropic`, `mistral`, `openai`, `litellm`). Skips auto-detection |

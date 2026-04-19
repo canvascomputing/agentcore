@@ -121,7 +121,7 @@ The README is the public face of the library. Keep it terse, example-driven, and
 - **Use `>` blockquotes for callouts** — tips, prerequisites, cross-references. Example: `> Consider configuring your LLM provider (see [Environment](#environment)).`
 - **Use cases show real output.** Every entry in Use Cases includes the invocation (`make use_case ...`) and a realistic JSON output block. No placeholder results.
 - **Cross-link, don't repeat.** Reference the Environment section from anywhere that mentions provider setup; reference Inheritance when discussing sub-agents. Keep each fact in one place.
-- **Headers**: `#` title, `##` top-level (Installation, API, Development), `###` features (Agent, AgentPool, Tools), `####` sub-features (Prompting, Sub-agents, Guardrails), `#####` nested topics (Inheritance).
+- **Headers**: `#` title, `##` top-level (Installation, API, Development), `###` features (Agent, Prompting, Sub-agents, Guardrails, AgentPool, Tools), `####` nested topics (Inheritance).
 - **Voice**: direct, imperative, no marketing. "Give your agent access to simple tools" — not "empower your application with…". Keep the one-sentence tagline style ("A minimal Rust crate that…").
 - **Keep examples minimal.** Show the smallest snippet that demonstrates the feature. Elide unrelated setup with `...` or obvious imports. Use `claude-haiku-4-5-20251001` / `claude-sonnet-4-20250514` as example models to stay consistent.
 - **Update triggers**: a new builder method, a new tool, a new event kind, a new env variable, or a changed default all require a README edit in the matching table. Structural/internal changes do not.
