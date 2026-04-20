@@ -65,16 +65,16 @@ make use_case name=<name>    # run one
 ## API
 
 - [Providers](#providers): multi-provider support
-- [Agent](#agent): the base interface
+- [Agents](#agents): the base interface
 - [Models](#models): context window auto-detection
 - [Prompting](#prompting): identity, instruction, context, behavior
-- [Sub-agents](#sub-agents): orchestrate nested workers
+- [Sub-agents](#sub-agents): nested workers
 - [Guardrails](#guardrails): retries, token caps, and turn limits
 - [AgentPool](#agentpool): parallel execution
-- [Events](#events): inspect agent and provider activity
+- [Events](#events): agent and provider activity
 - [Tools](#tools): built-in file, search, shell, and web tools
 - [AgentOutput](#agentoutput): validated, schema-based responses
-- [LLM Request Composition](#llm-request-composition): how a request is assembled
+- [LLM Request Composition](#llm-request-composition): request assembly
 - [Todo](#todo): planned work
 
 ### Providers
@@ -103,6 +103,40 @@ let output = Agent::new()
     .run()
     .await?;
 ```
+
+#### Keep Agents Alive
+
+For a long-running agent that should accept new instructions, call `.create()`. It spawns an agentic loop on a background task and returns a `RunningAgent` handle:
+
+```rust
+let agent = Agent::new()
+    .provider(provider)
+    .model("claude-sonnet-4-20250514")
+    .identity_prompt("Answer questions about the codebase.")
+    .tool(ReadFileTool)
+    .keep_alive_unlimited()
+    .create();
+
+// Stop the agent on Ctrl-C from any task.
+let stopper = agent.clone();
+tokio::spawn(async move {
+    tokio::signal::ctrl_c().await.ok();
+    stopper.cancel();
+});
+
+agent.send("What does src/main.rs do?");
+agent.send("Now summarize src/lib.rs.");
+
+let output = agent.run().await?;
+```
+
+| Method | Description |
+|--------|-------------|
+| `send(instruction)` | Deliver an instruction to the agent |
+| `cancel()` | Signal the agent to stop |
+| `is_cancelled()` | Check if the agent was cancelled |
+| `run().await` | Await the agent's completion |
+| `clone()` | Create another handle to the same running agent |
 
 ### Models
 
@@ -134,8 +168,8 @@ let output = Agent::new()
 
 The following prompts can be configured:
 
-| Method | Purpose |
-|--------|---------|
+| Method | Description |
+|--------|-------------|
 | `identity_prompt(_file)` | Persistent identity of the agent |
 | `instruction_prompt(_file)` | Task for the current run |
 | `context_prompt(_file)` | Additional context appended after environment metadata (working directory, platform, OS version, date) |
@@ -192,7 +226,7 @@ The following fields are inherited, shared or owned by the sub-agents:
 
 For protecting your budget or data, you can define clear execution rules for typical LLM failures:
 
-| Method | Default | What it does |
+| Method | Default | Description |
 |--------|---------|-------------|
 | `.max_turns(10)` | no limit | Stop after N agentic loop iterations |
 | `.max_tokens(4096)` | provider default | Cap output tokens per LLM request |

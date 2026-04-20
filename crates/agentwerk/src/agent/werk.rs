@@ -38,6 +38,7 @@ use super::event::{AgentEvent, AgentEventKind};
 use super::output::{AgentOutput, AgentStatus, OutputSchema, AgentStatistics};
 use super::prompts::{self as prompts, DEFAULT_BEHAVIOR_PROMPT};
 use super::queue::{CommandQueue, QueuePriority};
+use super::running::RunningAgent;
 
 // ---------------------------------------------------------------------------
 // Agent — the single public user-facing type
@@ -134,6 +135,7 @@ pub(crate) struct AgentRuntime {
     pub working_directory: Option<PathBuf>,
     pub event_handler: Option<Arc<dyn Fn(AgentEvent) + Send + Sync>>,
     pub cancel_signal: Option<Arc<AtomicBool>>,
+    pub command_queue: Option<Arc<CommandQueue>>,
     pub session_dir: Option<PathBuf>,
 }
 
@@ -383,6 +385,12 @@ impl Agent {
         self.with_runtime(|r| r.cancel_signal = Some(s))
     }
 
+    /// Install an externally-owned command queue. Only used by `Agent::create`
+    /// so the returned `RunningAgent` can inject instructions into the loop.
+    pub(crate) fn command_queue(self, q: Arc<CommandQueue>) -> Self {
+        self.with_runtime(|r| r.command_queue = Some(q))
+    }
+
     /// Enable session transcript persistence to the given directory.
     pub fn session_dir(self, d: impl Into<PathBuf>) -> Self {
         let d = d.into();
@@ -404,6 +412,22 @@ impl Agent {
         let runtime = LoopRuntime::from_agent(self)?;
         let spec = AgentSpec::compile(self, &runtime, None)?;
         run_loop(Arc::new(runtime), Arc::new(spec), None).await
+    }
+
+    /// Start the agent on a background tokio task and return a
+    /// [`RunningAgent`] handle for injecting new instructions, cancelling, or
+    /// awaiting the final output.
+    ///
+    /// Requires a running tokio runtime (`tokio::spawn` is invoked
+    /// synchronously). Requires `.provider()` and `.instruction_prompt()`.
+    pub fn create(self) -> RunningAgent {
+        let queue = Arc::new(CommandQueue::new());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let prepared = self
+            .cancel_signal(cancel.clone())
+            .command_queue(queue.clone());
+        let join = tokio::spawn(async move { prepared.run().await });
+        RunningAgent::new(queue, cancel, join)
     }
 
     /// Crate-internal: run this agent as a child under a parent's `LoopRuntime`.
@@ -519,8 +543,15 @@ impl LoopRuntime {
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
 
         // Every root run gets a command queue so background sub-agents can post
-        // notifications back to the parent.
-        let command_queue = Some(Arc::new(CommandQueue::new()));
+        // notifications back to the parent. An externally supplied queue
+        // (e.g. from `Agent::create`) wins so the handle can reach the loop.
+        let command_queue = Some(
+            agent
+                .runtime
+                .command_queue
+                .clone()
+                .unwrap_or_else(|| Arc::new(CommandQueue::new())),
+        );
 
         let session_store = agent.runtime.session_dir.as_ref().map(|dir| {
             let store = SessionStore::new(dir, &generate_agent_name("session"));
@@ -2096,6 +2127,41 @@ mod tests {
         assert_eq!(
             output.statistics.turns, 2,
             "two pending messages should drain into ONE additional turn, not two"
+        );
+    }
+
+    #[test]
+    fn from_agent_uses_externally_supplied_queue_and_cancel() {
+        let queue = Arc::new(CommandQueue::new());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let agent = Agent::new()
+            .provider(Arc::new(MockProvider::text("x")))
+            .instruction_prompt("")
+            .cancel_signal(cancel.clone())
+            .command_queue(queue.clone());
+
+        let rt = LoopRuntime::from_agent(&agent).unwrap();
+
+        assert!(
+            Arc::ptr_eq(rt.command_queue.as_ref().unwrap(), &queue),
+            "LoopRuntime should reuse the externally supplied queue"
+        );
+        assert!(
+            Arc::ptr_eq(&rt.cancel_signal, &cancel),
+            "LoopRuntime should reuse the externally supplied cancel signal"
+        );
+    }
+
+    #[test]
+    fn from_agent_allocates_default_queue_when_none_supplied() {
+        let agent = Agent::new()
+            .provider(Arc::new(MockProvider::text("x")))
+            .instruction_prompt("");
+
+        let rt = LoopRuntime::from_agent(&agent).unwrap();
+        assert!(
+            rt.command_queue.is_some(),
+            "default queue must be allocated so peer messaging still works"
         );
     }
 }
