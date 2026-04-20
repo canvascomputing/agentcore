@@ -37,8 +37,8 @@ async fn orchestrator_sends_message_to_backgrounded_worker(
     });
 
     // Shared cancel signal — set on the orchestrator; the worker inherits it
-    // via LoopRuntime::inherit. We flip it from the test body after the worker
-    // has had time to process the peer message, to release its idle wait.
+    // via Agent::compile (child path). We flip it from the test body after the
+    // worker has had time to process the peer message, to release its idle wait.
     let cancel = Arc::new(AtomicBool::new(false));
 
     let worker = Agent::new()

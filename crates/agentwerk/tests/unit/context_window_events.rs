@@ -150,7 +150,7 @@ async fn state_machine_advances_one_turn_at_a_time() {
     let state = |i: usize| canonicalize(&render(&reqs[i]));
 
     // --- S0: initial state ------------------------------------------
-    // Set up by `LoopState::init`: env metadata + context + instruction.
+    // Set up by `LoopState::initial`: env metadata + context + instruction.
     assert_eq!(state(0), S0_INITIAL);
 
     // --- turn 1 → S1 ------------------------------------------------

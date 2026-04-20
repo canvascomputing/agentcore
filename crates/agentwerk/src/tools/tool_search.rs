@@ -191,13 +191,14 @@ mod tests {
 
     #[tokio::test]
     async fn marks_found_tools_as_discovered() {
-        use crate::agent::{Agent, LoopRuntime};
+        use crate::agent::Agent;
 
         let registry = registry_with_mock_tools();
         let agent = Agent::new().name("t").model("mock").identity_prompt("").provider(Arc::new(
             crate::testutil::MockProvider::text("ok"),
         ));
-        let runtime = Arc::new(LoopRuntime::from_agent(&agent).unwrap());
+        let (runtime, _) = agent.compile(None).unwrap();
+        let runtime = Arc::new(runtime);
         let ctx = ToolContext::new(std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")))
             .registry(registry)
             .runtime(runtime.clone());

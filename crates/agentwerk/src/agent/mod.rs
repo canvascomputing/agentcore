@@ -1,5 +1,6 @@
 pub(crate) mod compact;
 mod event;
+pub(crate) mod r#loop;
 mod output;
 mod pool;
 pub(crate) mod prompts;
@@ -14,4 +15,4 @@ pub use pool::{AgentPool, AgentJobId, AgentPoolStrategy};
 pub use prompts::DEFAULT_BEHAVIOR_PROMPT;
 pub use running::RunningAgent;
 pub use werk::Agent;
-pub(crate) use werk::{AgentSpec, LoopRuntime};
+pub(crate) use r#loop::{LoopRuntime, LoopSpec};

@@ -87,7 +87,7 @@ impl Toolable for SendMessageTool {
             let caller = ctx
                 .caller_spec
                 .as_ref()
-                .ok_or_else(|| tool_err("caller AgentSpec not available in ToolContext"))?;
+                .ok_or_else(|| tool_err("caller LoopSpec not available in ToolContext"))?;
             let queue = runtime
                 .command_queue
                 .as_ref()
@@ -123,13 +123,13 @@ fn tool_err(message: impl Into<String>) -> AgenticError {
 mod tests {
     use super::*;
     use crate::agent::queue::CommandQueue;
-    use crate::agent::{Agent, AgentSpec, LoopRuntime};
+    use crate::agent::{Agent, LoopRuntime, LoopSpec};
     use crate::testutil::*;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
-    fn harness_ctx() -> (ToolContext, Arc<CommandQueue>, Arc<AgentSpec>) {
+    fn harness_ctx() -> (ToolContext, Arc<CommandQueue>, Arc<LoopSpec>) {
         let queue = Arc::new(CommandQueue::new());
         let runtime = LoopRuntime {
             provider: Arc::new(MockProvider::text("unused")),
@@ -142,7 +142,7 @@ mod tests {
             discovered_tools: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         };
         let caller = Agent::new().name("alice").model("mock").identity_prompt("");
-        let spec = Arc::new(AgentSpec::compile(&caller, &runtime, None).unwrap());
+        let spec = Arc::new(caller.compile_spec(&runtime, None).unwrap());
         let ctx = ToolContext::new(PathBuf::from("."))
             .runtime(Arc::new(runtime))
             .caller_spec(spec.clone());

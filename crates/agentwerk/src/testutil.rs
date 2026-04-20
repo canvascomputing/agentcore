@@ -363,25 +363,11 @@ impl TestHarness {
         for (k, v) in &self.template_variables {
             prepared = prepared.template_variable(k.clone(), v.clone());
         }
-        // If the harness carries a pre-built command queue, we need to share
-        // it with the agent's LoopRuntime. We do that by running via run_with_parts.
+        // If the harness carries a pre-built command queue, install it on the
+        // agent so `Agent::compile` wires it onto the LoopRuntime.
         #[cfg(test)]
         if let Some(queue) = &self.command_queue {
-            use crate::agent::{AgentSpec, LoopRuntime};
-            let runtime = LoopRuntime {
-                provider: self.provider.clone(),
-                event_handler: self.events.callback(),
-                cancel_signal: self.cancel_signal.clone(),
-                working_directory: self.working_directory.clone(),
-                command_queue: Some(queue.clone()),
-                session_store: None,
-                metadata: None,
-                discovered_tools: Arc::new(Mutex::new(std::collections::HashSet::new())),
-            };
-            let spec = AgentSpec::compile(&prepared, &runtime, None)?;
-            return prepared
-                .run_with_parts(Arc::new(runtime), Arc::new(spec))
-                .await;
+            prepared = prepared.command_queue(queue.clone());
         }
         prepared.run().await
     }

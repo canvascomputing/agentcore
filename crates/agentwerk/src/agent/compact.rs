@@ -5,7 +5,7 @@
 //! today.
 
 use crate::agent::event::{AgentEvent, AgentEventKind};
-use crate::agent::werk::{AgentSpec, LoopState, LoopRuntime};
+use crate::agent::r#loop::{LoopRuntime, LoopSpec, LoopState};
 use crate::error::{AgenticError, Result};
 use crate::provider::types::{ContentBlock, Message};
 
@@ -54,7 +54,7 @@ fn text_bytes_in_content_block(block: &ContentBlock) -> usize {
 /// the agent's model has no known context window size.
 pub(crate) async fn trigger_if_over_threshold(
     runtime: &LoopRuntime,
-    spec: &AgentSpec,
+    spec: &LoopSpec,
     state: &mut LoopState,
 ) -> Result<()> {
     let Some(threshold) = spec.model.compact_threshold() else {
@@ -82,7 +82,7 @@ pub(crate) async fn trigger_if_over_threshold(
 /// mid-generation.
 pub(crate) async fn trigger_reactive(
     runtime: &LoopRuntime,
-    spec: &AgentSpec,
+    spec: &LoopSpec,
     state: &mut LoopState,
     turn: u32,
 ) -> Result<()> {
@@ -102,7 +102,7 @@ pub(crate) async fn trigger_reactive(
 /// `AgenticError::NotImplemented` so callers see the trigger fired.
 pub(crate) async fn run(
     _runtime: &LoopRuntime,
-    _spec: &AgentSpec,
+    _spec: &LoopSpec,
     _state: &mut LoopState,
     _reason: CompactReason,
 ) -> Result<()> {

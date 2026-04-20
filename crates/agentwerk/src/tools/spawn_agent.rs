@@ -14,7 +14,7 @@ use crate::tools::tool::{Toolable, ToolContext, ToolResult};
 const DEFAULT_IDENTITY: &str = "You are a focused helper agent. Answer concisely.";
 
 /// LLM-facing tool that spawns a sub-agent. Carries no state — every per-call
-/// detail (caller's `LoopRuntime`, `AgentSpec`) flows in via `ToolContext`.
+/// detail (caller's `LoopRuntime`, `LoopSpec`) flows in via `ToolContext`.
 pub struct SpawnAgentTool;
 
 /// Tool-control fields. Per-agent config overrides (identity, model, max_*, …)
@@ -146,7 +146,7 @@ impl Toolable for SpawnAgentTool {
                 .as_ref()
                 .ok_or_else(|| AgenticError::Tool {
                     tool_name: "spawn_agent".into(),
-                    message: "caller AgentSpec not available in ToolContext".into(),
+                    message: "caller LoopSpec not available in ToolContext".into(),
                 })?
                 .clone();
 
@@ -180,11 +180,11 @@ impl Toolable for SpawnAgentTool {
                 let id = generate_agent_name(&args.description);
                 let queue = runtime.command_queue.clone();
                 let agent_id = id.clone();
-                let parent_model = caller.model.clone();
+                let caller_for_child = caller.clone();
                 let description_for_child = description.clone();
                 tokio::spawn(async move {
                     let summary = match agent
-                        .run_child(&runtime, &parent_model, description_for_child)
+                        .run_child(&runtime, &caller_for_child, description_for_child)
                         .await
                     {
                         Ok(o) => o.response_raw,
@@ -199,7 +199,7 @@ impl Toolable for SpawnAgentTool {
                     args.description
                 )))
             } else {
-                match agent.run_child(&runtime, &caller.model, description).await {
+                match agent.run_child(&runtime, &caller, description).await {
                     Ok(o) => Ok(ToolResult::success(o.response_raw)),
                     Err(e) => Ok(ToolResult::error(format!("Agent error: {e}"))),
                 }

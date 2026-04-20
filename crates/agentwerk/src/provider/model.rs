@@ -4,7 +4,7 @@ use super::{AnthropicProvider, MistralProvider, OpenAiProvider};
 ///
 /// Built by [`Model::from_id`] (registry-backed) or
 /// [`Model::with_context_window_size`] (explicit override). `Model` is what
-/// `ModelSpec::Exact` stores, what `AgentSpec.model` holds at runtime, and
+/// `ModelSpec::Exact` stores, what `LoopSpec.model` holds at runtime, and
 /// what the compaction seams read to decide when to fire.
 #[derive(Debug, Clone)]
 pub struct Model {
