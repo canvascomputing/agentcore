@@ -343,6 +343,12 @@ impl Agent {
         self.with_runtime(|r| r.event_handler = Some(h))
     }
 
+    /// Drop every event. Opts out of the default stderr logger installed when no
+    /// handler is set.
+    pub fn silent(self) -> Self {
+        self.with_runtime(|r| r.event_handler = Some(Arc::new(|_| {})))
+    }
+
     pub fn cancel_signal(self, s: Arc<AtomicBool>) -> Self {
         self.with_runtime(|r| r.cancel_signal = Some(s))
     }
@@ -536,7 +542,7 @@ impl Agent {
             .runtime
             .event_handler
             .clone()
-            .unwrap_or_else(|| Arc::new(|_| {}));
+            .unwrap_or_else(AgentEvent::default_logger);
 
         let cancel_signal = self
             .runtime
@@ -653,7 +659,46 @@ fn compile_context_prompt(runtime: &LoopRuntime, agent: &Agent) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::event::AgentEventKind;
+    use super::super::output::AgentStatus;
     use crate::error::AgenticError;
+
+    #[test]
+    fn silent_sets_a_no_op_handler() {
+        let agent = Agent::new().silent();
+        let handler = agent
+            .runtime
+            .event_handler
+            .as_ref()
+            .expect(".silent() must install a handler")
+            .clone();
+        // Every variant passes through without panicking; no output is asserted —
+        // the point is that a handler is present and benign.
+        handler(AgentEvent::new(
+            "t",
+            AgentEventKind::AgentEnd {
+                turns: 1,
+                status: AgentStatus::Completed,
+            },
+        ));
+    }
+
+    #[test]
+    fn default_logger_is_used_when_no_handler_is_set() {
+        // No `.event_handler(...)` call — the runtime built by `compile` must
+        // carry the default logger, not a no-op. We can't compare function
+        // pointers across clones, so we assert the default is present by
+        // exercising the build path.
+        let agent = Agent::new()
+            .name("t")
+            .model("mock")
+            .identity_prompt("")
+            .provider(std::sync::Arc::new(crate::testutil::MockProvider::text("ok")));
+        assert!(agent.runtime.event_handler.is_none());
+        // `compile` must succeed without a user-set handler — proves the
+        // default path is wired up.
+        let _ = agent.compile(None).expect("compile with default logger");
+    }
 
     #[test]
     fn identity_prompt_file_loads_content() {

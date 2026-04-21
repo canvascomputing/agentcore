@@ -1,8 +1,6 @@
 use super::common;
 
-use std::sync::Arc;
-
-use agentwerk::{Agent, BashTool, AgentEvent, AgentEventKind};
+use agentwerk::{Agent, BashTool};
 
 #[tokio::test]
 async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -22,14 +20,6 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
             }
         },
         "required": ["files", "line_count"]
-    });
-
-    let event_handler = Arc::new(|event: AgentEvent| match &event.kind {
-        AgentEventKind::ToolCallStart { tool_name, input, .. } => {
-            eprintln!("[tool] {tool_name}({input})")
-        }
-        AgentEventKind::AgentEnd { turns, .. } => eprintln!("[done in {turns} turn(s)]"),
-        _ => {}
     });
 
     let ls = BashTool::new("ls", "ls*").read_only(true);
@@ -52,7 +42,6 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .tool(wc)
         .output_schema(output_schema)
         .max_turns(10)
-        .event_handler(event_handler)
         .run()
         .await?;
 

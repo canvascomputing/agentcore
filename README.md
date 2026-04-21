@@ -18,7 +18,7 @@
 
 <p align="center">This crate provides a core implementation for agentic applications: execution loop, built-in tools, agent orchestration, multi-provider support, schema-based output, and retry mechanisms.</p>
 
-<p align="center"><em>agentwerk combines "agent" with the German "Werk" (factory), thus machinery for building agentic systems.</em></p>
+<p align="center"><em>agentwerk pairs "agent" with the German "Werk," a word that means both factory and artwork; machinery for building agentic systems, engineered like a craft.</em></p>
 
 ---
 
@@ -69,13 +69,12 @@ make use_case name=<name>    # run one
 - [Agents](#agents): the base interface
 - [Models](#models): context window auto-detection
 - [Prompting](#prompting): identity, instruction, context, behavior
-- [Sub-agents](#sub-agents): nested workers
-- [Guardrails](#guardrails): retries, token caps, and turn limits
-- [AgentPool](#agentpool): parallel execution
-- [Events](#events): agent and provider activity
 - [Tools](#tools): built-in file, search, shell, and web tools
+- [Events](#events): agent and provider activity
+- [Guardrails](#guardrails): retries, token caps, and turn limits
 - [AgentOutput](#agentoutput): validated, schema-based responses
-- [LLM Request Composition](#llm-request-composition): request assembly
+- [Sub-agents](#sub-agents): nested workers
+- [AgentPool](#agentpool): parallel execution
 - [Todo](#todo): planned work
 
 ### Providers
@@ -193,127 +192,6 @@ Agent::new()
     .template_variable("language", json!("German"))
 ```
 
-### Sub-agents
-
-Sub-agents allow orchestrator agents to launch her own workers. 
-Orchestrator agents automatically have access to the `SpawnAgentTool`.
-
-```rust
-let researcher_base = Agent::new()
-    .model("claude-haiku-4-5-20251001")
-    .identity_prompt("Research this topic.")
-    .tool(brave_search_tool())
-    .max_turns(3);
-
-let r1 = researcher_base.clone().name("researcher_1");
-let r2 = researcher_base.clone().name("researcher_2");
-
-let output = Agent::new()
-    .name("orchestrator")
-    .identity_prompt("Coordinate research.")
-    .sub_agents([r1, r2])
-```
-
-#### Inheritance
-
-The following fields are inherited, shared or owned by the sub-agents:
-
-| Behavior | Fields |
-|---|---|
-| Inherited | `provider`, `model`, `working_directory`, `event_handler`, `cancel_signal` |
-| Shared | `command_queue`, `session_store` |
-| Per sub-agent | `identity_prompt`, `instruction_prompt`, `behavior_prompt`, `context_prompt`, `tools`, `output_schema`, `max_turns`, `max_tokens`, `max_schema_retries`, `max_request_retries`, `request_retry_backoff_ms` |
-
-### Guardrails
-
-For protecting your budget or data, you can define clear execution rules for typical LLM failures:
-
-| Method | Default | Description |
-|--------|---------|-------------|
-| `.max_turns(10)` | no limit | Stop after N agentic loop iterations |
-| `.max_tokens(4096)` | provider default | Cap output tokens per LLM request |
-| `.max_schema_retries(3)` | 10 | Retry structured output compliance |
-| `.max_request_retries(5)` | 3 | Retry on transient API errors (429, 529, 5xx) |
-| `.request_retry_backoff_ms(2000)` | 10,000 | Base delay for exponential backoff (`ms * 2^attempt`) |
-| `.keep_alive()` | off | Stay alive listening for incoming messages, exiting only on cancel. |
-
-To abort from outside the agent, use `.cancel_signal(signal)` — see
-[Inheritance](#inheritance) for how it propagates across sub-agents.
-
-### AgentPool
-
-Orchestrate complex workflows in parallel. Use different execution strategies:
-
-- `CompletionOrder`: results are returned as each agent finishes (default).
-- `SpawnOrder`: results are returned in the order agents were spawned.
-
-```rust
-use agentwerk::{Agent, AgentPool, AgentPoolStrategy, ReadFileTool};
-
-let template = Agent::new()
-    .model("claude-haiku-4-5-20251001")
-    .tool(ReadFileTool);
-
-let pool = AgentPool::new()
-    .batch_size(10)
-    .ordering(AgentPoolStrategy::SpawnOrder);
-
-for doc in ["document A", "document B"] {
-    pool.spawn(
-        template
-            .clone()
-            .provider(provider.clone())
-            .instruction_prompt(format!("Summarize {doc}"))
-    )
-    .await;
-}
-
-let results = pool.drain().await; // Vec<(AgentJobId, Result<AgentOutput>)>
-```
-
-`spawn()` can be called after the pool has started processing. If the pool
-is at capacity, it waits for a free slot.
-
-### Events
-
-You can inspect what your agent is doing and how the LLM provider API is used:
-
-```rust
-use agentwerk::{AgentEvent, AgentEventKind};
-
-let handler = Arc::new(|event: AgentEvent| match &event.kind {
-    AgentEventKind::ToolCallStart { tool_name, .. } => {
-        eprintln!("[{}] → {tool_name}", event.agent_name);
-    }
-    AgentEventKind::ToolCallError { tool_name, error, .. } => {
-        eprintln!("[{}] ✗ {tool_name}: {error}", event.agent_name);
-    }
-    AgentEventKind::AgentEnd { turns, status } => {
-        eprintln!("[{}] done in {turns} turns ({status:?})", event.agent_name);
-    }
-    _ => {}
-});
-```
-
-| | Kind | Description |
-|-|------|-------------|
-| **Agent** | `AgentStart` | Agent run begins |
-| | `AgentEnd` | Agent run ends; `status` encodes the outcome (completed, cancelled, turn-limit, budget) |
-| | `TurnStart` | Agentic loop turn begins |
-| | `TurnEnd` | Agentic loop turn ends |
-| | `AgentIdle` | Keep-alive agent waits for new input |
-| | `AgentResumed` | Keep-alive agent resumes after idle |
-| | `CompactTriggered` | Context window nears its limit and triggers compaction |
-| **Provider** | `RequestStart` | Provider request begins |
-| | `RequestEnd` | Provider request ends |
-| | `ResponseTextChunk` | Streamed text token arrives |
-| | `TokenUsage` | Provider reports token counts for the last request |
-| | `OutputTruncated` | Response exceeds the allowed length and is cut off |
-| **Tools** | `ToolCallStart` | Tool invocation begins |
-| | `ToolCallEnd` | Tool invocation succeeds |
-| | `ToolCallError` | Tool invocation fails |
-
-
 ### Tools
 
 Give your agent access to simple tools for driving tasks:
@@ -373,6 +251,64 @@ let agent = Agent::new()
     .run().await?;
 ```
 
+### Events
+
+You can inspect what your agent is doing and how the LLM provider API is used:
+
+```rust
+use agentwerk::{AgentEvent, AgentEventKind};
+
+let handler = Arc::new(|event: AgentEvent| match &event.kind {
+    AgentEventKind::ToolCallStart { tool_name, .. } => {
+        eprintln!("[{}] → {tool_name}", event.agent_name);
+    }
+    AgentEventKind::ToolCallError { tool_name, error, .. } => {
+        eprintln!("[{}] ✗ {tool_name}: {error}", event.agent_name);
+    }
+    AgentEventKind::AgentEnd { turns, status } => {
+        eprintln!("[{}] done in {turns} turns ({status:?})", event.agent_name);
+    }
+    _ => {}
+});
+```
+
+> Without `.event_handler(...)`, agents log tool activity and lifecycle to
+> stderr via `AgentEvent::default_logger()`. Call `.silent()` on the agent to opt out.
+
+| | Kind | Description |
+|-|------|-------------|
+| **Agent** | `AgentStart` | Agent run begins |
+| | `AgentEnd` | Agent run ends; `status` encodes the outcome (completed, cancelled, turn-limit, budget) |
+| | `TurnStart` | Agentic loop turn begins |
+| | `TurnEnd` | Agentic loop turn ends |
+| | `AgentIdle` | Keep-alive agent waits for new input |
+| | `AgentResumed` | Keep-alive agent resumes after idle |
+| | `CompactTriggered` | Context window nears its limit and triggers compaction |
+| **Provider** | `RequestStart` | Provider request begins |
+| | `RequestEnd` | Provider request ends |
+| | `ResponseTextChunk` | Streamed text token arrives |
+| | `TokenUsage` | Provider reports token counts for the last request |
+| | `OutputTruncated` | Response exceeds the allowed length and is cut off |
+| **Tools** | `ToolCallStart` | Tool invocation begins |
+| | `ToolCallEnd` | Tool invocation succeeds |
+| | `ToolCallError` | Tool invocation fails |
+
+### Guardrails
+
+For protecting your budget or data, you can define clear execution rules for typical LLM failures:
+
+| Method | Default | Description |
+|--------|---------|-------------|
+| `.max_turns(10)` | no limit | Stop after N agentic loop iterations |
+| `.max_tokens(4096)` | provider default | Cap output tokens per LLM request |
+| `.max_schema_retries(3)` | 10 | Retry structured output compliance |
+| `.max_request_retries(5)` | 3 | Retry on transient API errors (429, 529, 5xx) |
+| `.request_retry_backoff_ms(2000)` | 10,000 | Base delay for exponential backoff (`ms * 2^attempt`) |
+| `.keep_alive()` | off | Stay alive listening for incoming messages, exiting only on cancel. |
+
+To abort from outside the agent, use `.cancel_signal(signal)` — see
+[Inheritance](#inheritance) for how it propagates across sub-agents.
+
 ### AgentOutput
 
 The result of running an agent.
@@ -411,17 +347,70 @@ let output = Agent::new()
     .run().await?;
 ```
 
-### LLM Request Composition
+### Sub-agents
 
-Each LLM request is assembled from the following parts:
+Sub-agents allow orchestrator agents to launch her own workers. 
+Orchestrator agents automatically have access to the `SpawnAgentTool`.
 
-| Part | Type | Parameters | Description |
-|------|------|--------|-------------|
-| **model** | `String` | `model()` | The LLM model that processes the request |
-| **max_tokens** | `Number` | `max_tokens()` | The maximum number of tokens the model can output |
-| **system_prompt** | `String` | `identity_prompt()`<br>`behavior_prompt()` | Persistent instructions that define who the agent is and how it behaves |
-| **message** | `Message[]` | `context_prompt()`<br>`instruction_prompt()` | The conversation history between user and assistant, starting with metadata, context, and the task |
-| **tools** | `ToolDefinition[]` | `tool()` | The functions the model can call during execution |
+```rust
+let researcher_base = Agent::new()
+    .model("claude-haiku-4-5-20251001")
+    .identity_prompt("Research this topic.")
+    .tool(brave_search_tool())
+    .max_turns(3);
+
+let r1 = researcher_base.clone().name("researcher_1");
+let r2 = researcher_base.clone().name("researcher_2");
+
+let output = Agent::new()
+    .name("orchestrator")
+    .identity_prompt("Coordinate research.")
+    .sub_agents([r1, r2])
+```
+
+#### Inheritance
+
+The following fields are inherited, shared or owned by the sub-agents:
+
+| Behavior | Fields |
+|---|---|
+| Inherited | `provider`, `model`, `working_directory`, `event_handler`, `cancel_signal` |
+| Shared | `command_queue`, `session_store` |
+| Per sub-agent | `identity_prompt`, `instruction_prompt`, `behavior_prompt`, `context_prompt`, `tools`, `output_schema`, `max_turns`, `max_tokens`, `max_schema_retries`, `max_request_retries`, `request_retry_backoff_ms` |
+
+### AgentPool
+
+Orchestrate complex workflows in parallel. Use different execution strategies:
+
+- `CompletionOrder`: results are returned as each agent finishes (default).
+- `SpawnOrder`: results are returned in the order agents were spawned.
+
+```rust
+use agentwerk::{Agent, AgentPool, AgentPoolStrategy, ReadFileTool};
+
+let template = Agent::new()
+    .model("claude-haiku-4-5-20251001")
+    .tool(ReadFileTool);
+
+let pool = AgentPool::new()
+    .batch_size(10)
+    .ordering(AgentPoolStrategy::SpawnOrder);
+
+for doc in ["document A", "document B"] {
+    pool.spawn(
+        template
+            .clone()
+            .provider(provider.clone())
+            .instruction_prompt(format!("Summarize {doc}"))
+    )
+    .await;
+}
+
+let results = pool.drain().await; // Vec<(AgentJobId, Result<AgentOutput>)>
+```
+
+`spawn()` can be called after the pool has started processing. If the pool
+is at capacity, it waits for a free slot.
 
 ### Todo
 
