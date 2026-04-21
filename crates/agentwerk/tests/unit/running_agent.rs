@@ -1,19 +1,19 @@
-//! High-level unit tests for the `RunningAgent` interface.
+//! High-level unit tests for the `AgentHandle` / `AgentOutputFuture` pair
+//! returned by `Agent::spawn()`.
 //!
-//! `RunningAgent` is the handle returned by `Agent::create()`. The agent
-//! loop runs on a background tokio task; the handle is how foreground code
-//! interacts with it. Five operations form the public surface:
+//! The agent loop runs on a background tokio task. The foreground code
+//! interacts with it through two values:
 //!
-//! - `send(instruction)` — enqueue a new instruction. Picked up at the next
-//!   turn boundary, or immediately if the agent is parked in keep-alive idle.
-//! - `cancel()` — flip the shared cancel signal.
-//! - `is_cancelled()` — read that signal.
-//! - `is_stopped()` — read the terminal-state flag; `true` once the loop has
-//!   emitted `AgentEnd` and will not return to idle.
-//! - `run().await` — await the background task and receive `AgentOutput`.
-//!   May be called at most once across all clones.
-//! - `clone()` — produce another handle to the same task. `send` and `cancel`
-//!   are visible from any clone; the JoinHandle is held only once.
+//! - [`AgentHandle`] — cheap to clone. Public surface:
+//!   - `send(instruction)` — enqueue a new instruction; picked up at the
+//!     next turn boundary or immediately if the agent is parked idle.
+//!   - `cancel()` — flip the shared cancel signal.
+//!   - `is_cancelled()` — read that signal.
+//!   - `is_stopped()` — read the terminal-state flag; `true` once the loop
+//!     has emitted `AgentEnd`.
+//!   - Dropping the last handle auto-cancels (RAII leak protection).
+//! - [`AgentOutputFuture`] — resolves to the final `AgentOutput` when the
+//!   loop exits. Polling it twice returns an error.
 //!
 //! These tests exercise each operation through its public surface only.
 //! `MockProvider` avoids network calls; event observation synchronises the
@@ -27,42 +27,51 @@ use std::time::Duration;
 use agentwerk::provider::types::CompletionResponse;
 use agentwerk::testutil::{text_response, MockProvider};
 use agentwerk::{
-    Agent, AgentEvent, AgentEventKind, AgentStatus, AgenticError, CompletionRequest, ContentBlock,
-    Message, RunningAgent,
+    Agent, AgentEvent, AgentEventKind, AgentHandle, AgentOutputFuture, AgentStatus, AgenticError,
+    CompletionRequest, ContentBlock, Message,
 };
 
 // ---------------------------------------------------------------------------
-// `run()` — awaiting the background task
+// Future completion
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn run_returns_final_output_for_a_one_shot_agent() {
-    let running = Agent::new()
+async fn output_resolves_with_final_text_after_cancel() {
+    let events = EventLog::new();
+    let (handle, output) = Agent::new()
         .name("demo")
         .model("mock")
         .provider(Arc::new(MockProvider::text("hello world")))
         .identity_prompt("")
         .instruction_prompt("greet")
-        .create();
+        .event_handler(events.handler())
+        .spawn();
 
-    let output = running.run().await.expect("run should succeed");
+    // Wait until the loop has produced its terminal output and parked idle;
+    // cancelling before that would abort turn 1 with `Cancelled` status.
+    events
+        .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+        .await;
+    handle.cancel();
+    let output = output.await.expect("run should succeed");
     assert_eq!(output.response_raw, "hello world");
     assert_eq!(output.status, AgentStatus::Completed);
 }
 
 #[tokio::test]
-async fn run_can_only_be_awaited_once() {
-    let running = Agent::new()
+async fn awaiting_the_future_twice_returns_an_error() {
+    let (handle, mut output) = Agent::new()
         .model("mock")
         .provider(Arc::new(MockProvider::text("done")))
         .instruction_prompt("x")
-        .create();
+        .spawn();
 
-    let _first = running.run().await.expect("first run succeeds");
-    let second = running.run().await;
+    handle.cancel();
+    let _first = (&mut output).await.expect("first await succeeds");
+    let second = output.await;
     assert!(
-        matches!(&second, Err(AgenticError::Other(msg)) if msg.contains("already called")),
-        "expected 'already called' error, got {second:?}",
+        matches!(&second, Err(AgenticError::Other(msg)) if msg.contains("polled after completion")),
+        "expected 'polled after completion' error, got {second:?}",
     );
 }
 
@@ -72,11 +81,8 @@ async fn run_can_only_be_awaited_once() {
 
 #[tokio::test]
 async fn send_injects_an_instruction_into_the_next_turn() {
-    // Keep-alive parks the loop in idle after turn 1. `send("follow-up")`
-    // wakes it; turn 2's provider request must carry the injected text as a
-    // user message.
     let events = EventLog::new();
-    let (provider, running) = keep_alive_agent(
+    let (provider, handle, output) = spawn_agent(
         vec![text_response("first"), text_response("second")],
         &events,
     );
@@ -84,7 +90,7 @@ async fn send_injects_an_instruction_into_the_next_turn() {
     events
         .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
         .await;
-    running.send("follow-up");
+    handle.send("follow-up");
     wait_until(|| provider.request_count() >= 2).await;
 
     let second = provider.last_request().expect("second request");
@@ -94,9 +100,8 @@ async fn send_injects_an_instruction_into_the_next_turn() {
         "injected instruction must appear in turn 2's user message; got {last_user:?}",
     );
 
-    // cleanup: wake the keep-alive loop so the background task exits.
-    running.cancel();
-    let _ = running.run().await;
+    handle.cancel();
+    let _ = output.await;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,38 +110,32 @@ async fn send_injects_an_instruction_into_the_next_turn() {
 
 #[tokio::test]
 async fn is_cancelled_returns_true_after_cancel() {
-    let running = Agent::new()
+    let (handle, output) = Agent::new()
         .model("mock")
         .provider(Arc::new(MockProvider::text("done")))
         .identity_prompt("")
         .instruction_prompt("x")
-        .create();
+        .spawn();
 
-    assert!(!running.is_cancelled());
-    running.cancel();
-    assert!(running.is_cancelled());
-    let _ = running.run().await;
+    assert!(!handle.is_cancelled());
+    handle.cancel();
+    assert!(handle.is_cancelled());
+    let _ = output.await;
 }
 
 #[tokio::test]
 async fn cancel_breaks_an_idle_agent_out_of_its_wait() {
-    // Keep-alive: the loop parks in AgentIdle after turn 1. Without cancel,
-    // `run().await` would hang forever. A concurrent `cancel()` wakes the
-    // idle wait (AgentResumed). The agent had already produced its terminal
-    // reply, so the status is `Completed` — cancel-during-idle closes out
-    // the work, it doesn't abort an in-flight turn (which would yield
-    // `Cancelled` via the turn-boundary guard).
     let events = EventLog::new();
-    let (_provider, running) = keep_alive_agent(vec![text_response("first")], &events);
+    let (_provider, handle, output) = spawn_agent(vec![text_response("first")], &events);
 
     events
         .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
         .await;
-    running.cancel();
+    handle.cancel();
     events
         .wait_for(|e| matches!(e.kind, AgentEventKind::AgentResumed))
         .await;
-    let out = running.run().await.expect("output");
+    let out = output.await.expect("output");
     assert_eq!(out.status, AgentStatus::Completed);
 }
 
@@ -145,69 +144,33 @@ async fn cancel_breaks_an_idle_agent_out_of_its_wait() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn is_stopped_is_false_before_run_is_awaited() {
-    // The loop may or may not have already finished on the background task
-    // by the time we poll, but immediately after `create()` the flag is
-    // guaranteed to start `false` — it only flips after the future resolves.
-    let running = Agent::new()
-        .model("mock")
-        .provider(Arc::new(MockProvider::text("done")))
-        .identity_prompt("")
-        .instruction_prompt("x")
-        .create();
-
-    assert!(!running.is_stopped());
-    let _ = running.run().await;
-}
-
-#[tokio::test]
-async fn is_stopped_stays_false_during_keep_alive_idle() {
-    // Per the contract: during an idle wait the loop has *not* emitted
-    // `AgentEnd` and may still resume. `is_stopped()` must therefore stay
-    // `false` until the loop truly exits.
+async fn is_stopped_stays_false_during_idle() {
     let events = EventLog::new();
-    let (_provider, running) = keep_alive_agent(vec![text_response("first")], &events);
+    let (_provider, handle, output) = spawn_agent(vec![text_response("first")], &events);
 
     events
         .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
         .await;
-    assert!(!running.is_stopped(), "idle is not stopped");
+    assert!(!handle.is_stopped(), "idle is not stopped");
 
-    // cleanup: wake the keep-alive loop so the background task exits.
-    running.cancel();
-    let _ = running.run().await;
-}
-
-#[tokio::test]
-async fn is_stopped_is_true_after_run_completes() {
-    let running = Agent::new()
-        .model("mock")
-        .provider(Arc::new(MockProvider::text("done")))
-        .identity_prompt("")
-        .instruction_prompt("x")
-        .create();
-
-    let _ = running.run().await.expect("output");
-    assert!(running.is_stopped());
+    handle.cancel();
+    let _ = output.await;
 }
 
 #[tokio::test]
 async fn is_stopped_becomes_true_after_cancel_during_idle() {
-    // Pairs with `cancel_breaks_an_idle_agent_out_of_its_wait`: cancel wakes
-    // the idle wait, the loop emits `AgentEnd`, and only then does the
-    // `is_stopped()` flag flip.
     let events = EventLog::new();
-    let (_provider, running) = keep_alive_agent(vec![text_response("first")], &events);
+    let (_provider, handle, output) = spawn_agent(vec![text_response("first")], &events);
 
     events
         .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
         .await;
-    running.cancel();
+    handle.cancel();
     events
         .wait_for(|e| matches!(e.kind, AgentEventKind::AgentResumed))
         .await;
-    let _ = running.run().await.expect("output");
-    assert!(running.is_stopped());
+    let _ = output.await.expect("output");
+    assert!(handle.is_stopped());
 }
 
 // ---------------------------------------------------------------------------
@@ -216,17 +179,13 @@ async fn is_stopped_becomes_true_after_cancel_during_idle() {
 
 #[tokio::test]
 async fn send_and_cancel_on_a_clone_reach_the_original_task() {
-    // Three clones, three roles:
-    //   - `sender`    calls send()   — instruction must reach the loop
-    //   - `canceller` calls cancel() — signal must be visible to all clones
-    //   - `awaiter`   calls run()    — still receives the final output
     let events = EventLog::new();
-    let (provider, awaiter) = keep_alive_agent(
+    let (provider, original, output) = spawn_agent(
         vec![text_response("first"), text_response("second")],
         &events,
     );
-    let sender = awaiter.clone();
-    let canceller = awaiter.clone();
+    let sender = original.clone();
+    let canceller = original.clone();
 
     events
         .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
@@ -237,43 +196,54 @@ async fn send_and_cancel_on_a_clone_reach_the_original_task() {
     let second = provider.last_request().expect("second request");
     assert!(last_user_text(&second).unwrap().contains("via-clone"));
 
-    assert!(!awaiter.is_cancelled());
+    assert!(!original.is_cancelled());
     canceller.cancel();
     assert!(
-        awaiter.is_cancelled() && sender.is_cancelled(),
+        original.is_cancelled() && sender.is_cancelled(),
         "cancel from one clone must be visible from every clone",
     );
 
-    let _ = awaiter.run().await.expect("output");
+    let _ = output.await.expect("output");
 }
 
 // ---------------------------------------------------------------------------
-// Helpers — pedagogical, not library API. Kept private to this test file.
+// RAII: dropping the last handle auto-cancels
 // ---------------------------------------------------------------------------
 
-/// Build a keep-alive agent wired to a fresh `MockProvider` and the given
-/// event log. The provider `Arc` is returned so the test can inspect
-/// captured requests.
-fn keep_alive_agent(
+#[tokio::test]
+async fn dropping_the_last_handle_terminates_the_agent() {
+    let events = EventLog::new();
+    let (_provider, handle, output) = spawn_agent(vec![text_response("first")], &events);
+
+    events
+        .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+        .await;
+    drop(handle);
+    let out = output.await.expect("output");
+    assert_eq!(out.status, AgentStatus::Completed);
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Spawn a fresh agent wired to a MockProvider and the given event log.
+fn spawn_agent(
     responses: Vec<CompletionResponse>,
     events: &EventLog,
-) -> (Arc<MockProvider>, RunningAgent) {
+) -> (Arc<MockProvider>, AgentHandle, AgentOutputFuture) {
     let provider = Arc::new(MockProvider::new(responses));
-    let running = Agent::new()
+    let (h, o) = Agent::new()
         .name("root")
         .model("mock")
         .provider(provider.clone())
         .identity_prompt("")
         .instruction_prompt("initial")
-        .keep_alive()
         .event_handler(events.handler())
-        .create();
-    (provider, running)
+        .spawn();
+    (provider, h, o)
 }
 
-/// Shared event buffer plus a polling helper. Mirrors the pattern used in
-/// `running.rs` inline tests: event collection in a `Mutex`, polled every
-/// 25ms up to 5s.
 struct EventLog {
     events: Arc<Mutex<Vec<AgentEvent>>>,
 }
@@ -318,8 +288,6 @@ async fn wait_until<F: FnMut() -> bool>(mut pred: F) {
     panic!("timed out after 5s waiting for condition");
 }
 
-/// Join every `Text` block of the most recent user message into a single
-/// string. Used to locate an injected instruction in a later turn.
 fn last_user_text(req: &CompletionRequest) -> Option<String> {
     req.messages.iter().rev().find_map(|m| match m {
         Message::User { content } => Some(

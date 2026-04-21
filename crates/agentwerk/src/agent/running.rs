@@ -1,12 +1,26 @@
-//! `RunningAgent` — a handle to an agent whose loop is running on a background
-//! tokio task.
+//! Handle + future pair returned by [`Agent::spawn`](crate::Agent::spawn).
 //!
-//! Obtained via [`Agent::create`](crate::Agent::create). The loop is already
-//! executing by the time `create()` returns; hold this handle to inject new
-//! instructions, cancel, or await the final output.
+//! Spawning an agent puts its loop on a background tokio task and returns two
+//! values:
+//!
+//! - [`AgentHandle`] — a cheap, `Clone`able handle for injecting new
+//!   instructions, cancelling, or inspecting state. As long as any handle is
+//!   alive, the loop idles after a terminal output instead of exiting.
+//! - [`AgentOutputFuture`] — resolves to the agent's final
+//!   [`AgentOutput`](crate::agent::AgentOutput) once the loop exits.
+//!
+//! The loop exits when any of:
+//!
+//! 1. [`AgentHandle::cancel`] is called on any clone (explicit signal),
+//! 2. the last [`AgentHandle`] is dropped (RAII auto-cancel), or
+//! 3. the [`AgentOutputFuture`] is dropped unawaited (RAII auto-cancel,
+//!    result abandoned).
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
 use tokio::task::JoinHandle;
 
@@ -14,45 +28,54 @@ use crate::agent::output::AgentOutput;
 use crate::agent::queue::{CommandQueue, CommandSource, QueuePriority, QueuedCommand};
 use crate::error::{AgenticError, Result};
 
-/// Handle to an agent whose loop is running on a background tokio task.
-///
-/// Cheap to clone (Arc-backed). `send` and `cancel` can be called from any
-/// clone; `run` may be called at most once across all clones and yields the
-/// final output.
-#[derive(Clone)]
-pub struct RunningAgent {
-    inner: Arc<Inner>,
+/// Shared atomic state between every [`AgentHandle`] clone, the
+/// [`AgentOutputFuture`], and the running loop.
+pub(crate) struct HandleState {
+    pub(crate) queue: Arc<CommandQueue>,
+    pub(crate) cancel: Arc<AtomicBool>,
+    pub(crate) stopped: Arc<AtomicBool>,
 }
 
-struct Inner {
-    queue: Arc<CommandQueue>,
+/// Drop-detection token: every handle and the future own a clone. When the
+/// last one drops, `Drop::drop` sets the shared cancel flag, so the loop
+/// exits on its next poll.
+pub(crate) struct LifeToken {
     cancel: Arc<AtomicBool>,
-    stopped: Arc<AtomicBool>,
-    join: Mutex<Option<JoinHandle<Result<AgentOutput>>>>,
 }
 
-impl RunningAgent {
-    pub(crate) fn new(
-        queue: Arc<CommandQueue>,
-        cancel: Arc<AtomicBool>,
-        stopped: Arc<AtomicBool>,
-        join: JoinHandle<Result<AgentOutput>>,
-    ) -> Self {
-        Self {
-            inner: Arc::new(Inner {
-                queue,
-                cancel,
-                stopped,
-                join: Mutex::new(Some(join)),
-            }),
-        }
+impl LifeToken {
+    pub(crate) fn new(cancel: Arc<AtomicBool>) -> Arc<Self> {
+        Arc::new(Self { cancel })
+    }
+}
+
+impl Drop for LifeToken {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Cheap, clonable handle to an agent whose loop runs on a background tokio
+/// task. Obtained from [`Agent::spawn`](crate::Agent::spawn).
+///
+/// While any clone of the handle is alive, the loop idles after producing
+/// output; dropping the last clone (or calling [`cancel`](Self::cancel))
+/// signals the loop to exit.
+#[derive(Clone)]
+pub struct AgentHandle {
+    state: Arc<HandleState>,
+    _life: Arc<LifeToken>,
+}
+
+impl AgentHandle {
+    pub(crate) fn new(state: Arc<HandleState>, life: Arc<LifeToken>) -> Self {
+        Self { state, _life: life }
     }
 
-    /// Deliver a new instruction to the running agent. Broadcast across the
-    /// run-tree; picked up at the next turn boundary by `drain_command_queue`
-    /// (or immediately if the agent is parked in keep-alive idle).
+    /// Deliver a new instruction to the running agent. Picked up at the next
+    /// turn boundary, or immediately if the agent is parked idle.
     pub fn send(&self, instruction: impl Into<String>) {
-        self.inner.queue.enqueue(QueuedCommand {
+        self.state.queue.enqueue(QueuedCommand {
             content: instruction.into(),
             priority: QueuePriority::Next,
             source: CommandSource::UserInput,
@@ -61,46 +84,82 @@ impl RunningAgent {
     }
 
     /// Signal the agent to stop. The loop observes this at the next turn
-    /// boundary and exits with [`AgentStatus::Cancelled`](crate::agent::AgentStatus).
+    /// boundary or idle-wait poll and exits.
     pub fn cancel(&self) {
-        self.inner.cancel.store(true, Ordering::Relaxed);
+        self.state.cancel.store(true, Ordering::Relaxed);
     }
 
-    /// Returns `true` if `cancel()` has been called.
+    /// Returns `true` if a cancel signal has been raised (explicitly via
+    /// [`cancel`](Self::cancel) or implicitly via the last handle being
+    /// dropped).
     pub fn is_cancelled(&self) -> bool {
-        self.inner.cancel.load(Ordering::Relaxed)
+        self.state.cancel.load(Ordering::Relaxed)
     }
 
-    /// Returns `true` once the agent loop has terminated — i.e. it has
-    /// emitted [`AgentEnd`](crate::agent::AgentEventKind::AgentEnd) and will
-    /// not return to a keep-alive idle wait. Reports *reality* (the loop is
-    /// over) as opposed to [`is_cancelled`](Self::is_cancelled) which reports
-    /// the *request* (stop has been asked for). During an idle wait the
-    /// loop is still live, so this stays `false`.
+    /// Returns `true` once the loop has terminated — i.e. it has emitted
+    /// [`AgentEnd`](crate::agent::AgentEventKind::AgentEnd) and will not
+    /// return to an idle wait. Reports *reality* (the loop is over) as
+    /// opposed to [`is_cancelled`](Self::is_cancelled) which reports the
+    /// *request*.
     pub fn is_stopped(&self) -> bool {
-        self.inner.stopped.load(Ordering::Relaxed)
-    }
-
-    /// Await the agent's completion and return its final output. May only be
-    /// called once across all clones; later calls return an error.
-    pub async fn run(&self) -> Result<AgentOutput> {
-        let handle = self
-            .inner
-            .join
-            .lock()
-            .unwrap()
-            .take()
-            .ok_or_else(|| AgenticError::Other("RunningAgent::run already called".into()))?;
-        handle
-            .await
-            .map_err(|e| AgenticError::Other(format!("agent task failed: {e}")))?
+        self.state.stopped.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
     pub(crate) fn queue_for_test(&self) -> Arc<CommandQueue> {
-        self.inner.queue.clone()
+        self.state.queue.clone()
     }
 }
+
+/// Future that resolves to the agent's final
+/// [`AgentOutput`](crate::agent::AgentOutput).
+///
+/// The future does not own a [`LifeToken`]: only [`AgentHandle`] clones do.
+/// Dropping this future just abandons the result; whether the loop keeps
+/// running is decided by whether any handles remain.
+pub struct AgentOutputFuture {
+    join: Mutex<Option<JoinHandle<Result<AgentOutput>>>>,
+}
+
+impl AgentOutputFuture {
+    pub(crate) fn new(join: JoinHandle<Result<AgentOutput>>) -> Self {
+        Self {
+            join: Mutex::new(Some(join)),
+        }
+    }
+}
+
+impl Future for AgentOutputFuture {
+    type Output = Result<AgentOutput>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut guard = self.join.lock().unwrap();
+        let join = match guard.as_mut() {
+            Some(j) => j,
+            None => {
+                return Poll::Ready(Err(AgenticError::Other(
+                    "AgentOutputFuture polled after completion".into(),
+                )))
+            }
+        };
+        let pinned = Pin::new(join);
+        match pinned.poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(result)) => {
+                *guard = None;
+                Poll::Ready(result)
+            }
+            Poll::Ready(Err(e)) => {
+                *guard = None;
+                Poll::Ready(Err(AgenticError::Other(format!("agent task failed: {e}"))))
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests for the `AgentHandle` / `AgentOutputFuture` surface.
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -109,22 +168,46 @@ mod tests {
     use std::time::Duration;
 
     use crate::agent::{Agent, AgentEvent, AgentEventKind, AgentStatus};
-    use crate::provider::types::{ContentBlock, Message};
+    use crate::provider::types::{CompletionResponse, ContentBlock, Message};
     use crate::testutil::{text_response, MockProvider};
+    use crate::CompletionRequest;
 
-    fn new_agent() -> RunningAgent {
-        Agent::new()
-            .model("mock")
-            .provider(Arc::new(MockProvider::text("done")))
-            .instruction_prompt("x")
-            .create()
+    // -------------------------------------------------------------------
+    // A. Shape & wiring
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn spawn_returns_handle_and_future() {
+        let (handle, output) = one_shot_agent("hello");
+        let clone = handle.clone();
+        // AgentHandle is Clone; AgentOutputFuture is a Future. Cancel so the
+        // keep-alive loop terminates.
+        clone.cancel();
+        let _: Result<AgentOutput> = output.await;
     }
 
     #[tokio::test]
+    async fn spawn_starts_loop_immediately() {
+        let events = EventLog::new();
+        let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
+        // AgentStart is the first event emitted by run_loop — observable
+        // before we await the future.
+        events
+            .wait_for(|e| matches!(e.kind, AgentEventKind::AgentStart { .. }))
+            .await;
+        handle.cancel();
+        let _ = output.await;
+    }
+
+    // -------------------------------------------------------------------
+    // B. Message delivery
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
     async fn send_enqueues_user_input_command() {
-        let running = new_agent();
-        running.send("hi");
-        let queue = running.queue_for_test();
+        let (handle, output) = one_shot_agent("done");
+        handle.send("hi");
+        let queue = handle.queue_for_test();
         let cmd = queue
             .dequeue_if(Some("anyone"), |_| true)
             .expect("queued command");
@@ -132,146 +215,271 @@ mod tests {
         assert!(matches!(cmd.priority, QueuePriority::Next));
         assert!(matches!(cmd.source, CommandSource::UserInput));
         assert!(cmd.agent_name.is_none());
-        let _ = running.run().await;
-    }
-
-    #[tokio::test]
-    async fn cancel_sets_signal() {
-        let running = new_agent();
-        assert!(!running.is_cancelled());
-        running.cancel();
-        assert!(running.is_cancelled());
-        let _ = running.run().await;
-    }
-
-    #[tokio::test]
-    async fn clone_shares_state() {
-        let running = new_agent();
-        let other = running.clone();
-        other.send("relay");
-        let cmd = running
-            .queue_for_test()
-            .dequeue_if(Some("anyone"), |_| true)
-            .expect("queued command");
-        assert_eq!(cmd.content, "relay");
-        let _ = running.run().await;
-    }
-
-    #[tokio::test]
-    async fn is_stopped_is_shared_across_clones() {
-        let running = new_agent();
-        let other = running.clone();
-        assert!(!running.is_stopped() && !other.is_stopped());
-        let _ = running.run().await;
-        assert!(running.is_stopped() && other.is_stopped());
-    }
-
-    #[tokio::test]
-    async fn double_run_returns_error() {
-        let running = new_agent();
-        let _first = running.run().await;
-        let second = running.run().await;
-        assert!(matches!(second, Err(AgenticError::Other(_))));
+        handle.cancel();
+        let _ = output.await;
     }
 
     #[tokio::test]
     async fn send_reaches_next_provider_request() {
-        let provider = Arc::new(MockProvider::new(vec![
-            text_response("first"),
-            text_response("second"),
-        ]));
-        let events: Arc<StdMutex<Vec<AgentEvent>>> = Arc::new(StdMutex::new(Vec::new()));
-        let events_for_handler = events.clone();
+        let events = EventLog::new();
+        let (provider, handle, output) = keep_alive_agent_with_provider(
+            vec![text_response("first"), text_response("second")],
+            &events,
+        );
 
-        let running = Agent::new()
-            .name("root")
-            .model("mock")
-            .provider(provider.clone())
-            .identity_prompt("")
-            .instruction_prompt("initial")
-            .keep_alive()
-            .event_handler(Arc::new(move |e: AgentEvent| {
-                events_for_handler.lock().unwrap().push(e);
-            }))
-            .create();
-
-        wait_for_event(&events, |e| matches!(e.kind, AgentEventKind::AgentIdle)).await;
-        running.send("follow-up");
+        events
+            .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+            .await;
+        handle.send("follow-up");
         wait_until(|| provider.request_count() >= 2).await;
 
         let second = provider.last_request().expect("second request");
-        let last_user_text = second
-            .messages
-            .iter()
-            .rev()
-            .find_map(|m| match m {
-                Message::User { content } => Some(
-                    content
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                ),
-                _ => None,
-            })
-            .expect("user message in second request");
+        let last_user = last_user_text(&second).expect("user message in second request");
         assert!(
-            last_user_text.contains("follow-up"),
-            "injected instruction must appear in the next provider request; got {last_user_text:?}"
+            last_user.contains("follow-up"),
+            "injected instruction must appear in turn 2's user message; got {last_user:?}",
         );
 
-        running.cancel();
-        let out = running.run().await.expect("output");
+        handle.cancel();
+        let out = output.await.expect("output");
         assert!(matches!(
             out.status,
             AgentStatus::Completed | AgentStatus::Cancelled
         ));
     }
 
+    // -------------------------------------------------------------------
+    // C. Clone sharing
+    // -------------------------------------------------------------------
+
     #[tokio::test]
-    async fn cancel_breaks_idle_wait() {
-        let provider = Arc::new(MockProvider::text("first"));
-        let events: Arc<StdMutex<Vec<AgentEvent>>> = Arc::new(StdMutex::new(Vec::new()));
-        let events_for_handler = events.clone();
-
-        let running = Agent::new()
-            .name("root")
-            .model("mock")
-            .provider(provider)
-            .identity_prompt("")
-            .instruction_prompt("initial")
-            .keep_alive()
-            .event_handler(Arc::new(move |e: AgentEvent| {
-                events_for_handler.lock().unwrap().push(e);
-            }))
-            .create();
-
-        wait_for_event(&events, |e| matches!(e.kind, AgentEventKind::AgentIdle)).await;
-        running.cancel();
-        wait_for_event(&events, |e| matches!(e.kind, AgentEventKind::AgentResumed)).await;
-        let _ = running.run().await.expect("output");
+    async fn clone_shares_queue() {
+        let (handle, output) = one_shot_agent("done");
+        let other = handle.clone();
+        other.send("relay");
+        let cmd = handle
+            .queue_for_test()
+            .dequeue_if(Some("anyone"), |_| true)
+            .expect("queued command");
+        assert_eq!(cmd.content, "relay");
+        handle.cancel();
+        let _ = output.await;
     }
 
-    async fn wait_for_event<F>(events: &Arc<StdMutex<Vec<AgentEvent>>>, pred: F)
-    where
-        F: Fn(&AgentEvent) -> bool,
-    {
-        for _ in 0..200 {
-            if events.lock().unwrap().iter().any(&pred) {
-                return;
+    #[tokio::test]
+    async fn clone_shares_cancel() {
+        let (handle, output) = one_shot_agent("done");
+        let other = handle.clone();
+        assert!(!handle.is_cancelled());
+        other.cancel();
+        assert!(handle.is_cancelled() && other.is_cancelled());
+        let _ = output.await;
+    }
+
+    #[tokio::test]
+    async fn clone_shares_is_stopped() {
+        let (handle, output) = one_shot_agent("done");
+        let other = handle.clone();
+        assert!(!handle.is_stopped() && !other.is_stopped());
+        handle.cancel();
+        let _ = output.await;
+        assert!(handle.is_stopped() && other.is_stopped());
+    }
+
+    // -------------------------------------------------------------------
+    // D. Explicit cancel
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn cancel_during_idle_preserves_completed_status() {
+        let events = EventLog::new();
+        let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
+
+        events
+            .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+            .await;
+        handle.cancel();
+        events
+            .wait_for(|e| matches!(e.kind, AgentEventKind::AgentResumed))
+            .await;
+        let out = output.await.expect("output");
+        assert_eq!(out.status, AgentStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn cancel_from_spawned_task() {
+        let events = EventLog::new();
+        let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
+
+        events
+            .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+            .await;
+        let canceller = handle.clone();
+        tokio::spawn(async move {
+            canceller.cancel();
+        });
+        let _ = output.await.expect("output");
+        assert!(handle.is_stopped());
+    }
+
+    // -------------------------------------------------------------------
+    // E. RAII — the core new behavior
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn dropping_last_handle_triggers_cancel() {
+        let events = EventLog::new();
+        let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
+
+        events
+            .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+            .await;
+        drop(handle);
+        let out = output.await.expect("output");
+        assert_eq!(out.status, AgentStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn dropping_one_of_two_handles_does_not_cancel() {
+        let events = EventLog::new();
+        let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
+
+        let survivor = handle.clone();
+        events
+            .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+            .await;
+        drop(handle);
+        // Cancel is NOT set while another handle is alive.
+        assert!(!survivor.is_cancelled());
+        // cleanup
+        survivor.cancel();
+        let _ = output.await;
+    }
+
+    #[tokio::test]
+    async fn dropping_future_alone_does_not_cancel() {
+        // The future holds no LifeToken, so dropping it doesn't cancel. The
+        // loop keeps running — cleanup belongs to the handle.
+        let events = EventLog::new();
+        let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
+
+        events
+            .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+            .await;
+        drop(output);
+        assert!(!handle.is_cancelled());
+        handle.cancel();
+        wait_until(|| handle.is_stopped()).await;
+    }
+
+    // -------------------------------------------------------------------
+    // F. Event stream
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn keep_alive_idle_and_resumed_events_still_fire() {
+        let events = EventLog::new();
+        let (provider, handle, output) = keep_alive_agent_with_provider(
+            vec![text_response("first"), text_response("second")],
+            &events,
+        );
+        events
+            .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+            .await;
+        handle.send("wake up");
+        wait_until(|| provider.request_count() >= 2).await;
+        events
+            .wait_for(|e| matches!(e.kind, AgentEventKind::AgentResumed))
+            .await;
+        handle.cancel();
+        let _ = output.await;
+    }
+
+    // -------------------------------------------------------------------
+    // H. Regression / negative
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn awaiting_future_twice_returns_error() {
+        // AgentOutputFuture consumes its inner JoinHandle on completion;
+        // polling again surfaces an AgenticError::Other.
+        let (handle, mut output) = one_shot_agent("done");
+        handle.cancel();
+        let _first = (&mut output).await;
+        let second = output.await;
+        assert!(matches!(second, Err(AgenticError::Other(_))));
+    }
+
+    // -------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------
+
+    fn one_shot_agent(text: &str) -> (AgentHandle, AgentOutputFuture) {
+        Agent::new()
+            .name("demo")
+            .model("mock")
+            .provider(Arc::new(MockProvider::text(text)))
+            .identity_prompt("")
+            .instruction_prompt("x")
+            .spawn()
+    }
+
+    fn keep_alive_agent(
+        responses: Vec<CompletionResponse>,
+        events: &EventLog,
+    ) -> (AgentHandle, AgentOutputFuture) {
+        let (_, h, o) = keep_alive_agent_with_provider(responses, events);
+        (h, o)
+    }
+
+    fn keep_alive_agent_with_provider(
+        responses: Vec<CompletionResponse>,
+        events: &EventLog,
+    ) -> (Arc<MockProvider>, AgentHandle, AgentOutputFuture) {
+        let provider = Arc::new(MockProvider::new(responses));
+        let (h, o) = Agent::new()
+            .name("root")
+            .model("mock")
+            .provider(provider.clone())
+            .identity_prompt("")
+            .instruction_prompt("initial")
+            .event_handler(events.handler())
+            .spawn();
+        (provider, h, o)
+    }
+
+    struct EventLog {
+        events: Arc<StdMutex<Vec<AgentEvent>>>,
+    }
+
+    impl EventLog {
+        fn new() -> Self {
+            Self {
+                events: Arc::new(StdMutex::new(Vec::new())),
             }
-            tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        let seen: Vec<_> = events
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|e| format!("{}:{:?}", e.agent_name, e.kind))
-            .collect();
-        panic!("timed out after 5s waiting for event; saw: {seen:#?}");
+
+        fn handler(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> {
+            let events = self.events.clone();
+            Arc::new(move |e| events.lock().unwrap().push(e))
+        }
+
+        async fn wait_for<F: Fn(&AgentEvent) -> bool>(&self, pred: F) {
+            for _ in 0..200 {
+                if self.events.lock().unwrap().iter().any(&pred) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            let seen: Vec<_> = self
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|e| format!("{}:{:?}", e.agent_name, e.kind))
+                .collect();
+            panic!("timed out after 5s waiting for event; saw: {seen:#?}");
+        }
     }
 
     async fn wait_until<F: FnMut() -> bool>(mut pred: F) {
@@ -282,5 +490,21 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         panic!("timed out after 5s waiting for condition");
+    }
+
+    fn last_user_text(req: &CompletionRequest) -> Option<String> {
+        req.messages.iter().rev().find_map(|m| match m {
+            Message::User { content } => Some(
+                content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            _ => None,
+        })
     }
 }

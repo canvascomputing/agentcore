@@ -18,7 +18,7 @@ async fn main() {
 
     let idle = Arc::new(Notify::new());
     let handler_idle = idle.clone();
-    let running = Agent::new()
+    let (running, output) = Agent::new()
         .name("orchestrator")
         .provider_from_env()
         .expect("LLM provider required")
@@ -28,9 +28,8 @@ async fn main() {
         .tool(GrepTool)
         .tool(ListDirectoryTool)
         .tool(ReadFileTool)
-        .keep_alive()
         .event_handler(Arc::new(move |e: AgentEvent| print_event(&e, &handler_idle)))
-        .create();
+        .spawn();
 
     loop {
         tokio::select! {
@@ -49,7 +48,7 @@ async fn main() {
     }
 
     running.cancel();
-    if let Ok(o) = running.run().await {
+    if let Ok(o) = output.await {
         eprintln!(
             "[ended: {:?}, turns={}, tokens={}in/{}out]",
             o.status, o.statistics.turns, o.statistics.input_tokens, o.statistics.output_tokens,

@@ -106,16 +106,15 @@ let output = Agent::new()
 
 #### Keep Agents Alive
 
-For a long-running agent that should accept new instructions, call `.create()`. It spawns an agentic loop on a background task and returns a `RunningAgent` handle:
+Use `.spawn()` instead of `.run()` when you want to keep sending instructions to the agent:
 
 ```rust
-let agent = Agent::new()
+let (agent, output) = Agent::new()
     .provider(provider)
     .model("claude-sonnet-4-20250514")
     .identity_prompt("Answer questions about the codebase.")
     .tool(ReadFileTool)
-    .keep_alive()
-    .create();
+    .spawn();
 
 // Stop the agent on Ctrl-C from any task.
 let stopper = agent.clone();
@@ -127,17 +126,20 @@ tokio::spawn(async move {
 agent.send("What does src/main.rs do?");
 agent.send("Now summarize src/lib.rs.");
 
-let output = agent.run().await?;
+agent.cancel();
+let output = output.await?;
 ```
+
+The agent waits for the next `send` after each reply. Call `cancel()` to stop it.
 
 | Method | Description |
 |--------|-------------|
-| `send(instruction)` | Deliver an instruction to the agent |
-| `cancel()` | Signal the agent to stop |
+| `send(instruction)` | Send a new instruction |
+| `cancel()` | Stop the agent |
 | `is_cancelled()` | Check if the agent was cancelled |
-| `is_stopped()` | Check if the agent finished execution |
-| `run()` | Await the agent's completion |
-| `clone()` | Create another handle to the same running agent |
+| `is_stopped()` | Check if the agent has finished |
+| `clone()` | Get another handle to the same agent |
+
 
 ### Models
 

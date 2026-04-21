@@ -13,6 +13,6 @@ pub use event::{AgentEvent, AgentEventKind};
 pub use output::{AgentOutput, AgentStatistics, AgentStatus};
 pub use pool::{AgentPool, AgentJobId, AgentPoolStrategy};
 pub use prompts::DEFAULT_BEHAVIOR_PROMPT;
-pub use running::RunningAgent;
+pub use running::{AgentHandle, AgentOutputFuture};
 pub use werk::Agent;
 pub(crate) use r#loop::{LoopRuntime, LoopSpec};

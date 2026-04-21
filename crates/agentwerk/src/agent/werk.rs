@@ -33,7 +33,7 @@ use super::output::{AgentOutput, OutputSchema};
 use super::prompts::{self as prompts, DEFAULT_BEHAVIOR_PROMPT};
 use super::queue::CommandQueue;
 use super::r#loop::{run_loop, LoopRuntime, LoopSpec};
-use super::running::RunningAgent;
+use super::running::{AgentHandle, AgentOutputFuture, HandleState, LifeToken};
 use crate::provider::Provider;
 
 // ---------------------------------------------------------------------------
@@ -264,9 +264,13 @@ impl Agent {
         self.with_config(|c| c.request_retry_backoff_ms = ms)
     }
 
-    /// Keep the agent alive after a benign text-only response, listening for
-    /// peer messages until `cancel_signal` fires. If never called, the agent
-    /// is one-shot (default).
+    /// Keep the agent alive after a terminal output, parking it idle until a
+    /// peer message arrives or `cancel_signal` fires.
+    ///
+    /// Most users won't call this directly: [`Agent::spawn`] sets it
+    /// implicitly. You only need it when declaring a sub-agent *template*
+    /// (via `.sub_agents([...])`) that should idle while waiting for peer
+    /// messages after the orchestrator spawns it in the background.
     pub fn keep_alive(self) -> Self {
         self.with_config(|c| c.keep_alive = true)
     }
@@ -353,8 +357,8 @@ impl Agent {
         self.with_runtime(|r| r.cancel_signal = Some(s))
     }
 
-    /// Install an externally-owned command queue. Only used by `Agent::create`
-    /// so the returned `RunningAgent` can inject instructions into the loop.
+    /// Install an externally-owned command queue. Only used by `Agent::spawn`
+    /// so the returned `AgentHandle` can inject instructions into the loop.
     pub(crate) fn command_queue(self, q: Arc<CommandQueue>) -> Self {
         self.with_runtime(|r| r.command_queue = Some(q))
     }
@@ -380,26 +384,44 @@ impl Agent {
         run_loop(Arc::new(runtime), Arc::new(spec), None).await
     }
 
-    /// Start the agent on a background tokio task and return a
-    /// [`RunningAgent`] handle for injecting new instructions, cancelling, or
-    /// awaiting the final output.
+    /// Start the agent on a background tokio task and return a pair:
+    ///
+    /// - [`AgentHandle`] — cheap, clonable handle for injecting new
+    ///   instructions, cancelling, or inspecting state.
+    /// - [`AgentOutputFuture`] — resolves to the final
+    ///   [`AgentOutput`](crate::agent::AgentOutput) once the loop exits.
+    ///
+    /// The loop idles after each terminal output as long as any handle is
+    /// alive. Dropping the last handle calls [`AgentHandle::cancel`] for you
+    /// (RAII safety); an explicit `.cancel()` does the same thing. For a
+    /// pure one-shot run without a handle, use [`Agent::run`] instead — a
+    /// `let (_, out) = agent.spawn(); out.await?` pattern will cancel
+    /// before the first turn completes.
     ///
     /// Requires a running tokio runtime (`tokio::spawn` is invoked
     /// synchronously). Requires `.provider()` and `.instruction_prompt()`.
-    pub fn create(self) -> RunningAgent {
+    pub fn spawn(self) -> (AgentHandle, AgentOutputFuture) {
         let queue = Arc::new(CommandQueue::new());
         let cancel = Arc::new(AtomicBool::new(false));
         let stopped = Arc::new(AtomicBool::new(false));
+        let life = LifeToken::new(cancel.clone());
+
         let prepared = self
             .cancel_signal(cancel.clone())
-            .command_queue(queue.clone());
+            .command_queue(queue.clone())
+            .keep_alive();
+
         let stopped_for_task = stopped.clone();
         let join = tokio::spawn(async move {
             let result = prepared.run().await;
             stopped_for_task.store(true, Ordering::Relaxed);
             result
         });
-        RunningAgent::new(queue, cancel, stopped, join)
+
+        let state = Arc::new(HandleState { queue, cancel, stopped });
+        let handle = AgentHandle::new(state, life);
+        let output = AgentOutputFuture::new(join);
+        (handle, output)
     }
 
     /// Crate-internal: run this agent as a child under a parent's run-tree.
