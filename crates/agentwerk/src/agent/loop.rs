@@ -1,14 +1,4 @@
-//! Agent execution loop.
-//!
-//! Two internal structs `run_loop` consumes (alongside
-//! [`super::spec::AgentSpec`]):
-//! - `LoopRuntime` — externals (provider, event handler, cancel, queue,
-//!   session) plus two per-run resolved values (`tools` with `SpawnAgentTool`
-//!   auto-wired, and a snapshot of `template_variables` for interpolation).
-//! - `LoopState` — mutable per-run state (messages, counters).
-//!
-//! Plus `run_loop` — the per-turn async function that drives one agent to
-//! completion or a guard exit.
+//! The execution kernel. Runs a compiled `Agent` turn by turn until it yields an `AgentOutput` or hits a guard.
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -37,10 +27,6 @@ use super::prompts::{self as prompts};
 use super::queue::{CommandQueue, QueuePriority};
 use super::spec::AgentSpec;
 
-// ---------------------------------------------------------------------------
-// LoopRuntime — external services & I/O handles
-// ---------------------------------------------------------------------------
-
 /// Per-run externals and resolved runtime values. Shared as `Arc<LoopRuntime>`.
 /// The fields under "externals" inherit tree-wide (a child sub-agent reuses the
 /// parent's provider, handlers, queue, etc.); `tools` and `template_variables`
@@ -56,18 +42,14 @@ pub(crate) struct LoopRuntime {
     pub metadata: Option<String>,
     pub discovered_tools: Arc<Mutex<HashSet<String>>>,
 
-    // Per-agent resolutions.
-    /// Agent's tools with `SpawnAgentTool` auto-wired (when `sub_agents`
-    /// is non-empty and no user tool with that name exists).
+    // Per-agent resolutions. `tools` has `SpawnAgentTool` auto-wired when the agent
+    // declared sub_agents; `template_variables` is a snapshot taken at compile time.
     pub tools: Arc<ToolRegistry>,
-    /// Snapshot of the agent's template variables at compile time.
-    /// The loop passes this into `AgentSpec::system_prompt` each turn.
     pub template_variables: HashMap<String, Value>,
 }
 
 impl LoopRuntime {
-    /// Build the environment metadata block — working directory, platform, OS
-    /// version, and current date — for prepending to the first user message.
+    /// Build the environment metadata block prepended to the first user message.
     pub(crate) fn environment(working_directory: &Path) -> String {
         let working_directory = working_directory.display();
         let platform = std::env::consts::OS;
@@ -83,10 +65,6 @@ impl LoopRuntime {
     }
 }
 
-// ---------------------------------------------------------------------------
-// LoopState — mutable per-agent state
-// ---------------------------------------------------------------------------
-
 /// Everything the loop mutates. Created fresh for each agent run.
 #[derive(Default)]
 pub(crate) struct LoopState {
@@ -100,10 +78,8 @@ pub(crate) struct LoopState {
 }
 
 impl LoopState {
-    /// Build the initial state. `context_prompt` (if present) and `instruction`
-    /// are each pushed as user messages — both computed by `Agent::run` /
-    /// `Agent::run_child` and passed in, since building them needs access to
-    /// the `Agent`'s per-run fields (for interpolation) and `LoopRuntime.metadata`.
+    /// Build the initial state. Both `context_prompt` and `instruction` are precomputed by the
+    /// caller because assembling them needs `Agent`'s per-run fields, which this module does not see.
     pub(crate) fn initial(context_prompt: Option<String>, instruction: String) -> Self {
         let mut messages = Vec::new();
         if let Some(cp) = context_prompt {
@@ -116,11 +92,6 @@ impl LoopState {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Execution loop — run_loop + its per-turn helpers (guards, provider call,
-// compaction seams, tool execution, completion, transcript, events)
-// ---------------------------------------------------------------------------
 
 /// The agent execution loop — one turn per iteration.
 ///
@@ -642,10 +613,6 @@ fn last_assistant_text(messages: &[Message]) -> String {
         })
         .unwrap_or_default()
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -1172,8 +1139,6 @@ mod tests {
         ]))
     }
 
-    // ----- Wake-source matrix -----
-
     #[tokio::test]
     async fn wake_on_peer_message_targeted_at_me() {
         let (harness, queue) = listener_harness(two_text_responses());
@@ -1233,8 +1198,6 @@ mod tests {
             "user input (broadcast) should wake the listener"
         );
     }
-
-    // ----- Lifecycle matrix -----
 
     #[tokio::test]
     async fn one_shot_when_keep_alive_unset() {

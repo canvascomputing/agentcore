@@ -1,3 +1,5 @@
+//! The `Provider` trait every LLM backend implements, plus the request shape callers pass in. The one seam between the agent loop and any particular LLM API.
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;

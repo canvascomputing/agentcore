@@ -1,3 +1,5 @@
+//! Small internal helpers shared across the crate — name generation, date formatting, and shell invocation.
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) fn generate_agent_name(name: &str) -> String {

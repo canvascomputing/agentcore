@@ -14,10 +14,6 @@ use agentwerk::{
 };
 use serde_json::{json, Value};
 
-// ---------------------------------------------------------------------------
-// Prompts & Schemas
-// ---------------------------------------------------------------------------
-
 const DISCOVERY_PROMPT: &str = "\
 You are a file discovery agent. Analyze the repository at {folder_path}.
 
@@ -61,10 +57,6 @@ fn summarize_schema() -> Value {
         "required": ["summary", "language"]
     })
 }
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
 
 #[tokio::main]
 async fn main() {
@@ -225,10 +217,6 @@ fn write_output(path: &str, json: &Value) {
     std::fs::write(path, &pretty).expect("Failed to write output file");
     eprintln!("\nResult written to {path}");
 }
-
-// ---------------------------------------------------------------------------
-// CLI
-// ---------------------------------------------------------------------------
 
 struct CliConfig {
     folder: PathBuf,

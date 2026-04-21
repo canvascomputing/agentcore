@@ -1,3 +1,5 @@
+//! File discovery by glob pattern. Lets an agent enumerate candidates before committing to read or edit any specific file.
+
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;

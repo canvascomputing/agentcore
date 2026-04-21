@@ -1,6 +1,4 @@
-//! OpenAI provider. Sibling modules [`super::mistral`] and
-//! [`super::litellm`] reuse this provider's wire format against their own
-//! base URLs.
+//! OpenAI's Chat Completions API. The sibling `mistral` and `litellm` providers reuse this wire format against different base URLs.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -209,10 +207,6 @@ fn classify_400(body: &str) -> Option<ProviderError> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Streaming
-// ---------------------------------------------------------------------------
-
 async fn stream_response(
     response: reqwest::Response,
     on_event: &Arc<dyn Fn(StreamEvent) + Send + Sync>,
@@ -360,10 +354,6 @@ fn parse_streaming_usage(u: &Value, cache_tokens: bool, dst: &mut TokenUsage) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Serialization
-// ---------------------------------------------------------------------------
-
 fn serialize_request(request: &CompletionRequest) -> Value {
     let mut body = serde_json::json!({
         "model": request.model,
@@ -491,10 +481,6 @@ fn serialize_tool_choice(choice: &ToolChoice) -> Value {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Response parsing (non-streaming)
-// ---------------------------------------------------------------------------
-
 fn parse_response(json: Value, cache_tokens: bool) -> CompletionResponse {
     let choice = &json["choices"][0];
     let message = &choice["message"];
@@ -585,8 +571,6 @@ mod tests {
         }
     }
 
-    // --- Serialization ---
-
     #[test]
     fn serialize_system_prompt_as_message() {
         let body = serialize_request(&dummy_request());
@@ -640,8 +624,6 @@ mod tests {
         assert_eq!(body["tool_choice"]["type"], "function");
         assert_eq!(body["tool_choice"]["function"]["name"], "read_file");
     }
-
-    // --- Response parsing ---
 
     #[test]
     fn parse_text_response() {
@@ -748,13 +730,6 @@ mod tests {
         assert_eq!(resp.usage.cache_creation_input_tokens, 0);
     }
 
-    // --- Error classification -------------------------------------------
-    //
-    // One test per variant OpenAI-compatible `classify_error` maps, plus a
-    // negative guardrail and a message-preservation check. Tests feed the
-    // classifier a literal HTTP body, showing exactly what makes each case
-    // distinct.
-
     fn body_400(code: &str, message: &str) -> String {
         serde_json::json!({
             "error": {
@@ -860,8 +835,6 @@ mod tests {
             "maximum context length is 8192 tokens; requested 12000"
         );
     }
-
-    // --- ModelLookup ----------------------------------------------------
 
     #[test]
     fn lookup_gpt_5_family_returns_400k() {

@@ -1,3 +1,5 @@
+//! Content search across files. Gives a model a way to locate the relevant code before opening any single file.
+
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -118,8 +120,6 @@ impl Toolable for GrepTool {
     }
 }
 
-// --- Search modes ---
-
 fn search_content(
     files: &[PathBuf],
     base: &Path,
@@ -222,8 +222,6 @@ fn search_files(
 
     matched.join("\n")
 }
-
-// --- Helpers ---
 
 fn line_matches(line: &str, needle: &str, case_insensitive: bool) -> bool {
     if case_insensitive {

@@ -1,3 +1,5 @@
+//! Shared helpers for the file and shell tools — glob matching and process invocation.
+
 use std::path::Path;
 use std::time::Duration;
 

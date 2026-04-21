@@ -13,10 +13,6 @@ use std::sync::Arc;
 
 use agentwerk::{Agent, AgentEvent, AgentEventKind, WebFetchTool};
 
-// ---------------------------------------------------------------------------
-// Prompts
-// ---------------------------------------------------------------------------
-
 const PRICING_RESEARCHER_PROMPT: &str = "\
 You are a pricing researcher. Fetch current model pricing from provider websites.\n\n\
 Fetch these URLs using the web_fetch tool:\n\
@@ -40,10 +36,6 @@ Include provider, model_id, input_per_million, output_per_million for each.\n\n\
 CRITICAL: Always set the 'agent' field to 'pricing_researcher'. \
 Do NOT add explanation. Just spawn the agent, then output the structured result.";
 
-// ---------------------------------------------------------------------------
-// Output schema
-// ---------------------------------------------------------------------------
-
 fn output_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -65,10 +57,6 @@ fn output_schema() -> serde_json::Value {
         "required": ["models"]
     })
 }
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
 
 #[tokio::main]
 async fn main() {
@@ -119,10 +107,6 @@ async fn main() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// AgentEvent logging
-// ---------------------------------------------------------------------------
-
 fn log_event(event: &AgentEvent) {
     match &event.kind {
         AgentEventKind::RequestStart { model, .. } => {
@@ -160,10 +144,6 @@ fn tool_call_detail(tool_name: &str, input: &serde_json::Value) -> String {
     };
     input[key].as_str().unwrap_or("").into()
 }
-
-// ---------------------------------------------------------------------------
-// CLI
-// ---------------------------------------------------------------------------
 
 fn parse_args() -> String {
     let args: Vec<String> = std::env::args().collect();

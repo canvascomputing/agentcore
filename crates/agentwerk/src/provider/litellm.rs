@@ -1,7 +1,4 @@
-//! LiteLLM proxy provider — OpenAI-compatible wire format against a local
-//! LiteLLM instance (default `http://localhost:4000`). Enables prompt caching
-//! since LiteLLM proxies providers (Anthropic, Bedrock, etc.) that report
-//! cache-read and cache-creation token counts.
+//! LiteLLM proxy provider. Points the OpenAI-compatible wire format at a local LiteLLM instance so callers can switch backend providers without touching agent code.
 
 use std::future::Future;
 use std::pin::Pin;

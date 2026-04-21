@@ -1,8 +1,4 @@
-//! Prompt infrastructure: behavior defaults and structured-output constants.
-
-// ---------------------------------------------------------------------------
-// Behavior prompts
-// ---------------------------------------------------------------------------
+//! Default behavior prompt and structured-output instructions the loop appends to user-supplied system prompts.
 
 /// Default behavioral directives appended to the system prompt after the
 /// identity prompt. Override with `Agent::behavior_prompt()`.
@@ -27,10 +23,6 @@ pub const DEFAULT_BEHAVIOR_PROMPT: &str = "\
 - Be direct. Lead with the answer or action, not the reasoning.
 - Keep output concise — omit filler, preamble, and unnecessary transitions.
 - Try the simplest approach first.";
-
-// ---------------------------------------------------------------------------
-// Structured output constants
-// ---------------------------------------------------------------------------
 
 pub(crate) const MAX_TOKENS_CONTINUATION: &str =
     "Your previous response was cut off because it reached the output token limit. \

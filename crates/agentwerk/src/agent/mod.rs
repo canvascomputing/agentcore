@@ -1,3 +1,5 @@
+//! Agent builder surface and execution loop. This is the package every user of the crate reaches into first.
+
 pub(crate) mod agent;
 pub(crate) mod compact;
 mod event;

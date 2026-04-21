@@ -1,3 +1,5 @@
+//! In-process command queue that feeds a running agent with late-arriving input (user messages, peer messages, task notifications).
+
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -129,8 +131,6 @@ mod tests {
         }
     }
 
-    // ----- is_visible_to -----
-
     #[test]
     fn is_visible_to_broadcast_visible_to_any_agent() {
         let c = cmd(None, QueuePriority::Next);
@@ -151,8 +151,6 @@ mod tests {
         let c = cmd(Some("alice"), QueuePriority::Next);
         assert!(!c.is_visible_to(None));
     }
-
-    // ----- dequeue_if -----
 
     #[test]
     fn dequeue_if_returns_none_when_empty() {
@@ -185,8 +183,6 @@ mod tests {
         let second = q.dequeue_if(Some("alice"), |_| true).unwrap();
         assert_eq!(second.priority, QueuePriority::Next);
     }
-
-    // ----- as_user_message -----
 
     #[test]
     fn as_user_message_plain_source_is_content_only() {

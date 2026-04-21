@@ -1,3 +1,5 @@
+//! The agent's eyes on the filesystem. Lets a model read a file it did not receive in the prompt.
+
 use std::future::Future;
 use std::pin::Pin;
 

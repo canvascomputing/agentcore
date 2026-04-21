@@ -1,3 +1,5 @@
+//! Peer-to-peer agent messaging. Routes a message through the shared `CommandQueue` so a running sibling agent picks it up at the next turn boundary.
+
 use std::future::Future;
 use std::pin::Pin;
 

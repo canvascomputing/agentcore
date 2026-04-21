@@ -1,3 +1,5 @@
+//! File-based task store with per-task locking. Survives process restarts and lets peer agents coordinate through shared task records.
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};

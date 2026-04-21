@@ -1,3 +1,5 @@
+//! In-place find-and-replace on a file, so a model can modify existing code without restating the whole file.
+
 use std::future::Future;
 use std::pin::Pin;
 

@@ -38,22 +38,6 @@ use agentwerk::testutil::{
 };
 use agentwerk::{Agent, AgenticError, CompletionRequest, ContentBlock, Message, SpawnAgentTool};
 
-// ---------------------------------------------------------------------------
-// Shared fixtures
-// ---------------------------------------------------------------------------
-//
-// Two schemas are used across the file:
-//
-// - `answer_schema` is a one-field object — kept deliberately minimal so the
-//   centerpiece snapshot stays compact and so failure-mode tests can isolate
-//   one failure axis at a time.
-//
-// - `report_schema` is the kind of structure a real downstream caller actually
-//   asks for — nested objects in an array, mixed primitive types, multiple
-//   required fields at depth. It exercises the validator's recursive path
-//   tracking (e.g. `findings.[0].line`) and proves the spawn boundary
-//   preserves the JSON byte-for-byte even when it's non-trivial.
-
 fn answer_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -98,21 +82,6 @@ fn report_agent() -> Agent {
         .behavior_prompt("")
         .output_schema(report_schema())
 }
-
-// ---------------------------------------------------------------------------
-// Snapshot constants — the state machine's nodes
-// ---------------------------------------------------------------------------
-//
-// Centerpiece scenario: a code-review agent with a nested-array schema. The
-// model's first reply is well-formed JSON but missing the `summary` field —
-// a realistic mistake that exercises the validator's path-aware error
-// reporting. The corrective user message names the exact field, the model
-// fixes it on the second attempt, and the loop terminates.
-//
-// `INVALID_REPORT_JSON` is intentionally close to valid: same top-level
-// keys minus `summary`, empty `findings` array. That way the snapshot
-// documents what a *typed* schema failure looks like (vs. a raw parse
-// error), which is the more interesting failure mode in practice.
 
 const INVALID_REPORT_JSON: &str = r#"{"category":"security","priority":"high","findings":[]}"#;
 
@@ -202,10 +171,6 @@ Validator said: Schema validation error at summary: missing required field
 {\"category\":\"security\",\"priority\":\"high\",\"summary\":\"Two SQL-injection paths in the auth flow.\",\"findings\":[{\"file\":\"src/auth.rs\",\"line\":47,\"severity\":\"critical\"},{\"file\":\"src/db.rs\",\"line\":112,\"severity\":\"high\"}]}
 ";
 
-// ---------------------------------------------------------------------------
-// Centerpiece — invalid → corrective message → valid → terminate
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn state_machine_advances_invalid_then_valid() {
     // Two turns:
@@ -222,7 +187,6 @@ async fn state_machine_advances_invalid_then_valid() {
         .await
         .unwrap();
 
-    // --- contract checks (cheap, fail fast) ---------------------------
     assert_eq!(
         harness.provider().request_count(),
         2,
@@ -234,17 +198,13 @@ async fn state_machine_advances_invalid_then_valid() {
         Some(serde_json::from_str::<serde_json::Value>(VALID_REPORT_JSON).unwrap()),
     );
 
-    // --- S0, S1: snapshots taken from real requests --------------------
     let reqs = harness.provider().requests.lock().unwrap();
     let state = |i: usize| canonicalize(&render(&reqs[i]));
     assert_eq!(state(0), S0_INITIAL);
     assert_eq!(state(1), S1_AFTER_INVALID_REPLY);
 
-    // --- S2: synthesized terminal state -------------------------------
-    // The loop terminated on turn 2 without sending a third request, so
-    // there's no req[2] to inspect. Reconstruct what req[2] *would* have
-    // looked like — req[1]'s context plus the final assistant reply —
-    // so the snapshot documents the entire state machine end-to-end.
+    // Loop terminated on turn 2 without a third request. Reconstruct what req[2] would have been
+    // (req[1]'s context plus the final assistant reply) to snapshot the end-to-end state machine.
     let mut terminal_messages = reqs[1].messages.clone();
     terminal_messages.push(Message::Assistant {
         content: vec![ContentBlock::Text {
@@ -254,10 +214,6 @@ async fn state_machine_advances_invalid_then_valid() {
     let terminal = render_conversation(&reqs[1].system_prompt, &terminal_messages);
     assert_eq!(canonicalize(&terminal), S2_AFTER_VALID_REPLY);
 }
-
-// ---------------------------------------------------------------------------
-// Architectural invariant — guards the rewrite itself
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn schema_agent_does_not_inject_synthetic_tool() {
@@ -311,10 +267,6 @@ async fn schema_agent_with_user_tools_still_advertises_no_synthetic_tool() {
     );
     assert!(req.tool_choice.is_none());
 }
-
-// ---------------------------------------------------------------------------
-// A. Happy paths — single-turn termination, lenient parsing
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn valid_json_terminates_in_one_turn() {
@@ -379,10 +331,6 @@ async fn valid_complex_report_terminates_in_one_turn() {
     assert_eq!(findings[1]["file"], "src/db.rs");
     assert_eq!(findings[1]["line"], 112);
 }
-
-// ---------------------------------------------------------------------------
-// B. Retry / failure paths — corrective messages, exhaustion
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn non_json_reply_triggers_retry_with_validator_detail() {
@@ -496,10 +444,6 @@ async fn retry_exhaustion_returns_schema_retry_exhausted() {
     ));
 }
 
-// ---------------------------------------------------------------------------
-// C. Tools and end-condition interactions
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn tools_run_first_then_validation_at_natural_end() {
     // Schema validation must NOT run while the loop is mid-tool-use. The
@@ -579,10 +523,6 @@ async fn turn_limit_skips_validation() {
     assert_eq!(output.status, AgentStatus::TurnLimitReached { limit: 1 });
     assert_eq!(output.response, None);
 }
-
-// ---------------------------------------------------------------------------
-// D. Sub-agent boundary — the original propagation bug
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn sub_agent_with_schema_returns_json_in_tool_result() {
@@ -687,10 +627,6 @@ async fn ad_hoc_spawned_agent_declares_schema_via_overrides() {
 // and can assert directly on the notification content. From here the queue
 // is unreachable, so an integration test would only duplicate coverage
 // while introducing tokio-spawn races between parent and child mock pops.)
-
-// ---------------------------------------------------------------------------
-// Helpers — pedagogical, not library API. Kept private to this test file.
-// ---------------------------------------------------------------------------
 
 fn schema_agent() -> Agent {
     Agent::new()

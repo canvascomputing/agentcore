@@ -1,3 +1,5 @@
+//! The `Provider` trait and the vendor-specific implementations that speak to Anthropic, OpenAI-compatible APIs, Mistral, and LiteLLM.
+
 mod anthropic;
 pub mod environment;
 mod error;

@@ -1,3 +1,5 @@
+//! End-to-end: a real LLM uses `BashTool` to run a command and returns the output. Guards that the shell reach works through the live provider path.
+
 use super::common;
 
 use agentwerk::{Agent, BashTool};

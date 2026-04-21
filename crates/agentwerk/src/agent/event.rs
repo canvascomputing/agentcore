@@ -1,3 +1,5 @@
+//! Structured events the loop emits so callers can observe a run (turns, tool calls, compactions, completion) without wrapping the loop itself.
+
 use std::sync::Arc;
 
 use crate::agent::compact::CompactReason;

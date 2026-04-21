@@ -1,20 +1,4 @@
-//! Handle + future pair returned by [`Agent::spawn`](crate::Agent::spawn).
-//!
-//! Spawning an agent puts its loop on a background tokio task and returns two
-//! values:
-//!
-//! - [`AgentHandle`] — a cheap, `Clone`able handle for injecting new
-//!   instructions, cancelling, or inspecting state. As long as any handle is
-//!   alive, the loop idles after a terminal output instead of exiting.
-//! - [`AgentOutputFuture`] — resolves to the agent's final
-//!   [`AgentOutput`](crate::agent::AgentOutput) once the loop exits.
-//!
-//! The loop exits when any of:
-//!
-//! 1. [`AgentHandle::cancel`] is called on any clone (explicit signal),
-//! 2. the last [`AgentHandle`] is dropped (RAII auto-cancel), or
-//! 3. the [`AgentOutputFuture`] is dropped unawaited (RAII auto-cancel,
-//!    result abandoned).
+//! Starts an agent on a background task and returns a handle + future pair, so the caller can send instructions, cancel, or await the result without blocking.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -158,12 +142,6 @@ impl Future for AgentOutputFuture {
     }
 }
 
-// ---------------------------------------------------------------------------
-// `Agent::spawn` — starts the loop on a background task and returns the
-// handle / output-future pair defined above. Co-located with the types it
-// constructs rather than with the rest of the `Agent` builder surface.
-// ---------------------------------------------------------------------------
-
 impl Agent {
     /// Start the agent on a background tokio task and return a pair:
     ///
@@ -210,10 +188,6 @@ impl Agent {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests for the `AgentHandle` / `AgentOutputFuture` surface.
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,10 +198,6 @@ mod tests {
     use crate::provider::types::{CompletionResponse, ContentBlock, Message};
     use crate::testutil::{text_response, MockProvider};
     use crate::CompletionRequest;
-
-    // -------------------------------------------------------------------
-    // A. Shape & wiring
-    // -------------------------------------------------------------------
 
     #[tokio::test]
     async fn spawn_returns_handle_and_future() {
@@ -251,10 +221,6 @@ mod tests {
         handle.cancel();
         let _ = output.await;
     }
-
-    // -------------------------------------------------------------------
-    // B. Message delivery
-    // -------------------------------------------------------------------
 
     #[tokio::test]
     async fn send_enqueues_user_input_command() {
@@ -301,10 +267,6 @@ mod tests {
         ));
     }
 
-    // -------------------------------------------------------------------
-    // C. Clone sharing
-    // -------------------------------------------------------------------
-
     #[tokio::test]
     async fn clone_shares_queue() {
         let (handle, output) = one_shot_agent("done");
@@ -339,10 +301,6 @@ mod tests {
         assert!(handle.is_stopped() && other.is_stopped());
     }
 
-    // -------------------------------------------------------------------
-    // D. Explicit cancel
-    // -------------------------------------------------------------------
-
     #[tokio::test]
     async fn cancel_during_idle_preserves_completed_status() {
         let events = EventLog::new();
@@ -374,10 +332,6 @@ mod tests {
         let _ = output.await.expect("output");
         assert!(handle.is_stopped());
     }
-
-    // -------------------------------------------------------------------
-    // E. RAII — the core new behavior
-    // -------------------------------------------------------------------
 
     #[tokio::test]
     async fn dropping_last_handle_triggers_cancel() {
@@ -425,10 +379,6 @@ mod tests {
         wait_until(|| handle.is_stopped()).await;
     }
 
-    // -------------------------------------------------------------------
-    // F. Event stream
-    // -------------------------------------------------------------------
-
     #[tokio::test]
     async fn keep_alive_idle_and_resumed_events_still_fire() {
         let events = EventLog::new();
@@ -448,10 +398,6 @@ mod tests {
         let _ = output.await;
     }
 
-    // -------------------------------------------------------------------
-    // H. Regression / negative
-    // -------------------------------------------------------------------
-
     #[tokio::test]
     async fn awaiting_future_twice_returns_error() {
         // AgentOutputFuture consumes its inner JoinHandle on completion;
@@ -462,10 +408,6 @@ mod tests {
         let second = output.await;
         assert!(matches!(second, Err(AgenticError::Other(_))));
     }
-
-    // -------------------------------------------------------------------
-    // Helpers
-    // -------------------------------------------------------------------
 
     fn one_shot_agent(text: &str) -> (AgentHandle, AgentOutputFuture) {
         Agent::new()

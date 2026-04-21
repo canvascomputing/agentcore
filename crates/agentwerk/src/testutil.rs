@@ -1,3 +1,5 @@
+//! Mock provider, mock tool, and test harness that let unit tests drive the agent loop without reaching a live LLM.
+
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::PathBuf;
@@ -139,10 +141,6 @@ pub fn tool_response(tool_name: &str, id: &str, input: serde_json::Value) -> Com
     }
 }
 
-// ---------------------------------------------------------------------------
-// MockTool
-// ---------------------------------------------------------------------------
-
 pub struct MockTool {
     pub name: String,
     pub read_only: bool,
@@ -228,17 +226,9 @@ impl Toolable for DeferredMockTool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tool context helpers
-// ---------------------------------------------------------------------------
-
 pub fn test_tool_context() -> ToolContext {
     ToolContext::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
-
-// ---------------------------------------------------------------------------
-// AgentEventCollector
-// ---------------------------------------------------------------------------
 
 pub struct AgentEventCollector {
     events: Arc<Mutex<Vec<AgentEvent>>>,
@@ -310,10 +300,6 @@ impl AgentEventCollector {
             .collect()
     }
 }
-
-// ---------------------------------------------------------------------------
-// TestHarness
-// ---------------------------------------------------------------------------
 
 pub struct TestHarness {
     provider: Arc<MockProvider>,

@@ -1,3 +1,5 @@
+//! End-to-end: a real LLM combines `GlobTool` and `ReadFileTool` to explore a directory. Guards the file-discovery loop against a live provider.
+
 use super::common;
 
 use agentwerk::{Agent, GlobTool, ReadFileTool};

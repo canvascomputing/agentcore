@@ -1,3 +1,5 @@
+//! Lets an agent create or overwrite a file on disk. Pairs with `read_file` and `edit_file` to give a model full file-editing reach.
+
 use std::future::Future;
 use std::pin::Pin;
 

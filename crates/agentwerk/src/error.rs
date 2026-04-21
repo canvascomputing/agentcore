@@ -1,3 +1,5 @@
+//! Single error type every fallible API returns, so callers match one `Result` surface instead of a union of provider-, tool-, IO-, and validation-specific errors.
+
 use std::fmt;
 
 use crate::provider::ProviderError;
@@ -6,27 +8,15 @@ pub type Result<T> = std::result::Result<T, AgenticError>;
 
 #[derive(Debug)]
 pub enum AgenticError {
-    /// Anything raised by a [`Provider`](crate::provider::Provider) call.
     Provider(ProviderError),
-    Tool {
-        tool_name: String,
-        message: String,
-    },
+    Tool { tool_name: String, message: String },
     Io(std::io::Error),
     Json(serde_json::Error),
     Aborted,
     MaxTurnsExceeded(u32),
-    ContextOverflow {
-        token_count: u64,
-        limit: u64,
-    },
-    SchemaValidation {
-        path: String,
-        message: String,
-    },
-    SchemaRetryExhausted {
-        retries: u32,
-    },
+    ContextOverflow { token_count: u64, limit: u64 },
+    SchemaValidation { path: String, message: String },
+    SchemaRetryExhausted { retries: u32 },
     NotImplemented(&'static str),
     Other(String),
 }

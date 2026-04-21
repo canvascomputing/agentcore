@@ -13,10 +13,6 @@ use std::sync::Arc;
 
 use agentwerk::{Agent, AgentEvent, AgentEventKind, AgenticError, Tool, ToolResult};
 
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
 #[tokio::main]
 async fn main() {
     let question = parse_question();
@@ -66,10 +62,6 @@ async fn main() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Prompts
-// ---------------------------------------------------------------------------
-
 const RESEARCHER_PROMPT: &str =
     "You are a thorough researcher. Given a question, search the web 1-2 times \
      for evidence from both sides — arguments in favor AND against. \
@@ -84,10 +76,6 @@ const REPORT_WRITER_PROMPT: &str = "You are a decision analyst. Given a question
      all in the same message. Do NOT wait for one to finish before spawning the next.\n\n\
      Your output must be plain text only — no markdown, no bullet points, no special formatting. \
      The research field must be under 500 characters.";
-
-// ---------------------------------------------------------------------------
-// Output schema
-// ---------------------------------------------------------------------------
 
 fn format_title_first(data: &serde_json::Value) -> String {
     let Some(obj) = data.as_object() else {
@@ -128,10 +116,6 @@ fn output_schema() -> serde_json::Value {
         "required": ["title", "research"]
     })
 }
-
-// ---------------------------------------------------------------------------
-// Brave Search tool
-// ---------------------------------------------------------------------------
 
 fn brave_search_tool(api_key: String) -> impl agentwerk::Toolable {
     Tool::new(
@@ -211,10 +195,6 @@ fn urlencode(s: &str) -> String {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// AgentEvent handler
-// ---------------------------------------------------------------------------
-
 fn log_event(event: &AgentEvent) {
     match &event.kind {
         AgentEventKind::RequestStart { model } => {
@@ -253,10 +233,6 @@ fn tool_call_summary(tool_name: &str, input: &serde_json::Value) -> String {
         _ => serde_json::to_string(input).unwrap_or_default(),
     }
 }
-
-// ---------------------------------------------------------------------------
-// CLI
-// ---------------------------------------------------------------------------
 
 fn parse_question() -> String {
     let args: Vec<String> = std::env::args().collect();

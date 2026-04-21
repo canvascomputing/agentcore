@@ -1,3 +1,5 @@
+//! Shell access for agents. Two constructors separate the safe pattern-restricted default from the unrestricted power-tool variant.
+
 use std::future::Future;
 use std::pin::Pin;
 

@@ -1,3 +1,5 @@
+//! On-disk JSONL transcript of an agent run. Keeps runs inspectable and replayable after the process exits.
+
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};

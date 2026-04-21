@@ -1,4 +1,4 @@
-//! Mistral provider — OpenAI-compatible wire format against api.mistral.ai.
+//! Mistral provider. Thin wrapper that points the OpenAI-compatible wire format at api.mistral.ai.
 
 use std::future::Future;
 use std::pin::Pin;

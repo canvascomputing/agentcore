@@ -1,3 +1,5 @@
+//! Fetches a URL and returns its extracted text. Gives an agent access to external documentation the prompt cannot enumerate up front.
+
 use std::future::Future;
 use std::pin::Pin;
 

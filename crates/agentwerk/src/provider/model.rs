@@ -1,3 +1,5 @@
+//! Per-model knowledge of context window size and compaction thresholds. The loop consults this to decide when a conversation must be shrunk.
+
 use super::{AnthropicProvider, MistralProvider, OpenAiProvider};
 
 /// Model metadata: the id plus anything we know about its capabilities.

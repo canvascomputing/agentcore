@@ -1,3 +1,5 @@
+//! Core tool infrastructure — the `Toolable` trait, the ad-hoc `Tool` struct, and the registry the loop consults before each provider call.
+
 use std::collections::HashSet;
 use std::future::Future;
 use std::path::PathBuf;
@@ -11,22 +13,14 @@ use crate::agent::{AgentSpec, LoopRuntime};
 use crate::error::Result;
 use crate::provider::types::ContentBlock;
 
-// ---------------------------------------------------------------------------
-// Core types
-// ---------------------------------------------------------------------------
-
-/// Context passed to tool execution.
+/// Context passed to tool execution. `runtime` and `caller_spec` are ambient internals —
+/// `SpawnAgentTool` and `ToolSearchTool` read them to reach the run's provider / handlers /
+/// queue and to inherit the caller's resolved model; external tool authors do not use them.
 #[derive(Clone)]
 pub struct ToolContext {
     pub working_directory: PathBuf,
     pub(crate) tool_registry: Option<Arc<ToolRegistry>>,
-    /// Ambient externals for the run (provider, handlers, queue, session). Used by
-    /// internal tools that need to spawn sub-agents — external tool authors do not
-    /// have access.
     pub(crate) runtime: Option<Arc<LoopRuntime>>,
-    /// The caller agent's compiled spec (name, model, sub_agents). Used by
-    /// `SpawnAgentTool` to resolve registered sub-agents and to pass the caller's
-    /// resolved model as inheritance fallback to children.
     pub(crate) caller_spec: Option<Arc<AgentSpec>>,
 }
 
@@ -55,9 +49,6 @@ impl ToolContext {
         self
     }
 
-    /// Register a deferred tool as discovered so its full definition is sent to the
-    /// model on subsequent requests. Used by `ToolSearchTool` — external tool authors
-    /// have no use for this.
     pub(crate) fn mark_tool_discovered(&self, name: &str) {
         if let Some(runtime) = self.runtime.as_ref() {
             runtime
@@ -127,10 +118,6 @@ impl ToolResult {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Toolable trait
-// ---------------------------------------------------------------------------
-
 /// The core tool interface. Object-safe via boxed futures.
 ///
 /// Implement this on any type you want an agent to be able to invoke. For ad-hoc
@@ -167,10 +154,6 @@ pub trait Toolable: Send + Sync {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// ToolRegistry
-// ---------------------------------------------------------------------------
 
 /// Registry of tools available to an agent.
 pub(crate) struct ToolRegistry {
@@ -334,10 +317,6 @@ impl Clone for ToolRegistry {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tool (concrete, ad-hoc)
-// ---------------------------------------------------------------------------
-
 type ToolHandler = Box<
     dyn Fn(Value, &ToolContext) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + '_>>
         + Send
@@ -453,10 +432,6 @@ impl Toolable for Tool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tool batching helpers (used by ToolRegistry::execute)
-// ---------------------------------------------------------------------------
-
 fn content_block_for(tool_use_id: &str, result: &ToolResult) -> ContentBlock {
     let (content, is_error) = match result {
         ToolResult::Success(s) => (s.clone(), false),
@@ -497,10 +472,6 @@ fn partition_tool_calls(calls: &[ToolCall], registry: &ToolRegistry) -> Vec<Tool
 
     batches
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

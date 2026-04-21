@@ -1,8 +1,4 @@
-//! Context-window compaction seam. Two triggers are wired into the agent
-//! loop: [`trigger_if_over_threshold`] (estimate ≥ threshold) and
-//! [`trigger_reactive`] (provider-reported overflow). Both emit a
-//! [`AgentEventKind::CompactTriggered`] event and call [`run`], which is a stub
-//! today.
+//! Context-window compaction seam. Decides when a conversation is too big for the model and hands off to the compaction strategy.
 
 use crate::agent::event::{AgentEvent, AgentEventKind};
 use crate::agent::r#loop::{LoopRuntime, LoopState};

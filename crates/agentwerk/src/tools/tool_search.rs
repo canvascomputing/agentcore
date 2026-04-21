@@ -1,3 +1,5 @@
+//! Deferred-tool discovery. Lets an agent browse and surface tools that were withheld from its initial definitions block to keep the system-prompt context small.
+
 use std::future::Future;
 use std::pin::Pin;
 

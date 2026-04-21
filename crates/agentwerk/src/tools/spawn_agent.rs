@@ -1,3 +1,5 @@
+//! Sub-agent invocation. Auto-registered when an agent declares `sub_agents`; lets a model delegate a subtask to a pre-configured child.
+
 use std::future::Future;
 use std::pin::Pin;
 

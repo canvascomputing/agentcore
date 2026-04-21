@@ -1,3 +1,5 @@
+//! Task-management tools (create, update, list, claim, …) that let an agent coordinate work with peers through the durable `TaskStore`.
+
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;

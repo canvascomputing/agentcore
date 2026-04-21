@@ -1,3 +1,5 @@
+//! Interactive terminal chat with an agent. Demonstrates `Agent::spawn` + `AgentHandle` for back-and-forth conversation against a live LLM.
+
 use std::io::{self, Write};
 use std::sync::Arc;
 

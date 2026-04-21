@@ -147,6 +147,148 @@ Use cases are in `crates/use-cases/src/cli/`. Run with `make use_case name=<name
 
 - `{Name}Tool`. Example: `ReadFileTool`, `BashTool`, `SpawnAgentTool`.
 
+## Comment conventions
+
+Comments explain purpose that cannot be derived from the code. Default to no comment: each one must earn its place. There is no doc-coverage requirement; document only when useful.
+
+### Doc comments (`///`)
+
+- First line: one sentence declaring the item's purpose. Noun phrase for types/fields, verb for functions. Never "This function…" / "Returns…": the signature already says so.
+- Additional paragraphs only for a constraint, invariant, or non-obvious semantic (e.g. `None` means inherit, "must be called after `compile`", an ordering guarantee).
+- Do not add docs to trivial getters, `Default::default`, `From` impls, or enum variants whose names are self-explanatory.
+- **Coverage within a type is all-or-none.** Within a single enum / struct / trait declaration, either every variant / field / method has a `///` carrying real info, or none does. Partial coverage (one variant documented, the rest bare) is worse than none: it implies the undocumented members have been considered and found unimportant, which is almost always wrong.
+
+### Module docs (`//!`)
+
+- Every source file starts with a `//!` that places the file in the bigger picture and names the problem it solves. A reader landing on the first line should learn what job this file does for the rest of the crate, and what would be missing if the file did not exist.
+- One sentence, crisp. Two only when the second adds real context the first cannot carry. Aim for something a reader can absorb in a glance.
+- Do not inventory the file: no bulleted list of the types defined, no structural breakdown, no "contains X, Y, Z". The contents speak for themselves.
+- Keep the `//!` even when the filename already says it. It is the entry point a reader lands on, and consistency across files matters.
+
+### Line comments (`//`)
+
+Allowed reasons only:
+
+- Order-dependency / crash-safety: `Write mark BEFORE task file — crash-safe`.
+- API quirk or workaround: `serde_json::Map is sorted alphabetically, so we format manually`.
+- Non-obvious constraint: `Newest first so 'gpt-4' doesn't shadow 'gpt-4.1'`.
+
+Not allowed:
+
+- Restating what the code does.
+- Task, PR, issue, or changelog references ("added for X flow", "fixes #123").
+- Commented-out code: delete it; git remembers.
+- Stub or aspirational markers. If a function is not implemented, return `AgenticError::NotImplemented("...")`; do not leave a promise in a comment.
+- `TODO` / `FIXME` / `NOTE` markers. Track work in GitHub issues; a marker without a plan is noise.
+- **Section dividers of any kind** (`// -----`, `// ====`, `// ####`, ASCII boxes). If a file has several concerns, split it. Rely on `impl` blocks, module boundaries, and type structure to organize code.
+
+### Tests
+
+- Test names carry intent; do not narrate setup. A comment is justified only to pin an architectural invariant the test guards.
+- Module-level `//!` describing the test file's scope is fine where it exists today.
+
+### Examples
+
+**File intro (`//!`)** — every file, situating it in the crate and naming the problem it solves, in one crisp line:
+
+```rust
+// GOOD: places the file in the bigger picture and states the problem it solves
+//! The execution kernel. Runs a compiled `Agent` turn by turn until it yields an `AgentOutput`.
+
+//! Single error type every fallible API returns, so callers match one `Result` surface.
+
+//! Shared backoff policy for transient provider failures: one implementation, every provider waits the same.
+
+//! On-disk JSONL transcript of an agent run. Keeps runs inspectable and replayable after the process exits.
+
+//! The agent's eyes on the filesystem. Lets a model read a file it did not receive in the prompt.
+
+// BAD: inventories the file's contents
+//! Agent execution loop.
+//!
+//! Three internal structs `run_loop` consumes:
+//! - `AgentSpec` — compiled agent definition (name, model, prompts, tools).
+//! - `LoopRuntime` — externals (provider, event handler, queue, session).
+//! - `LoopState` — mutable per-run state (messages, counters).
+
+// BAD: narrates implementation instead of purpose
+//! This file contains the error type. It has an enum with many variants
+//! and Display / Error / From implementations. See below for details.
+
+// BAD: too bare; doesn't place the file in the crate or name a problem
+//! Error type.
+```
+
+**Type / field doc comments (`///`)** — purpose and invariants, never restatement:
+
+```rust
+// GOOD: states purpose, flags the non-obvious semantic
+/// The agent's compiled definition. `model: None` at template level means
+/// "inherit from parent"; after `Agent::compile` it is always `Some`.
+pub(crate) struct AgentSpec { ... }
+
+/// `None` means inherit from parent.
+pub model: Option<Model>,
+
+// BAD: restates the field name
+/// The model field.
+pub model: Option<Model>,
+
+// BAD: partial coverage on an enum; drop all or document all with real content
+pub enum AgenticError {
+    /// Anything raised by a Provider call.
+    Provider(ProviderError),
+    Tool { ... },           // no doc
+    Io(std::io::Error),     // no doc
+}
+```
+
+**Function doc comments (`///`)** — verb, one line, no "Returns…":
+
+```rust
+// GOOD
+/// Build the environment metadata block for prepending to the first user message.
+pub(crate) fn environment(working_directory: &Path) -> String { ... }
+
+// BAD: signature already says it returns a String
+/// This function returns a String containing the environment metadata.
+pub(crate) fn environment(working_directory: &Path) -> String { ... }
+```
+
+**Line comments (`//`)** — only for order, quirk, or non-obvious constraint:
+
+```rust
+// GOOD: order-dependency / crash-safety
+// Write mark BEFORE task file — crash-safe.
+fs::write(&mark_path, b"")?;
+fs::write(&task_path, body)?;
+
+// GOOD: API quirk
+// serde_json::Map is sorted alphabetically, so we format manually.
+let mut entries = Vec::with_capacity(map.len());
+
+// GOOD: non-obvious constraint
+// Newest first so 'gpt-4' doesn't shadow 'gpt-4.1'.
+models.sort_by(|a, b| b.released.cmp(&a.released));
+
+// BAD: restates the code
+// Increment the counter.
+counter += 1;
+
+// BAD: history / task reference
+// Added for the streaming refactor (see PR #142).
+fn drain_stream(...) { ... }
+
+// BAD: stale marker
+// TODO: implement compaction
+fn compact(...) { Err(AgenticError::NotImplemented("context compaction")) }
+
+// BAD: section divider
+// ---------------------------------------------------------------------------
+// Core types
+// ---------------------------------------------------------------------------
+```
+
 ## README conventions
 
 The README is the public face of the library. Keep it terse, example-driven, and scannable.

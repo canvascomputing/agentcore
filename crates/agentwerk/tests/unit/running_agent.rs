@@ -31,10 +31,6 @@ use agentwerk::{
     CompletionRequest, ContentBlock, Message,
 };
 
-// ---------------------------------------------------------------------------
-// Future completion
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn output_resolves_with_final_text_after_cancel() {
     let events = EventLog::new();
@@ -75,10 +71,6 @@ async fn awaiting_the_future_twice_returns_an_error() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// `send()` — instructions injected after the loop started
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn send_injects_an_instruction_into_the_next_turn() {
     let events = EventLog::new();
@@ -103,10 +95,6 @@ async fn send_injects_an_instruction_into_the_next_turn() {
     handle.cancel();
     let _ = output.await;
 }
-
-// ---------------------------------------------------------------------------
-// `cancel()` / `is_cancelled()` — shared atomic signal
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn is_cancelled_returns_true_after_cancel() {
@@ -139,10 +127,6 @@ async fn cancel_breaks_an_idle_agent_out_of_its_wait() {
     assert_eq!(out.status, AgentStatus::Completed);
 }
 
-// ---------------------------------------------------------------------------
-// `is_stopped()` — has the loop actually ended?
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn is_stopped_stays_false_during_idle() {
     let events = EventLog::new();
@@ -173,10 +157,6 @@ async fn is_stopped_becomes_true_after_cancel_during_idle() {
     assert!(handle.is_stopped());
 }
 
-// ---------------------------------------------------------------------------
-// `clone()` — another handle to the same task
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn send_and_cancel_on_a_clone_reach_the_original_task() {
     let events = EventLog::new();
@@ -206,10 +186,6 @@ async fn send_and_cancel_on_a_clone_reach_the_original_task() {
     let _ = output.await.expect("output");
 }
 
-// ---------------------------------------------------------------------------
-// RAII: dropping the last handle auto-cancels
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn dropping_the_last_handle_terminates_the_agent() {
     let events = EventLog::new();
@@ -222,10 +198,6 @@ async fn dropping_the_last_handle_terminates_the_agent() {
     let out = output.await.expect("output");
     assert_eq!(out.status, AgentStatus::Completed);
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 /// Spawn a fresh agent wired to a MockProvider and the given event log.
 fn spawn_agent(

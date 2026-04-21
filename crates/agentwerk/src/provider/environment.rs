@@ -1,3 +1,5 @@
+//! Picks a provider from environment variables, so callers can say `Provider::from_env()` without coding the detection matrix themselves.
+
 use std::sync::Arc;
 
 use crate::error::{AgenticError, Result};
@@ -116,8 +118,6 @@ mod tests {
         }
     }
 
-    // --- LITELLM_PROVIDER explicit selection ---
-
     #[test]
     fn explicit_anthropic() {
         let result = detect_provider_name(env_map(&[
@@ -165,8 +165,6 @@ mod tests {
         assert_eq!(result, DetectedProvider::Anthropic);
     }
 
-    // --- Auto-detection order ---
-
     #[test]
     fn auto_litellm_api_key() {
         let result = detect_provider_name(env_map(&[("LITELLM_API_KEY", "key")])).unwrap();
@@ -191,8 +189,6 @@ mod tests {
         assert_eq!(result, DetectedProvider::OpenAi);
     }
 
-    // --- Priority within auto-detection ---
-
     #[test]
     fn litellm_key_wins_over_others() {
         let result = detect_provider_name(env_map(&[
@@ -214,8 +210,6 @@ mod tests {
         assert_eq!(result, DetectedProvider::Mistral);
     }
 
-    // --- Error cases ---
-
     #[test]
     fn invalid_provider_returns_error() {
         let err = detect_provider_name(env_map(&[
@@ -231,8 +225,6 @@ mod tests {
         let err = detect_provider_name(env_map(&[])).unwrap_err();
         assert!(err.to_string().contains("No LLM provider found"));
     }
-
-    // --- Empty values treated as unset ---
 
     #[test]
     fn empty_values_treated_as_unset() {

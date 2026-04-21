@@ -1,14 +1,4 @@
-//! Line-buffered parser for LLM streaming responses.
-//!
-//! LLM providers stream responses using the Server-Sent Events (SSE) protocol
-//! (<https://html.spec.whatwg.org/multipage/server-sent-events.html>).
-//! Each event is a `data: {json}\n` line, with `data: [DONE]\n` signaling the end.
-//!
-//! The parser buffers incoming byte chunks (which may arrive at arbitrary boundaries),
-//! extracts complete lines, and yields parsed JSON events. Non-data lines (comments,
-//! event types) and malformed JSON are silently skipped.
-//!
-//! Used by `AnthropicProvider` and `OpenAiProvider` in their streaming implementations.
+//! Server-Sent Events parser for LLM streaming responses. Reassembles the byte stream into complete `data:` events regardless of where chunk boundaries fall.
 
 use serde_json::Value;
 

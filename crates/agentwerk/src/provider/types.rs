@@ -1,3 +1,5 @@
+//! Provider-agnostic shape of a chat exchange — messages, content blocks, token usage, stop reasons, streaming events. The lingua franca between the loop and every provider.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,23 +121,28 @@ pub struct CompletionResponse {
 }
 
 /// Incremental event emitted during SSE streaming.
+///
+/// Events within a single response arrive in order and reference the content block they
+/// belong to via `index`. A stream ends with `MessageDone`.
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
-    TextDelta {
-        index: usize,
-        text: String,
-    },
-    InputJsonDelta {
-        index: usize,
-        partial_json: String,
-    },
-    ContentBlockStop {
-        index: usize,
-    },
+    /// Appended text for the text block at `index`.
+    TextDelta { index: usize, text: String },
+
+    /// Partial JSON fragment for the tool-use block at `index`. Concatenate the fragments
+    /// across deltas to reconstruct the full tool input; intermediate chunks are not valid JSON.
+    InputJsonDelta { index: usize, partial_json: String },
+
+    /// The content block at `index` is complete; no further deltas will target it.
+    ContentBlockStop { index: usize },
+
+    /// Final status and cumulative token usage for the response. Emitted after all content blocks.
     MessageDelta {
         status: ResponseStatus,
         usage: TokenUsage,
     },
+
+    /// End of stream. No further events follow.
     MessageDone,
 }
 

@@ -1,3 +1,5 @@
+//! Shared setup for integration tests: provider construction from env, event handler, and JSON output helpers.
+
 #![allow(dead_code)]
 
 use std::sync::Arc;

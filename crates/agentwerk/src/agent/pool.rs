@@ -1,8 +1,4 @@
-//! Execute multiple agents with controlled parallelism — dynamic edition.
-//!
-//! `AgentPool` takes already-configured `Agent`s. Jobs can be pushed while the
-//! pool is running; results are consumed via `next()` (streaming) or `drain()`
-//! (collect all). Ordering of results is controlled by `AgentPoolStrategy`.
+//! Runs many agents with bounded concurrency. Turns the one-shot `Agent::run` into a streaming pool that accepts jobs while it is running.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -428,8 +424,6 @@ mod tests {
 
         assert!(pool.next().await.is_none());
     }
-
-    // --- Performance tests ---
 
     fn agent_with_delay(name: &str, delay_ms: u64, text: &str) -> Agent {
         let slow_tool = Tool::new("slow", "simulates work")

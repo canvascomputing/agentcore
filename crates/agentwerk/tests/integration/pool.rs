@@ -1,3 +1,5 @@
+//! End-to-end: `AgentPool` orchestrates several real-LLM agents concurrently. Guards the pool's concurrency and ordering against a live provider.
+
 use super::common;
 
 use agentwerk::{Agent, AgentPool, AgentPoolStrategy, ReadFileTool};

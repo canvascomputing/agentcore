@@ -1,3 +1,5 @@
+//! End-to-end: an agent spawns sub-agents through `SpawnAgentTool` against a live LLM. Guards that sub-agent invocation wires up correctly through the real provider path.
+
 use super::common;
 
 use std::sync::Arc;

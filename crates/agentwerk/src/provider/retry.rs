@@ -1,3 +1,5 @@
+//! Shared backoff policy for transient provider failures — one implementation, every provider waits the same way.
+
 /// Compute the delay before the next retry attempt.
 ///
 /// Uses exponential backoff: `backoff_ms * 2^attempt`, with ±20% jitter.

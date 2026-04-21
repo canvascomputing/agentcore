@@ -1,3 +1,5 @@
+//! Anthropic Messages API provider, with SSE streaming and cache-aware token accounting.
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -591,13 +593,6 @@ mod tests {
         }
     }
 
-    // --- Error classification -------------------------------------------
-    //
-    // One test per variant Anthropic's `classify_error` maps, plus a
-    // negative guardrail and a message-preservation check. Tests feed
-    // `classify_error(status, body)` a literal HTTP body so each case shows
-    // exactly what makes it different.
-
     fn invalid_request(message: &str) -> String {
         serde_json::json!({
             "error": { "type": "invalid_request_error", "message": message }
@@ -665,8 +660,6 @@ mod tests {
         };
         assert_eq!(provider_message, "your api key is revoked");
     }
-
-    // --- ModelLookup ----------------------------------------------------
 
     #[test]
     fn lookup_claude_4_family_returns_200k() {

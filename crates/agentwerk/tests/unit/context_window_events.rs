@@ -31,10 +31,6 @@ fn compact_threshold(window: u64) -> u64 {
         .expect("explicit window size always yields a threshold")
 }
 
-// ---------------------------------------------------------------------------
-// Expected states — one constant per node in the state machine
-// ---------------------------------------------------------------------------
-
 const S0_INITIAL: &str = "\
 === system ===
 You are Ada, a concise assistant.
@@ -149,28 +145,13 @@ async fn state_machine_advances_one_turn_at_a_time() {
     let reqs = harness.provider().requests.lock().unwrap();
     let state = |i: usize| canonicalize(&render(&reqs[i]));
 
-    // --- S0: initial state ------------------------------------------
-    // Set up by `LoopState::initial`: env metadata + context + instruction.
     assert_eq!(state(0), S0_INITIAL);
-
-    // --- turn 1 → S1 ------------------------------------------------
-    // LLM returned `tool_use(call_1)`; the loop appended the assistant
-    // message and the tool-result user message.
     assert_eq!(state(1), S1_AFTER_TURN_1);
-
-    // --- turn 2 → S2 ------------------------------------------------
-    // Same shape again: assistant(tool_use) + user(tool_result).
     assert_eq!(state(2), S2_AFTER_TURN_2);
 
-    // --- turn 3 → terminal ------------------------------------------
-    // LLM returned final text with status `EndTurn` and no tool calls,
-    // so the loop exited without sending a turn-4 request.
+    // Terminal: last turn returned EndTurn with no tool calls, so the loop exited without a 4th request.
     assert_eq!(reqs.len(), 3, "no further request after EndTurn");
 }
-
-// ---------------------------------------------------------------------------
-// Compaction trigger tests — proactive, reactive, and the suppression cases
-// ---------------------------------------------------------------------------
 
 /// Context window used by the proactive tests. Paired with
 /// `compact_threshold(CONTEXT_WINDOW_SIZE)` so the
@@ -276,10 +257,6 @@ async fn reactive_compact_fires_on_mid_generation_context_window_exceeded() {
     assert_eq!(token_count, 0);
     assert_eq!(threshold, 0);
 }
-
-// ---------------------------------------------------------------------------
-// Multi-model scenarios
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn sub_agent_compaction_uses_own_model_window() {
@@ -443,10 +420,6 @@ async fn reactive_compact_suppressed_when_model_has_no_window() {
         "no CompactTriggered when the model has no known window"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Helpers — pedagogical, not library API. Kept private to this test file.
-// ---------------------------------------------------------------------------
 
 /// Render a CompletionRequest as plain text. The output structure mirrors
 /// what the provider receives: a `system` section followed by every message

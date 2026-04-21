@@ -1,3 +1,5 @@
+//! Tool system: the `Toolable` trait and the built-in tools that give agents reach into the filesystem, shell, search, web, sub-agents, and task records.
+
 mod bash;
 mod edit_file;
 mod glob;

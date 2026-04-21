@@ -1,9 +1,4 @@
-//! Provider-layer error type.
-//!
-//! Errors a `Provider` raises before returning a successful
-//! [`CompletionResponse`](super::types::CompletionResponse). Anything that maps to a
-//! valid response-with-status belongs on
-//! [`ResponseStatus`](super::types::ResponseStatus), not here.
+//! Errors a provider raises before producing a `CompletionResponse`. Anything that maps to a valid response-with-status belongs on `ResponseStatus`, not here.
 
 use std::fmt;
 

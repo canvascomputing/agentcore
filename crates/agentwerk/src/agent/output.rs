@@ -1,3 +1,5 @@
+//! Final payload of an agent run — response text, status, statistics, and optional structured-output validation.
+
 use serde_json::Value;
 
 use crate::error::{AgenticError, Result};
