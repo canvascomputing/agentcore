@@ -4,8 +4,10 @@ use super::{AnthropicProvider, MistralProvider, OpenAiProvider};
 ///
 /// Built by [`Model::from_id`] (registry-backed) or
 /// [`Model::with_context_window_size`] (explicit override). `Model` is what
-/// `ModelSpec::Exact` stores, what `LoopSpec.model` holds at runtime, and
-/// what the compaction seams read to decide when to fire.
+/// `AgentSpec.model` holds at runtime and what the compaction seams read to
+/// decide when to fire. Agents express "inherit from parent" via
+/// `AgentSpec.model: Option<Model>` (`None` = inherit) — there's no separate
+/// spec enum.
 #[derive(Debug, Clone)]
 pub struct Model {
     pub id: String,
@@ -57,27 +59,6 @@ impl Model {
     }
 }
 
-/// How an agent specifies which model to use.
-#[derive(Debug, Clone)]
-pub enum ModelSpec {
-    /// A specific model (id + metadata).
-    Exact(Model),
-    /// Use the parent agent's model.
-    Inherit,
-}
-
-impl ModelSpec {
-    /// Resolve to a concrete `Model`. `Inherit` clones the parent's full
-    /// metadata (id *and* `context_window_size`) — the child inherits both
-    /// pieces, not just the id.
-    pub fn resolve(&self, parent: &Model) -> Model {
-        match self {
-            Self::Exact(m) => m.clone(),
-            Self::Inherit => parent.clone(),
-        }
-    }
-}
-
 /// Model-id knowledge, implemented by each provider for the families it owns.
 ///
 /// Associated function (no `&self`) because the lookup is static — it maps
@@ -123,22 +104,6 @@ mod tests {
     fn with_context_window_size_overrides() {
         let m = Model::from_id("unknown").with_context_window_size(Some(50_000));
         assert_eq!(m.context_window_size, Some(50_000));
-    }
-
-    #[test]
-    fn resolve_exact_clones_the_model() {
-        let parent = Model::from_id("claude-sonnet-4-20250514");
-        let child = ModelSpec::Exact(Model::from_id("gpt-5")).resolve(&parent);
-        assert_eq!(child.id, "gpt-5");
-        assert_eq!(child.context_window_size, Some(400_000));
-    }
-
-    #[test]
-    fn resolve_inherit_propagates_parent_model_and_window() {
-        let parent = Model::from_id("claude-sonnet-4-20250514");
-        let child = ModelSpec::Inherit.resolve(&parent);
-        assert_eq!(child.id, "claude-sonnet-4-20250514");
-        assert_eq!(child.context_window_size, Some(200_000));
     }
 
     #[test]

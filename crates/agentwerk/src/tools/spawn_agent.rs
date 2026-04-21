@@ -158,7 +158,7 @@ impl Toolable for SpawnAgentTool {
                 Some(name) => caller
                     .sub_agents
                     .iter()
-                    .find(|a| a.name_ref() == Some(name.as_str()))
+                    .find(|a: &&Agent| a.name_ref() == name.as_str())
                     .cloned()
                     .ok_or_else(|| AgenticError::Tool {
                         tool_name: "spawn_agent".into(),
@@ -184,7 +184,7 @@ impl Toolable for SpawnAgentTool {
                 let description_for_child = description.clone();
                 tokio::spawn(async move {
                     let summary = match agent
-                        .run_child(&runtime, &caller_for_child, description_for_child)
+                        .run_child(&caller_for_child, &runtime, description_for_child)
                         .await
                     {
                         Ok(o) => o.response_raw,
@@ -199,7 +199,7 @@ impl Toolable for SpawnAgentTool {
                     args.description
                 )))
             } else {
-                match agent.run_child(&runtime, &caller, description).await {
+                match agent.run_child(&caller, &runtime, description).await {
                     Ok(o) => Ok(ToolResult::success(o.response_raw)),
                     Err(e) => Ok(ToolResult::error(format!("Agent error: {e}"))),
                 }

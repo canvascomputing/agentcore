@@ -123,26 +123,20 @@ fn tool_err(message: impl Into<String>) -> AgenticError {
 mod tests {
     use super::*;
     use crate::agent::queue::CommandQueue;
-    use crate::agent::{Agent, LoopRuntime, LoopSpec};
+    use crate::agent::{Agent, AgentSpec};
     use crate::testutil::*;
     use std::path::PathBuf;
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
-    fn harness_ctx() -> (ToolContext, Arc<CommandQueue>, Arc<LoopSpec>) {
+    fn harness_ctx() -> (ToolContext, Arc<CommandQueue>, Arc<AgentSpec>) {
         let queue = Arc::new(CommandQueue::new());
-        let runtime = LoopRuntime {
-            provider: Arc::new(MockProvider::text("unused")),
-            event_handler: Arc::new(|_| {}),
-            cancel_signal: Arc::new(AtomicBool::new(false)),
-            working_directory: PathBuf::from("."),
-            command_queue: Some(queue.clone()),
-            session_store: None,
-            metadata: None,
-            discovered_tools: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
-        };
-        let caller = Agent::new().name("alice").model("mock").identity_prompt("");
-        let spec = Arc::new(caller.compile_spec(&runtime, None).unwrap());
+        let caller = Agent::new()
+            .name("alice")
+            .model("mock")
+            .identity_prompt("")
+            .provider(Arc::new(MockProvider::text("unused")))
+            .command_queue(queue.clone());
+        let (spec, runtime) = caller.compile(None).unwrap();
         let ctx = ToolContext::new(PathBuf::from("."))
             .runtime(Arc::new(runtime))
             .caller_spec(spec.clone());

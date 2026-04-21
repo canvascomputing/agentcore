@@ -1,18 +1,18 @@
 //! Agent execution loop.
 //!
-//! Defines the three internal structs `run_loop` consumes:
-//! - `LoopRuntime` — externals (provider, event handler, cancel, queue, session)
-//!   shared across the run tree via Arc-inheritance.
-//! - `LoopSpec` — compiled immutable config for one agent's run (name, model,
-//!   prompts, tools, limits). Built by `Agent::compile` in `werk.rs`.
+//! Three internal structs `run_loop` consumes:
+//! - `AgentSpec` — the agent's compiled definition (name, model, prompts,
+//!   tools, limits). `Agent` holds `Arc<AgentSpec>`; `Agent::compile` produces
+//!   a CoW-clone with `model: Some(resolved)` filled in.
+//! - `LoopRuntime` — externals (provider, event handler, cancel, queue,
+//!   session) plus two per-run resolved values (`tools` with `SpawnAgentTool`
+//!   auto-wired, and a snapshot of `template_variables` for interpolation).
 //! - `LoopState` — mutable per-run state (messages, counters).
 //!
 //! Plus `run_loop` — the per-turn async function that drives one agent to
-//! completion or a guard exit. Construction of `LoopRuntime` / `LoopSpec` lives
-//! in `werk.rs`; this module depends on `werk::Agent` only through
-//! `LoopSpec.sub_agents: Vec<Agent>`, which it treats opaquely.
+//! completion or a guard exit.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -29,7 +29,7 @@ use crate::provider::retry::compute_delay;
 use crate::provider::types::{
     CompletionResponse, ContentBlock, Message, ResponseStatus, StreamEvent, TokenUsage,
 };
-use crate::provider::{CompletionRequest, Provider, ProviderError, ToolChoice};
+use crate::provider::{CompletionRequest, Provider, ProviderError};
 use crate::tools::{ToolCall, ToolContext, ToolRegistry, ToolResult};
 use crate::util::{format_current_date, now_millis};
 
@@ -44,11 +44,12 @@ use super::werk::Agent;
 // LoopRuntime — external services & I/O handles
 // ---------------------------------------------------------------------------
 
-/// External services and I/O handles for one run-tree (the root agent + every
-/// sub-agent spawned transitively). Shared as `Arc<LoopRuntime>`. Read-only from
-/// the loop's perspective — mutability is only via the interior atomics and
-/// mutexes inside.
+/// Per-run externals and resolved runtime values. Shared as `Arc<LoopRuntime>`.
+/// The fields under "externals" inherit tree-wide (a child sub-agent reuses the
+/// parent's provider, handlers, queue, etc.); `tools` and `template_variables`
+/// are per-agent resolutions produced by `Agent::compile`.
 pub(crate) struct LoopRuntime {
+    // Externals — inherited across sub-agents.
     pub provider: Arc<dyn Provider>,
     pub event_handler: Arc<dyn Fn(AgentEvent) + Send + Sync>,
     pub cancel_signal: Arc<AtomicBool>,
@@ -57,6 +58,14 @@ pub(crate) struct LoopRuntime {
     pub session_store: Option<Arc<Mutex<SessionStore>>>,
     pub metadata: Option<String>,
     pub discovered_tools: Arc<Mutex<HashSet<String>>>,
+
+    // Per-agent resolutions.
+    /// Agent's tools with `SpawnAgentTool` auto-wired (when `sub_agents`
+    /// is non-empty and no user tool with that name exists).
+    pub tools: Arc<ToolRegistry>,
+    /// Snapshot of `AgentRuntime.template_variables` at compile time.
+    /// The loop passes this into `AgentSpec::system_prompt` each turn.
+    pub template_variables: HashMap<String, Value>,
 }
 
 impl LoopRuntime {
@@ -78,20 +87,25 @@ impl LoopRuntime {
 }
 
 // ---------------------------------------------------------------------------
-// LoopSpec — compiled per-agent blueprint
+// AgentSpec — the agent's definition
 // ---------------------------------------------------------------------------
 
-/// Compiled blueprint for one agent's run. Built once by `Agent::compile`
-/// (in `werk.rs`) at the start of a run and never mutated. Per-agent:
-/// child agents compile their own spec.
-pub(crate) struct LoopSpec {
+/// The agent's definition: name, prompts, tools, sub-agents, limits. Held by
+/// `Agent` as `Arc<AgentSpec>` (shared across clones, COW on mutation) and
+/// passed to `run_loop` directly. The only field with two semantic states is
+/// `model: Option<Model>` — `None` at template level means "inherit from
+/// parent"; after `Agent::compile` fills it in, it is always `Some` (accessed
+/// via `AgentSpec::model()`).
+#[derive(Clone)]
+pub(crate) struct AgentSpec {
+    /// Eagerly set by `Agent::new()`; the `.name(...)` builder overwrites it.
     pub name: String,
-    pub model: Model,
-    pub system_prompt: String,
-    pub instruction_prompt: String,
-    pub context_prompt: Option<String>,
-    pub tools: Arc<ToolRegistry>,
-    pub tool_choice: Option<ToolChoice>,
+    /// `None` = inherit from parent. Always `Some` after `Agent::compile`.
+    pub model: Option<Model>,
+    pub identity_prompt: String,
+    pub behavior_prompt: String,
+    pub context_prompts: Vec<String>,
+    pub tools: ToolRegistry,
     pub sub_agents: Vec<Agent>,
     pub output_schema: Option<OutputSchema>,
     pub max_output_tokens: Option<u32>,
@@ -101,6 +115,96 @@ pub(crate) struct LoopSpec {
     pub max_request_retries: u32,
     pub request_retry_backoff_ms: u64,
     pub keep_alive: bool,
+}
+
+impl Default for AgentSpec {
+    fn default() -> Self {
+        Self {
+            name: crate::util::generate_agent_name("agent"),
+            model: None,
+            identity_prompt: String::new(),
+            behavior_prompt: super::prompts::DEFAULT_BEHAVIOR_PROMPT.to_string(),
+            context_prompts: Vec::new(),
+            tools: ToolRegistry::new(),
+            sub_agents: Vec::new(),
+            output_schema: None,
+            max_output_tokens: None,
+            max_input_tokens: None,
+            max_turns: None,
+            max_schema_retries: Some(10),
+            max_request_retries: AgentSpec::DEFAULT_MAX_REQUEST_RETRIES,
+            request_retry_backoff_ms: AgentSpec::DEFAULT_BACKOFF_MS,
+            keep_alive: false,
+        }
+    }
+}
+
+impl AgentSpec {
+    /// Default number of retries for transient API errors. Re-exported as
+    /// `Agent::DEFAULT_MAX_REQUEST_RETRIES` for the public API surface.
+    pub const DEFAULT_MAX_REQUEST_RETRIES: u32 = 3;
+
+    /// Default base delay (ms) for the exponential-backoff retry policy.
+    /// Re-exported as `Agent::DEFAULT_BACKOFF_MS`.
+    pub const DEFAULT_BACKOFF_MS: u64 = 10_000;
+
+    /// Read the resolved model. Panics if called on an unresolved spec — only
+    /// `Agent::compile` is supposed to observe a spec whose model is `None`.
+    pub(crate) fn model(&self) -> &Model {
+        self.model
+            .as_ref()
+            .expect("AgentSpec::model() called on unresolved spec; Agent::compile must run first")
+    }
+
+    /// Compose the system prompt: interpolated `identity_prompt`
+    /// + `\n\n` + `behavior_prompt` + structured-output instruction when
+    /// `output_schema` is set.
+    pub(crate) fn system_prompt(&self, vars: &HashMap<String, Value>) -> String {
+        let mut s = interpolate(&self.identity_prompt, vars);
+        if !self.behavior_prompt.is_empty() {
+            s.push_str("\n\n");
+            s.push_str(&self.behavior_prompt);
+        }
+        if self.output_schema.is_some() {
+            s.push_str(prompts::STRUCTURED_OUTPUT_INSTRUCTION);
+        }
+        s
+    }
+}
+
+/// Replace `{key}` placeholders in `template` with stringified values.
+pub(crate) fn interpolate(template: &str, vars: &HashMap<String, Value>) -> String {
+    let mut result = template.to_string();
+    for (key, value) in vars {
+        let replacement = match value {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        result = result.replace(&format!("{{{key}}}"), &replacement);
+    }
+    result
+}
+
+/// Compose the optional initial "context" user message: environment metadata
+/// (when present) followed by each user-supplied `context_prompts` entry
+/// wrapped in `<context>…</context>` tags. Returns `None` if both inputs are
+/// empty — caller shouldn't push a message at all in that case.
+pub(crate) fn build_context_prompt(
+    context_prompts: &[String],
+    metadata: Option<&str>,
+) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(meta) = metadata {
+        parts.push(meta.to_string());
+    }
+    for block in context_prompts {
+        parts.push(format!("<context>\n{block}\n</context>"));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -120,12 +224,16 @@ pub(crate) struct LoopState {
 }
 
 impl LoopState {
-    pub(crate) fn initial(spec: &LoopSpec) -> Self {
+    /// Build the initial state. `context_prompt` (if present) and `instruction`
+    /// are each pushed as user messages — both computed by `Agent::run` /
+    /// `Agent::run_child` and passed in, since building them needs access to
+    /// `AgentRuntime` (for interpolation) and `LoopRuntime.metadata`.
+    pub(crate) fn initial(context_prompt: Option<String>, instruction: String) -> Self {
         let mut messages = Vec::new();
-        if let Some(cp) = &spec.context_prompt {
-            messages.push(Message::user(cp.clone()));
+        if let Some(cp) = context_prompt {
+            messages.push(Message::user(cp));
         }
-        messages.push(Message::user(spec.instruction_prompt.clone()));
+        messages.push(Message::user(instruction));
         Self {
             messages,
             ..Self::default()
@@ -162,12 +270,12 @@ impl LoopState {
 /// and reactively when the provider reports overflow mid-turn.
 pub(crate) fn run_loop(
     runtime: Arc<LoopRuntime>,
-    spec: Arc<LoopSpec>,
+    spec: Arc<AgentSpec>,
+    mut state: LoopState,
     description: Option<String>,
 ) -> Pin<Box<dyn Future<Output = Result<AgentOutput>> + Send>> {
     Box::pin(async move {
         runtime.provider.prewarm().await;
-        let mut state = LoopState::initial(&spec);
         record_transcript(
             &runtime,
             TranscriptEntryType::UserMessage,
@@ -205,7 +313,7 @@ pub(crate) fn run_loop(
 
             // Mid-generation overflow: same reactive seam as the pre-flight error.
             if response.status == ResponseStatus::ContextWindowExceeded
-                && spec.model.context_window_size.is_some()
+                && spec.model().context_window_size.is_some()
             {
                 compact::trigger_reactive(&runtime, &spec, &mut state, turn).await?;
             }
@@ -296,7 +404,7 @@ pub(crate) fn run_loop(
 
 fn finish_early(
     runtime: &LoopRuntime,
-    spec: &LoopSpec,
+    spec: &AgentSpec,
     state: &mut LoopState,
     status: AgentStatus,
 ) -> AgentOutput {
@@ -312,7 +420,7 @@ fn finish_early(
     build_output(state, text, None, status)
 }
 
-fn check_guards(runtime: &LoopRuntime, spec: &LoopSpec, state: &LoopState) -> Option<AgentStatus> {
+fn check_guards(runtime: &LoopRuntime, spec: &AgentSpec, state: &LoopState) -> Option<AgentStatus> {
     if runtime.cancel_signal.load(Ordering::Relaxed) {
         return Some(AgentStatus::Cancelled);
     }
@@ -334,19 +442,19 @@ fn check_guards(runtime: &LoopRuntime, spec: &LoopSpec, state: &LoopState) -> Op
 
 async fn call_provider(
     runtime: &LoopRuntime,
-    spec: &LoopSpec,
+    spec: &AgentSpec,
     state: &LoopState,
 ) -> Result<CompletionResponse> {
-    let tool_defs = spec
+    let tool_defs = runtime
         .tools
         .definitions(&runtime.discovered_tools.lock().unwrap());
     let request = CompletionRequest {
-        model: spec.model.id.clone(),
-        system_prompt: spec.system_prompt.clone(),
+        model: spec.model().id.clone(),
+        system_prompt: spec.system_prompt(&runtime.template_variables),
         messages: state.messages.clone(),
         tools: tool_defs,
         max_output_tokens: spec.max_output_tokens,
-        tool_choice: spec.tool_choice.clone(),
+        tool_choice: None,
     };
 
     let event_handler = runtime.event_handler.clone();
@@ -375,7 +483,7 @@ async fn call_provider(
 ///   [`compact::trigger_reactive`] before propagating the original error
 async fn call_provider_with_retry(
     runtime: &LoopRuntime,
-    spec: &LoopSpec,
+    spec: &AgentSpec,
     state: &mut LoopState,
     turn: u32,
 ) -> Result<CompletionResponse> {
@@ -385,7 +493,7 @@ async fn call_provider_with_retry(
             Ok(response) => return Ok(response),
             Err(AgenticError::Provider(ProviderError::ContextWindowExceeded {
                 provider_message,
-            })) if spec.model.context_window_size.is_some() => {
+            })) if spec.model().context_window_size.is_some() => {
                 compact::trigger_reactive(runtime, spec, state, turn).await?;
                 // compact::run returns NotImplemented today; once
                 // implemented this branch will retry the turn instead of
@@ -408,7 +516,7 @@ async fn call_provider_with_retry(
 
 fn record_usage(
     runtime: &LoopRuntime,
-    spec: &LoopSpec,
+    spec: &AgentSpec,
     state: &mut LoopState,
     response: &CompletionResponse,
 ) {
@@ -443,7 +551,7 @@ fn parse_response(response: &CompletionResponse) -> (String, Vec<ToolCall>) {
 
 async fn execute_tools(
     runtime: &Arc<LoopRuntime>,
-    spec: &Arc<LoopSpec>,
+    spec: &Arc<AgentSpec>,
     state: &mut LoopState,
     calls: &[ToolCall],
 ) -> Vec<ContentBlock> {
@@ -461,11 +569,11 @@ async fn execute_tools(
     }
 
     let tool_ctx = ToolContext::new(runtime.working_directory.clone())
-        .registry(Arc::clone(&spec.tools))
+        .registry(Arc::clone(&runtime.tools))
         .runtime(Arc::clone(runtime))
         .caller_spec(Arc::clone(spec));
 
-    let raw = spec.tools.execute(calls, &tool_ctx).await;
+    let raw = runtime.tools.execute(calls, &tool_ctx).await;
     let mut blocks = Vec::with_capacity(raw.len());
     for (block, result) in raw {
         if let ContentBlock::ToolResult { tool_use_id, .. } = &block {
@@ -494,7 +602,7 @@ async fn execute_tools(
     blocks
 }
 
-fn drain_command_queue(runtime: &LoopRuntime, spec: &LoopSpec, state: &mut LoopState) {
+fn drain_command_queue(runtime: &LoopRuntime, spec: &AgentSpec, state: &mut LoopState) {
     let Some(queue) = runtime.command_queue.as_ref() else {
         return;
     };
@@ -507,7 +615,7 @@ fn drain_command_queue(runtime: &LoopRuntime, spec: &LoopSpec, state: &mut LoopS
 /// Drain the command queue into `state.messages` and report whether anything
 /// arrived. Used by `run_loop` to decide whether to continue the loop without
 /// a new LLM request when the model gave no actionable output.
-fn drain_pending_messages(runtime: &LoopRuntime, spec: &LoopSpec, state: &mut LoopState) -> bool {
+fn drain_pending_messages(runtime: &LoopRuntime, spec: &AgentSpec, state: &mut LoopState) -> bool {
     let before = state.messages.len();
     drain_command_queue(runtime, spec, state);
     state.messages.len() > before
@@ -516,7 +624,11 @@ fn drain_pending_messages(runtime: &LoopRuntime, spec: &LoopSpec, state: &mut Lo
 /// Park the agent as idle, poll for incoming messages, then emit the resume
 /// event. Returns `true` if a message arrived (loop should continue),
 /// `false` on timeout or cancel (loop should finalize).
-async fn idle_until_message(runtime: &LoopRuntime, spec: &LoopSpec, state: &mut LoopState) -> bool {
+async fn idle_until_message(
+    runtime: &LoopRuntime,
+    spec: &AgentSpec,
+    state: &mut LoopState,
+) -> bool {
     state.is_idle = true;
     emit_agent_idle(runtime, spec);
     let woken = wait_for_message(runtime, spec, state).await;
@@ -530,7 +642,7 @@ async fn idle_until_message(runtime: &LoopRuntime, spec: &LoopSpec, state: &mut 
 /// resume), `false` on cancel (agent should finalize).
 ///
 /// Only called via `idle_until_message` when `spec.keep_alive` is true.
-async fn wait_for_message(runtime: &LoopRuntime, spec: &LoopSpec, state: &mut LoopState) -> bool {
+async fn wait_for_message(runtime: &LoopRuntime, spec: &AgentSpec, state: &mut LoopState) -> bool {
     const POLL_INTERVAL: Duration = Duration::from_millis(100);
     loop {
         if runtime.cancel_signal.load(Ordering::Relaxed) {
@@ -545,51 +657,51 @@ async fn wait_for_message(runtime: &LoopRuntime, spec: &LoopSpec, state: &mut Lo
     }
 }
 
-fn emit(runtime: &LoopRuntime, spec: &LoopSpec, kind: AgentEventKind) {
+fn emit(runtime: &LoopRuntime, spec: &AgentSpec, kind: AgentEventKind) {
     (runtime.event_handler)(AgentEvent::new(spec.name.clone(), kind));
 }
 
-fn emit_agent_start(runtime: &LoopRuntime, spec: &LoopSpec, description: Option<String>) {
+fn emit_agent_start(runtime: &LoopRuntime, spec: &AgentSpec, description: Option<String>) {
     emit(runtime, spec, AgentEventKind::AgentStart { description });
 }
 
-fn emit_turn_start(runtime: &LoopRuntime, spec: &LoopSpec, turn: u32) {
+fn emit_turn_start(runtime: &LoopRuntime, spec: &AgentSpec, turn: u32) {
     emit(runtime, spec, AgentEventKind::TurnStart { turn });
 }
 
-fn emit_turn_end(runtime: &LoopRuntime, spec: &LoopSpec, turn: u32) {
+fn emit_turn_end(runtime: &LoopRuntime, spec: &AgentSpec, turn: u32) {
     emit(runtime, spec, AgentEventKind::TurnEnd { turn });
 }
 
-fn emit_request_start(runtime: &LoopRuntime, spec: &LoopSpec) {
+fn emit_request_start(runtime: &LoopRuntime, spec: &AgentSpec) {
     emit(
         runtime,
         spec,
         AgentEventKind::RequestStart {
-            model: spec.model.id.clone(),
+            model: spec.model().id.clone(),
         },
     );
 }
 
-fn emit_request_end(runtime: &LoopRuntime, spec: &LoopSpec) {
+fn emit_request_end(runtime: &LoopRuntime, spec: &AgentSpec) {
     emit(
         runtime,
         spec,
         AgentEventKind::RequestEnd {
-            model: spec.model.id.clone(),
+            model: spec.model().id.clone(),
         },
     );
 }
 
-fn emit_output_truncated(runtime: &LoopRuntime, spec: &LoopSpec, turn: u32) {
+fn emit_output_truncated(runtime: &LoopRuntime, spec: &AgentSpec, turn: u32) {
     emit(runtime, spec, AgentEventKind::OutputTruncated { turn });
 }
 
-fn emit_agent_idle(runtime: &LoopRuntime, spec: &LoopSpec) {
+fn emit_agent_idle(runtime: &LoopRuntime, spec: &AgentSpec) {
     emit(runtime, spec, AgentEventKind::AgentIdle);
 }
 
-fn emit_agent_resumed(runtime: &LoopRuntime, spec: &LoopSpec) {
+fn emit_agent_resumed(runtime: &LoopRuntime, spec: &AgentSpec) {
     emit(runtime, spec, AgentEventKind::AgentResumed);
 }
 
@@ -1006,6 +1118,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn runtime_with_metadata(meta: &str) -> LoopRuntime {
         LoopRuntime {
             provider: Arc::new(MockProvider::text("ok")),
@@ -1016,6 +1129,8 @@ mod tests {
             session_store: None,
             metadata: Some(meta.to_string()),
             discovered_tools: Arc::new(Mutex::new(HashSet::new())),
+            tools: Arc::new(ToolRegistry::new()),
+            template_variables: HashMap::new(),
         }
     }
 
@@ -1106,16 +1221,13 @@ mod tests {
 
     #[test]
     fn context_prompt_appended_after_metadata() {
-        let agent = Agent::new()
-            .name("test")
-            .model("mock")
-            .identity_prompt("")
-            .context_prompt("user-provided context");
+        let blocks = ["user-provided context".to_string()];
+        let ctx = build_context_prompt(
+            &blocks,
+            Some("<environment>\ntest metadata\n</environment>"),
+        )
+        .expect("context_prompt should be composed");
 
-        let runtime = runtime_with_metadata("<environment>\ntest metadata\n</environment>");
-        let spec = agent.compile_spec(&runtime, None).unwrap();
-
-        let ctx = spec.context_prompt.unwrap();
         let meta_pos = ctx.find("<environment>").expect("metadata missing");
         let user_pos = ctx
             .find("<context>\nuser-provided context\n</context>")
@@ -1128,17 +1240,9 @@ mod tests {
 
     #[test]
     fn multiple_context_prompts_stacked() {
-        let agent = Agent::new()
-            .name("test")
-            .model("mock")
-            .identity_prompt("")
-            .context_prompt("first block")
-            .context_prompt("second block");
-
-        let runtime = runtime_with_metadata("<environment>\nmetadata\n</environment>");
-        let spec = agent.compile_spec(&runtime, None).unwrap();
-
-        let ctx = spec.context_prompt.unwrap();
+        let blocks = ["first block".to_string(), "second block".to_string()];
+        let ctx = build_context_prompt(&blocks, Some("<environment>\nmetadata\n</environment>"))
+            .expect("context_prompt should be composed");
         let meta_pos = ctx.find("<environment>").unwrap();
         let first_pos = ctx.find("<context>\nfirst block\n</context>").unwrap();
         let second_pos = ctx.find("<context>\nsecond block\n</context>").unwrap();
@@ -1399,7 +1503,7 @@ mod tests {
             .cancel_signal(cancel.clone())
             .command_queue(queue.clone());
 
-        let (rt, _) = agent.compile(None).unwrap();
+        let (_spec, rt) = agent.compile(None).unwrap();
 
         assert!(
             Arc::ptr_eq(rt.command_queue.as_ref().unwrap(), &queue),
@@ -1418,7 +1522,7 @@ mod tests {
             .provider(Arc::new(MockProvider::text("x")))
             .instruction_prompt("");
 
-        let (rt, _) = agent.compile(None).unwrap();
+        let (_spec, rt) = agent.compile(None).unwrap();
         assert!(
             rt.command_queue.is_some(),
             "default queue must be allocated so peer messaging still works"

@@ -274,8 +274,8 @@ let handler = Arc::new(|event: AgentEvent| match &event.kind {
 });
 ```
 
-> Without `.event_handler(...)`, agents log tool activity and lifecycle to
-> stderr via `AgentEvent::default_logger()`. Call `.silent()` on the agent to opt out.
+> When `.event_handler(...)` is not set, agents log tool activity and lifecycle events to
+> stderr via `AgentEvent::default_logger()`. You can call `.silent()` on the agent to silence the output.
 
 | | Kind | Description |
 |-|------|-------------|
@@ -306,10 +306,6 @@ For protecting your budget or data, you can define clear execution rules for typ
 | `.max_schema_retries(3)` | 10 | Retry structured output compliance |
 | `.max_request_retries(5)` | 3 | Retry on transient API errors (429, 529, 5xx) |
 | `.request_retry_backoff_ms(2000)` | 10,000 | Base delay for exponential backoff (`ms * 2^attempt`) |
-| `.keep_alive()` | off | Stay alive listening for incoming messages, exiting only on cancel. |
-
-To abort from outside the agent, use `.cancel_signal(signal)` — see
-[Inheritance](#inheritance) for how it propagates across sub-agents.
 
 ### AgentOutput
 

@@ -2,17 +2,19 @@
 //!
 //! Holds:
 //! - `Agent` (public) — the single user-facing type. Internally split into a
-//!   shared `Arc<AgentConfig>` (static template: tools, prompts, sub-agents,
-//!   tuning knobs) and an owned `AgentRuntime` (per-run: provider, instruction
-//!   prompt, working directory, event handler). Builder methods route through
-//!   `with_config` (copy-on-write via `Arc::make_mut`) or `with_runtime`
-//!   (direct mutation), so `template.clone().provider(p).instruction_prompt(t)`
-//!   never copies the heavy template.
+//!   shared `Arc<AgentSpec>` (static template: name, model, prompts, tools,
+//!   sub-agents, tuning knobs) and an owned `AgentRuntime` (per-run: provider,
+//!   instruction prompt, working directory, event handler). Builder methods
+//!   route through `with_spec` (copy-on-write via `Arc::make_mut`) or
+//!   `with_runtime` (direct mutation), so
+//!   `template.clone().provider(p).instruction_prompt(t)` never copies the
+//!   heavy template.
 //! - `Agent::compile` — single entry point that produces the pair
-//!   `(LoopRuntime, LoopSpec)` the execution loop consumes. Handles both
-//!   root runs (`parent = None`) and sub-agent spawns (`parent = Some((rt, spec))`).
+//!   `(Arc<AgentSpec>, LoopRuntime)` the execution loop consumes. The spec is
+//!   a CoW-clone of the template with `model: Some(resolved)` filled in.
 //!
-//! The actual loop machinery lives in `super::r#loop`.
+//! The actual loop machinery and `AgentSpec`'s definition live in
+//! `super::r#loop`.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -23,16 +25,14 @@ use serde_json::Value;
 
 use crate::error::{AgenticError, Result};
 use crate::persistence::session::SessionStore;
-use crate::provider::model::{Model, ModelSpec};
-use crate::provider::ToolChoice;
+use crate::provider::model::Model;
 use crate::tools::{SpawnAgentTool, ToolRegistry, Toolable};
 use crate::util::generate_agent_name;
 
 use super::event::AgentEvent;
 use super::output::{AgentOutput, OutputSchema};
-use super::prompts::{self as prompts, DEFAULT_BEHAVIOR_PROMPT};
 use super::queue::CommandQueue;
-use super::r#loop::{run_loop, LoopRuntime, LoopSpec};
+use super::r#loop::{build_context_prompt, run_loop, AgentSpec, LoopRuntime, LoopState};
 use super::running::{AgentHandle, AgentOutputFuture, HandleState, LifeToken};
 use crate::provider::Provider;
 
@@ -40,78 +40,24 @@ use crate::provider::Provider;
 // Agent — the single public user-facing type
 // ---------------------------------------------------------------------------
 
-/// An LLM-powered agent. Cheap to clone (internally `Arc`-wrapped config + a
+/// An LLM-powered agent. Cheap to clone (internally `Arc`-wrapped spec + a
 /// small owned runtime struct).
 ///
 /// Build with `Agent::new()` and chain builder methods; call `.run()` to
 /// execute. The same `Agent` can be `run()` multiple times. Cloning an agent
 /// and mutating per-run fields (e.g. `.instruction_prompt`) does not clone
 /// the static template (tools, sub-agents, behavior prompts).
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Agent {
-    pub(crate) config: Arc<AgentConfig>,
+    pub(crate) spec: Arc<AgentSpec>,
     pub(crate) runtime: AgentRuntime,
 }
 
-/// Immutable agent definition. Shared across clones via `Arc`; changes trigger COW.
-pub(crate) struct AgentConfig {
-    pub name: Option<String>,
-    pub model: ModelSpec,
-    pub identity_prompt: String,
-    pub behavior_prompt: String,
-    pub context_prompts: Vec<String>,
-    pub tools: ToolRegistry,
-    pub sub_agents: Vec<Agent>,
-    pub output_schema: Option<OutputSchema>,
-    pub max_output_tokens: Option<u32>,
-    pub max_input_tokens: Option<u64>,
-    pub max_turns: Option<u32>,
-    pub max_schema_retries: Option<u32>,
-    pub max_request_retries: u32,
-    pub request_retry_backoff_ms: u64,
-    pub keep_alive: bool,
-}
-
-impl Default for AgentConfig {
+impl Default for Agent {
     fn default() -> Self {
         Self {
-            name: None,
-            model: ModelSpec::Inherit,
-            identity_prompt: String::new(),
-            behavior_prompt: DEFAULT_BEHAVIOR_PROMPT.to_string(),
-            context_prompts: Vec::new(),
-            tools: ToolRegistry::new(),
-            sub_agents: Vec::new(),
-            output_schema: None,
-            max_output_tokens: None,
-            max_input_tokens: None,
-            max_turns: None,
-            max_schema_retries: Some(10),
-            max_request_retries: Agent::DEFAULT_MAX_REQUEST_RETRIES,
-            request_retry_backoff_ms: Agent::DEFAULT_BACKOFF_MS,
-            keep_alive: false,
-        }
-    }
-}
-
-impl Clone for AgentConfig {
-    fn clone(&self) -> Self {
-        Self {
-            name: self.name.clone(),
-            model: self.model.clone(),
-            identity_prompt: self.identity_prompt.clone(),
-            behavior_prompt: self.behavior_prompt.clone(),
-            context_prompts: self.context_prompts.clone(),
-            tools: self.tools.clone(),
-            sub_agents: self.sub_agents.clone(),
-            output_schema: self.output_schema.clone(),
-            max_output_tokens: self.max_output_tokens,
-            max_input_tokens: self.max_input_tokens,
-            max_turns: self.max_turns,
-            max_schema_retries: self.max_schema_retries,
-            max_request_retries: self.max_request_retries,
-            request_retry_backoff_ms: self.request_retry_backoff_ms,
-            keep_alive: self.keep_alive,
+            spec: Arc::new(AgentSpec::default()),
+            runtime: AgentRuntime::default(),
         }
     }
 }
@@ -158,10 +104,10 @@ fn load_json_file(path: PathBuf) -> Value {
 
 impl Agent {
     /// Default number of retries for transient API errors.
-    pub const DEFAULT_MAX_REQUEST_RETRIES: u32 = 3;
+    pub const DEFAULT_MAX_REQUEST_RETRIES: u32 = AgentSpec::DEFAULT_MAX_REQUEST_RETRIES;
 
     /// Default base delay (ms) for the exponential-backoff retry policy.
-    pub const DEFAULT_BACKOFF_MS: u64 = 10_000;
+    pub const DEFAULT_BACKOFF_MS: u64 = AgentSpec::DEFAULT_BACKOFF_MS;
 
     pub fn new() -> Self {
         Self::default()
@@ -169,8 +115,8 @@ impl Agent {
 
     // --- Internal mutators ---
 
-    fn with_config<F: FnOnce(&mut AgentConfig)>(mut self, f: F) -> Self {
-        f(Arc::make_mut(&mut self.config));
+    fn with_spec<F: FnOnce(&mut AgentSpec)>(mut self, f: F) -> Self {
+        f(Arc::make_mut(&mut self.spec));
         self
     }
 
@@ -179,11 +125,12 @@ impl Agent {
         self
     }
 
-    // --- Definition (static) builders — route through with_config ---
+    // --- Definition (static) builders — route through with_spec ---
 
-    /// Set the agent's name. If unset, a generated name like `agent-a3f1` is used.
+    /// Set the agent's name. `Agent::new()` pre-fills it with a generated
+    /// value like `agent_<nanos>`; this method overwrites.
     pub fn name(self, n: impl Into<String>) -> Self {
-        self.with_config(|c| c.name = Some(n.into()))
+        self.with_spec(|c| c.name = n.into())
     }
 
     /// Set the model ID. If not called, the agent inherits the parent's model.
@@ -191,7 +138,7 @@ impl Agent {
     /// registry (see `Model::from_id`); use `.model_with_context_window_size`
     /// to override.
     pub fn model(self, m: impl Into<String>) -> Self {
-        self.with_config(|c| c.model = ModelSpec::Exact(Model::from_id(m)))
+        self.with_spec(|c| c.model = Some(Model::from_id(m)))
     }
 
     /// Set the model ID together with an explicit context window size.
@@ -203,45 +150,45 @@ impl Agent {
         context_window_size: u64,
     ) -> Self {
         let model = Model::from_id(id).with_context_window_size(Some(context_window_size));
-        self.with_config(|c| c.model = ModelSpec::Exact(model))
+        self.with_spec(|c| c.model = Some(model))
     }
 
     /// The agent's persistent identity — who it is and how it behaves.
     pub fn identity_prompt(self, p: impl Into<String>) -> Self {
-        self.with_config(|c| c.identity_prompt = p.into())
+        self.with_spec(|c| c.identity_prompt = p.into())
     }
 
     /// Load the identity prompt from a file.
     pub fn identity_prompt_file(self, path: impl Into<PathBuf>) -> Self {
         let s = load_prompt_file(path.into());
-        self.with_config(|c| c.identity_prompt = s)
+        self.with_spec(|c| c.identity_prompt = s)
     }
 
     /// Maximum output tokens per LLM request. Omit to use the provider default.
     pub fn max_output_tokens(self, n: u32) -> Self {
-        self.with_config(|c| c.max_output_tokens = Some(n))
+        self.with_spec(|c| c.max_output_tokens = Some(n))
     }
 
     /// Maximum agentic loop iterations. Omit for no limit.
     pub fn max_turns(self, n: u32) -> Self {
-        self.with_config(|c| c.max_turns = Some(n))
+        self.with_spec(|c| c.max_turns = Some(n))
     }
 
     /// Maximum cumulative input tokens before the agent stops.
     pub fn max_input_tokens(self, n: u64) -> Self {
-        self.with_config(|c| c.max_input_tokens = Some(n))
+        self.with_spec(|c| c.max_input_tokens = Some(n))
     }
 
     /// Register a tool.
     pub fn tool(self, tool: impl Toolable + 'static) -> Self {
-        self.with_config(|c| c.tools.register(tool))
+        self.with_spec(|c| c.tools.register(tool))
     }
 
     /// Register a structured output schema. Panics if the schema is invalid.
     pub fn output_schema(self, schema: Value) -> Self {
         let schema =
             OutputSchema::new(schema).unwrap_or_else(|e| panic!("invalid output schema: {e}"));
-        self.with_config(|c| c.output_schema = Some(schema))
+        self.with_spec(|c| c.output_schema = Some(schema))
     }
 
     /// Load a structured output schema from a JSON file.
@@ -251,17 +198,17 @@ impl Agent {
 
     /// Maximum retries for structured output compliance. Default is 10.
     pub fn max_schema_retries(self, n: u32) -> Self {
-        self.with_config(|c| c.max_schema_retries = Some(n))
+        self.with_spec(|c| c.max_schema_retries = Some(n))
     }
 
     /// Maximum retries for transient API errors (429, 529, network failures).
     pub fn max_request_retries(self, n: u32) -> Self {
-        self.with_config(|c| c.max_request_retries = n)
+        self.with_spec(|c| c.max_request_retries = n)
     }
 
     /// Base delay in ms for exponential backoff on request retries.
     pub fn request_retry_backoff_ms(self, ms: u64) -> Self {
-        self.with_config(|c| c.request_retry_backoff_ms = ms)
+        self.with_spec(|c| c.request_retry_backoff_ms = ms)
     }
 
     /// Keep the agent alive after a terminal output, parking it idle until a
@@ -272,38 +219,38 @@ impl Agent {
     /// (via `.sub_agents([...])`) that should idle while waiting for peer
     /// messages after the orchestrator spawns it in the background.
     pub fn keep_alive(self) -> Self {
-        self.with_config(|c| c.keep_alive = true)
+        self.with_spec(|c| c.keep_alive = true)
     }
 
     /// Override the default behavior prompt.
     pub fn behavior_prompt(self, content: impl Into<String>) -> Self {
         let content = content.into();
-        self.with_config(|c| c.behavior_prompt = content)
+        self.with_spec(|c| c.behavior_prompt = content)
     }
 
     /// Load a behavior prompt override from a file.
     pub fn behavior_prompt_file(self, path: impl Into<PathBuf>) -> Self {
         let content = load_prompt_file(path.into());
-        self.with_config(|c| c.behavior_prompt = content)
+        self.with_spec(|c| c.behavior_prompt = content)
     }
 
     /// Append additional context alongside the instruction prompt.
     pub fn context_prompt(self, content: impl Into<String>) -> Self {
         let content = content.into();
-        self.with_config(|c| c.context_prompts.push(content))
+        self.with_spec(|c| c.context_prompts.push(content))
     }
 
     /// Append additional context from a file.
     pub fn context_prompt_file(self, path: impl Into<PathBuf>) -> Self {
         let content = load_prompt_file(path.into());
-        self.with_config(|c| c.context_prompts.push(content))
+        self.with_spec(|c| c.context_prompts.push(content))
     }
 
     /// Register one or more agents as sub-agents. The LLM can call them by
     /// name once this agent runs.
     pub fn sub_agents(self, agents: impl IntoIterator<Item = Agent>) -> Self {
         let agents: Vec<_> = agents.into_iter().collect();
-        self.with_config(|c| c.sub_agents.extend(agents))
+        self.with_spec(|c| c.sub_agents.extend(agents))
     }
 
     // --- Per-run (runtime) builders — route through with_runtime ---
@@ -371,17 +318,23 @@ impl Agent {
 
     // --- Accessors ---
 
-    /// Returns the agent's configured name, if any.
-    pub fn name_ref(&self) -> Option<&str> {
-        self.config.name.as_deref()
+    /// Returns the agent's name (always set — eagerly generated by `Agent::new()`
+    /// and overwritten by `.name(...)`).
+    pub fn name_ref(&self) -> &str {
+        &self.spec.name
     }
 
     // --- Terminal ---
 
     /// Execute this agent to completion. Requires `.provider()` and `.instruction_prompt()`.
     pub async fn run(&self) -> Result<AgentOutput> {
-        let (runtime, spec) = self.compile(None)?;
-        run_loop(Arc::new(runtime), Arc::new(spec), None).await
+        let (spec, runtime) = self.compile(None)?;
+        let runtime = Arc::new(runtime);
+        let instruction = self.runtime.interpolate(&self.runtime.instruction_prompt);
+        let context_prompt =
+            build_context_prompt(&spec.context_prompts, runtime.metadata.as_deref());
+        let state = LoopState::initial(context_prompt, instruction);
+        run_loop(runtime, spec, state, None).await
     }
 
     /// Start the agent on a background tokio task and return a pair:
@@ -429,17 +382,22 @@ impl Agent {
     }
 
     /// Crate-internal: run this agent as a child under a parent's run-tree.
-    /// The `parent_spec` supplies the model fallback for `ModelSpec::Inherit`
+    /// The `parent_spec` supplies the model fallback for `model: None`
     /// (id *and* context window size both inherit). `description` becomes the
     /// `AgentStart` event's human-readable label.
     pub(crate) async fn run_child(
         &self,
+        parent_spec: &AgentSpec,
         parent_runtime: &LoopRuntime,
-        parent_spec: &LoopSpec,
         description: Option<String>,
     ) -> Result<AgentOutput> {
-        let (runtime, spec) = self.compile(Some((parent_runtime, parent_spec)))?;
-        run_loop(Arc::new(runtime), Arc::new(spec), description).await
+        let (spec, runtime) = self.compile(Some((parent_spec, parent_runtime)))?;
+        let runtime = Arc::new(runtime);
+        let instruction = self.runtime.interpolate(&self.runtime.instruction_prompt);
+        let context_prompt =
+            build_context_prompt(&spec.context_prompts, runtime.metadata.as_deref());
+        let state = LoopState::initial(context_prompt, instruction);
+        run_loop(runtime, spec, state, description).await
     }
 
     /// Apply LLM-supplied JSON overrides for any Agent field a tool can
@@ -484,77 +442,45 @@ impl Agent {
     /// and uses the agent's own per-run fields (provider, cancel signal, etc.)
     /// falling back to sensible defaults.
     ///
-    /// `parent = Some((runtime, spec))` spawns a sub-agent — externals
-    /// inherit from `runtime` (child's own runtime fields override on a
-    /// per-field basis), and `ModelSpec::Inherit` resolves against
-    /// `spec.model`.
+    /// `parent = Some((parent_spec, parent_runtime))` spawns a sub-agent —
+    /// externals inherit from `parent_runtime` (child's own runtime fields
+    /// override on a per-field basis), and `self.spec.model = None` resolves
+    /// against `parent_spec.model()`.
+    ///
+    /// The returned `AgentSpec` is a CoW clone of `self.spec` with
+    /// `model: Some(resolved)` filled in. `self.spec` itself is untouched.
     pub(crate) fn compile(
         &self,
-        parent: Option<(&LoopRuntime, &LoopSpec)>,
-    ) -> Result<(LoopRuntime, LoopSpec)> {
-        let runtime = match parent {
-            Some((parent_runtime, _)) => self.inherit_runtime(parent_runtime),
-            None => self.build_runtime()?,
-        };
-        let fallback_model = parent.map(|(_, ps)| &ps.model);
-        let spec = self.compile_spec(&runtime, fallback_model)?;
-        Ok((runtime, spec))
-    }
-
-    /// Compile just the `LoopSpec` against a pre-built runtime. Used by
-    /// `compile` and by tests that need to exercise spec composition against
-    /// a hand-built runtime (e.g. with synthetic metadata).
-    pub(crate) fn compile_spec(
-        &self,
-        runtime: &LoopRuntime,
-        fallback_model: Option<&Model>,
-    ) -> Result<LoopSpec> {
-        let name = self
-            .config
-            .name
-            .clone()
-            .unwrap_or_else(|| generate_agent_name("agent"));
-
-        let model = match (&self.config.model, fallback_model) {
-            (ModelSpec::Inherit, None) => {
+        parent: Option<(&AgentSpec, &LoopRuntime)>,
+    ) -> Result<(Arc<AgentSpec>, LoopRuntime)> {
+        // Resolve the model first — root runs require an explicit model.
+        let resolved_model = match (self.spec.model.as_ref(), parent) {
+            (Some(m), _) => m.clone(),
+            (None, Some((parent_spec, _))) => parent_spec.model().clone(),
+            (None, None) => {
                 return Err(AgenticError::Other(
                     "root agent requires an explicit .model() (or must be spawned as a child)"
                         .into(),
                 ));
             }
-            (spec, Some(parent)) => spec.resolve(parent),
-            (ModelSpec::Exact(m), None) => m.clone(),
         };
 
-        let (tools, tool_choice) = compile_tools(self);
+        // CoW-clone the spec and fill in the resolved model.
+        let mut spec = Arc::clone(&self.spec);
+        Arc::make_mut(&mut spec).model = Some(resolved_model);
 
-        let system_prompt = compile_system_prompt(self);
-        let instruction_prompt = self.runtime.interpolate(&self.runtime.instruction_prompt);
-        let context_prompt = compile_context_prompt(runtime, self);
+        // Build the runtime: inherit from parent or build fresh externals.
+        let runtime = match parent {
+            Some((_, parent_runtime)) => self.inherit_runtime(parent_runtime, &spec),
+            None => self.build_runtime(&spec)?,
+        };
 
-        Ok(LoopSpec {
-            name,
-            model,
-            system_prompt,
-            instruction_prompt,
-            context_prompt,
-            tools,
-            tool_choice,
-            sub_agents: self.config.sub_agents.clone(),
-            output_schema: self.config.output_schema.clone(),
-            max_output_tokens: self.config.max_output_tokens,
-            max_input_tokens: self.config.max_input_tokens,
-            max_turns: self.config.max_turns,
-            max_schema_retries: self.config.max_schema_retries,
-            max_request_retries: self.config.max_request_retries,
-            request_retry_backoff_ms: self.config.request_retry_backoff_ms,
-            keep_alive: self.config.keep_alive,
-        })
+        Ok((spec, runtime))
     }
 
     /// Build the root `LoopRuntime` from this agent's per-run fields plus
     /// reasonable defaults. Requires `self.runtime.provider` to be set.
-    fn build_runtime(&self) -> Result<LoopRuntime> {
+    fn build_runtime(&self, spec: &AgentSpec) -> Result<LoopRuntime> {
         let provider = self
             .runtime
             .provider
@@ -581,7 +507,7 @@ impl Agent {
 
         // Every root run gets a command queue so background sub-agents can post
         // notifications back to the parent. An externally supplied queue
-        // (e.g. from `Agent::create`) wins so the handle can reach the loop.
+        // (e.g. from `Agent::spawn`) wins so the handle can reach the loop.
         let command_queue = Some(
             self.runtime
                 .command_queue
@@ -605,12 +531,14 @@ impl Agent {
             session_store,
             metadata,
             discovered_tools: Arc::new(Mutex::new(HashSet::new())),
+            tools: build_tools(spec),
+            template_variables: self.runtime.template_variables.clone(),
         })
     }
 
     /// Build a child `LoopRuntime`: inherit externals from the parent, let this
     /// agent's own per-run fields override any that it set explicitly.
-    fn inherit_runtime(&self, parent: &LoopRuntime) -> LoopRuntime {
+    fn inherit_runtime(&self, parent: &LoopRuntime, spec: &AgentSpec) -> LoopRuntime {
         let overrides = &self.runtime;
         LoopRuntime {
             provider: overrides
@@ -633,52 +561,21 @@ impl Agent {
             session_store: parent.session_store.clone(),
             metadata: parent.metadata.clone(),
             discovered_tools: parent.discovered_tools.clone(),
+            tools: build_tools(spec),
+            template_variables: overrides.template_variables.clone(),
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Spec-compilation helpers (private to werk.rs — used by Agent::compile_spec)
-// ---------------------------------------------------------------------------
-
-fn compile_tools(agent: &Agent) -> (Arc<ToolRegistry>, Option<ToolChoice>) {
-    let mut tools = agent.config.tools.clone();
-
-    // If the agent declared sub-agents, make sure a SpawnAgentTool is
-    // available so the LLM can call them. Skip when the user registered one
-    // themselves.
-    if !agent.config.sub_agents.is_empty() && tools.get("spawn_agent").is_none() {
+/// Build the runtime's `Arc<ToolRegistry>`: a clone of `spec.tools` with
+/// `SpawnAgentTool` auto-wired when `sub_agents` is non-empty and the user
+/// hasn't registered a conflicting tool.
+fn build_tools(spec: &AgentSpec) -> Arc<ToolRegistry> {
+    let mut tools = spec.tools.clone();
+    if !spec.sub_agents.is_empty() && tools.get("spawn_agent").is_none() {
         tools.register(SpawnAgentTool);
     }
-
-    (Arc::new(tools), None)
-}
-
-fn compile_system_prompt(agent: &Agent) -> String {
-    let mut s = agent.runtime.interpolate(&agent.config.identity_prompt);
-    if !agent.config.behavior_prompt.is_empty() {
-        s.push_str("\n\n");
-        s.push_str(&agent.config.behavior_prompt);
-    }
-    if agent.config.output_schema.is_some() {
-        s.push_str(prompts::STRUCTURED_OUTPUT_INSTRUCTION);
-    }
-    s
-}
-
-fn compile_context_prompt(runtime: &LoopRuntime, agent: &Agent) -> Option<String> {
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(meta) = &runtime.metadata {
-        parts.push(meta.clone());
-    }
-    for block in &agent.config.context_prompts {
-        parts.push(format!("<context>\n{block}\n</context>"));
-    }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join("\n\n"))
-    }
+    Arc::new(tools)
 }
 
 // ---------------------------------------------------------------------------
@@ -739,7 +636,7 @@ mod tests {
         std::fs::write(&path, "You are a test agent").unwrap();
 
         let agent = Agent::new().identity_prompt_file(&path);
-        assert_eq!(agent.config.identity_prompt, "You are a test agent");
+        assert_eq!(agent.spec.identity_prompt, "You are a test agent");
 
         std::fs::remove_file(&path).ok();
         std::fs::remove_dir(&dir).ok();
@@ -763,7 +660,7 @@ mod tests {
         .unwrap();
 
         let agent = Agent::new().output_schema_file(&path);
-        assert!(agent.config.output_schema.is_some());
+        assert!(agent.spec.output_schema.is_some());
 
         std::fs::remove_file(&path).ok();
         std::fs::remove_dir(&dir).ok();
@@ -791,10 +688,10 @@ mod tests {
             "model": "overridden",
             "max_turns": 7
         }));
-        assert_eq!(applied.config.max_turns, Some(7));
-        match &applied.config.model {
-            ModelSpec::Exact(m) => assert_eq!(m.id, "overridden"),
-            _ => panic!("expected Exact model"),
+        assert_eq!(applied.spec.max_turns, Some(7));
+        match &applied.spec.model {
+            Some(m) => assert_eq!(m.id, "overridden"),
+            None => panic!("expected a resolved model"),
         }
     }
 

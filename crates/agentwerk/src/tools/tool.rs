@@ -7,7 +7,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agent::{LoopRuntime, LoopSpec};
+use crate::agent::{AgentSpec, LoopRuntime};
 use crate::error::Result;
 use crate::provider::types::ContentBlock;
 
@@ -26,8 +26,8 @@ pub struct ToolContext {
     pub(crate) runtime: Option<Arc<LoopRuntime>>,
     /// The caller agent's compiled spec (name, model, sub_agents). Used by
     /// `SpawnAgentTool` to resolve registered sub-agents and to pass the caller's
-    /// model as `ModelSpec::Inherit` fallback to children.
-    pub(crate) caller_spec: Option<Arc<LoopSpec>>,
+    /// resolved model as inheritance fallback to children.
+    pub(crate) caller_spec: Option<Arc<AgentSpec>>,
 }
 
 impl ToolContext {
@@ -50,7 +50,7 @@ impl ToolContext {
         self
     }
 
-    pub(crate) fn caller_spec(mut self, spec: Arc<LoopSpec>) -> Self {
+    pub(crate) fn caller_spec(mut self, spec: Arc<AgentSpec>) -> Self {
         self.caller_spec = Some(spec);
         self
     }

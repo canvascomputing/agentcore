@@ -202,7 +202,7 @@ mod tests {
             .model("mock")
             .identity_prompt("")
             .provider(Arc::new(crate::testutil::MockProvider::text("ok")));
-        let (runtime, _) = agent.compile(None).unwrap();
+        let (_spec, runtime) = agent.compile(None).unwrap();
         let runtime = Arc::new(runtime);
         let ctx = ToolContext::new(
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
