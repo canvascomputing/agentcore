@@ -96,6 +96,32 @@ impl ModelLookup for OpenAiProvider {
         if m.contains("gpt-3.5-turbo") {
             return Some(16_385);
         }
+        // Qwen (Alibaba) is routinely served via OpenAI-compatible endpoints
+        // (vLLM, Ollama, LiteLLM), so its lookup lives here. Values are the
+        // published *native* windows; deployments that disable YaRN or
+        // configure a shorter `max_model_len` should override via
+        // `Agent::model_with_context_window_size`.
+        // Newest first so "qwen3" doesn't shadow "qwen3.5" / "qwen3.6".
+        if m.contains("qwen3.6") || m.contains("qwen3.5") {
+            return Some(262_144);
+        }
+        if m.contains("qwen3-coder") || m.contains("qwen3-next") {
+            return Some(262_144);
+        }
+        if m.contains("-2507") && m.contains("qwen3") {
+            return Some(262_144);
+        }
+        if m.contains("qwen3") {
+            return Some(131_072);
+        }
+        if m.contains("qwen2.5") {
+            // Qwen2.5 "1M" variants (e.g. Qwen2.5-7B-Instruct-1M) are a
+            // separate release with a 1M-token native window.
+            if m.contains("-1m") {
+                return Some(1_000_000);
+            }
+            return Some(32_768);
+        }
         None
     }
 }
