@@ -359,7 +359,7 @@ async fn call_provider(
         .tools
         .definitions(&runtime.discovered_tools.lock().unwrap());
     let request = CompletionRequest {
-        model: spec.model().id.clone(),
+        model: spec.model().name.clone(),
         system_prompt: spec.system_prompt(&runtime.template_variables),
         messages: state.messages.clone(),
         tools: tool_defs,
@@ -606,7 +606,7 @@ fn emit_request_started(runtime: &LoopRuntime, spec: &AgentSpec) {
         runtime,
         spec,
         EventKind::RequestStarted {
-            model: spec.model().id.clone(),
+            model: spec.model().name.clone(),
         },
     );
 }
@@ -616,7 +616,7 @@ fn emit_request_finished(runtime: &LoopRuntime, spec: &AgentSpec) {
         runtime,
         spec,
         EventKind::RequestFinished {
-            model: spec.model().id.clone(),
+            model: spec.model().name.clone(),
         },
     );
 }
@@ -731,7 +731,7 @@ mod tests {
     fn simple_agent() -> Agent {
         Agent::new()
             .name("test-agent")
-            .model("mock-model")
+            .model_name("mock-model")
             .identity_prompt("You are a test assistant.")
     }
 
@@ -787,7 +787,7 @@ mod tests {
         let provider = MockProvider::tool_then_text("boom", serde_json::json!({}), "acknowledged");
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .tool(MockTool::error("boom", false, "disk full"));
 
@@ -815,7 +815,7 @@ mod tests {
             MockProvider::tool_then_text("echo_tool", serde_json::json!({"text": "ping"}), "Done!");
         let agent = Agent::new()
             .name("test-agent")
-            .model("mock-model")
+            .model_name("mock-model")
             .identity_prompt("You are helpful.")
             .tool(MockTool::new("echo_tool", false, "pong"));
 
@@ -834,7 +834,7 @@ mod tests {
         ]);
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .max_turns(2)
             .tool(MockTool::new("t", false, "ok"));
@@ -854,7 +854,7 @@ mod tests {
         ]);
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .tool(MockTool::new("t", false, "ok"));
 
@@ -870,7 +870,7 @@ mod tests {
         let provider = MockProvider::text("Answer about rust");
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("You are an expert on {topic}.");
 
         let harness = TestHarness::new(provider).with_state("topic", serde_json::json!("rust"));
@@ -885,7 +885,7 @@ mod tests {
         let provider = MockProvider::tool_then_text("read", serde_json::json!({}), "Done");
         let agent = Agent::new()
             .name("assistant")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .tool(MockTool::new("read", true, "file contents"));
 
@@ -908,7 +908,7 @@ mod tests {
         ]);
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .tool(MockTool::new("t", false, "ok"));
 
@@ -944,7 +944,7 @@ mod tests {
         ]);
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .tool(MockTool::new("t", false, "ok"));
 
@@ -971,7 +971,7 @@ mod tests {
         let provider = MockProvider::text("ok");
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .tool(MockTool::new("always", true, "ok"))
             .tool(DeferredMockTool::new("deferred"));
@@ -990,7 +990,7 @@ mod tests {
         let provider = MockProvider::new(vec![text_response(&schema_input.to_string())]);
         let agent = Agent::new()
             .name("classifier")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("Classify.")
             .output_schema(serde_json::json!({
                 "type": "object",
@@ -1015,7 +1015,7 @@ mod tests {
         ]);
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .output_schema(serde_json::json!({
                 "type": "object",
@@ -1036,13 +1036,13 @@ mod tests {
     async fn sub_agents_auto_wire_spawn_tool() {
         let sub = Agent::new()
             .name("helper")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("I help.");
 
         let provider = MockProvider::text("ok");
         let agent = Agent::new()
             .name("parent")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("I coordinate.")
             .sub_agents([sub]);
 
@@ -1060,7 +1060,7 @@ mod tests {
     async fn missing_provider_fails_run() {
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("x")
             .instruction_prompt("do");
         let err = agent.run().await.unwrap_err();
@@ -1154,7 +1154,7 @@ mod tests {
 
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .max_input_tokens(4000)
             .tool(MockTool::new("t", false, "ok"));
@@ -1211,7 +1211,7 @@ mod tests {
 
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .max_input_tokens(4000)
             .tool(MockTool::new("t", false, "ok"));
@@ -1239,7 +1239,7 @@ mod tests {
 
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .max_output_tokens(4000)
             .tool(MockTool::new("t", false, "ok"));
@@ -1291,7 +1291,7 @@ mod tests {
 
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .max_input_tokens(10_000)
             .max_output_tokens(4000)
@@ -1320,7 +1320,7 @@ mod tests {
 
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .max_output_tokens(4000)
             .tool(MockTool::new("t", false, "ok"));
@@ -1595,7 +1595,7 @@ mod tests {
         let queue = Arc::new(CommandQueue::new());
         let cancel = Arc::new(AtomicBool::new(false));
         let agent = Agent::new()
-            .model("mock")
+            .model_name("mock")
             .provider(Arc::new(MockProvider::text("x")))
             .instruction_prompt("")
             .cancel_signal(cancel.clone())
@@ -1616,7 +1616,7 @@ mod tests {
     #[test]
     fn compile_allocates_default_queue_when_none_supplied() {
         let agent = Agent::new()
-            .model("mock")
+            .model_name("mock")
             .provider(Arc::new(MockProvider::text("x")))
             .instruction_prompt("");
 
@@ -1635,7 +1635,7 @@ mod retry_and_events_tests {
     use super::super::agent::Agent;
     use super::*;
     use crate::error::AgenticError;
-    use crate::provider::ProviderError;
+    use crate::provider::{Model, ProviderError};
     use crate::testutil::*;
 
     fn rate_limit_error() -> ProviderError {
@@ -1679,7 +1679,7 @@ mod retry_and_events_tests {
         ]);
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .max_request_retries(3)
             .request_retry_delay(10);
@@ -1697,7 +1697,7 @@ mod retry_and_events_tests {
         })]);
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .max_request_retries(3)
             .request_retry_delay(10);
@@ -1716,7 +1716,7 @@ mod retry_and_events_tests {
         let provider = MockProvider::tool_then_text("read", serde_json::json!({}), "done");
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .tool(MockTool::new("read", true, "file contents"));
 
@@ -1780,7 +1780,7 @@ mod retry_and_events_tests {
         ]);
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .max_request_retries(4)
             .request_retry_delay(1);
@@ -1818,7 +1818,7 @@ mod retry_and_events_tests {
         })]);
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .max_request_retries(3)
             .request_retry_delay(1);
@@ -1854,7 +1854,7 @@ mod retry_and_events_tests {
         ]);
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .max_request_retries(2)
             .request_retry_delay(1);
@@ -1874,7 +1874,10 @@ mod retry_and_events_tests {
     #[tokio::test]
     async fn happy_path_emits_no_request_failed() {
         let provider = MockProvider::text("done");
-        let agent = Agent::new().name("test").model("mock").identity_prompt("");
+        let agent = Agent::new()
+            .name("test")
+            .model_name("mock")
+            .identity_prompt("");
 
         let harness = TestHarness::new(provider);
         harness.run_agent(&agent, "go").await.unwrap();
@@ -1891,7 +1894,7 @@ mod retry_and_events_tests {
             let provider = MockProvider::with_results(results);
             let agent = Agent::new()
                 .name("test")
-                .model("mock")
+                .model_name("mock")
                 .identity_prompt("")
                 .max_request_retries(max_retries)
                 .request_retry_delay(1);
@@ -1920,7 +1923,7 @@ mod retry_and_events_tests {
         let provider = MockProvider::with_results(vec![Err(rate_limit_error())]);
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .max_request_retries(0)
             .request_retry_delay(1);
@@ -1943,7 +1946,7 @@ mod retry_and_events_tests {
         ]);
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .max_request_retries(3)
             .request_retry_delay(1);
@@ -2000,7 +2003,7 @@ mod retry_and_events_tests {
             let provider = MockProvider::with_results(vec![Err(err)]);
             let agent = Agent::new()
                 .name("test")
-                .model("mock")
+                .model_name("mock")
                 .identity_prompt("")
                 .max_request_retries(3)
                 .request_retry_delay(1);
@@ -2028,7 +2031,7 @@ mod retry_and_events_tests {
             })]);
         let agent = Agent::new()
             .name("test")
-            .model_with_context_window_size("mock", 100_000)
+            .model(Model::from_name("mock").context_window_size(100_000))
             .identity_prompt("")
             .max_request_retries(3)
             .request_retry_delay(1);
@@ -2053,7 +2056,7 @@ mod retry_and_events_tests {
             })]);
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .max_request_retries(3)
             .request_retry_delay(1);
@@ -2084,7 +2087,7 @@ mod retry_and_events_tests {
         };
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .provider(Arc::new(provider))
             .identity_prompt("")
             .max_request_retries(3)
@@ -2147,7 +2150,7 @@ mod retry_and_events_tests {
         };
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .provider(Arc::new(provider))
             .identity_prompt("")
             .max_request_retries(3)
@@ -2224,7 +2227,7 @@ mod retry_and_events_tests {
         let cancel: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .provider(Arc::new(provider))
             .identity_prompt("")
             .max_request_retries(4)
@@ -2269,7 +2272,7 @@ mod retry_and_events_tests {
         };
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .provider(Arc::new(provider))
             .identity_prompt("")
             .max_request_retries(3)

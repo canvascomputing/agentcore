@@ -229,7 +229,7 @@ mod tests {
     async fn spawn_agent_foreground() {
         let agent = Agent::new()
             .name("orchestrator")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("Coordinate work.")
             .tool(SpawnAgentTool);
 
@@ -254,7 +254,7 @@ mod tests {
     async fn spawn_agent_background_delivers_notification() {
         let agent = Agent::new()
             .name("orchestrator")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .tool(SpawnAgentTool);
 
@@ -300,7 +300,7 @@ mod tests {
         // must carry the JSON verbatim (modulo the `"Task <id> completed:"` prefix).
         let agent = Agent::new()
             .name("orchestrator")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .tool(SpawnAgentTool);
 
@@ -353,12 +353,12 @@ mod tests {
     async fn spawn_agent_named_sub_agent() {
         let sub = Agent::new()
             .name("specialist")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("I am a specialist.");
 
         let agent = Agent::new()
             .name("orchestrator")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .sub_agents([sub]);
 
@@ -391,13 +391,13 @@ mod tests {
 
         let sub = Agent::new()
             .name("tight-budget")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("I do work.")
             .tool(MockTool::new("t", false, "ok"));
 
         let agent = Agent::new()
             .name("orchestrator")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .sub_agents([sub]);
 
@@ -449,13 +449,13 @@ mod tests {
 
         let sub = Agent::new()
             .name("tight-budget")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("I do work.")
             .tool(MockTool::new("t", false, "ok"));
 
         let agent = Agent::new()
             .name("orchestrator")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .sub_agents([sub]);
 
@@ -504,7 +504,7 @@ mod tests {
     async fn spawn_agent_unknown_agent_errors() {
         let agent = Agent::new()
             .name("orchestrator")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .tool(SpawnAgentTool);
 

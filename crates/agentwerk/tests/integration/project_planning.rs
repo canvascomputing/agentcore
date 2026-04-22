@@ -14,7 +14,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let output = Agent::new()
         .provider(provider)
-        .model(&model)
+        .model_name(&model)
         .identity_prompt(
             "You are a project planner. Use the task tool to manage work items. \
              The task tool supports these actions: create, update, list, get, delete, claim, add_dependency. \

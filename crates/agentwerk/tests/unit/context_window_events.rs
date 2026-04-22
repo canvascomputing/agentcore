@@ -25,8 +25,8 @@ use agentwerk::{
 
 /// Local helper: compact threshold for a known window size, used by these tests.
 fn compact_threshold(window: u64) -> u64 {
-    Model::from_id("unknown")
-        .with_context_window_size(Some(window))
+    Model::from_name("unknown")
+        .context_window_size(window)
         .compact_threshold()
         .expect("explicit window size always yields a threshold")
 }
@@ -129,7 +129,7 @@ async fn state_machine_advances_one_turn_at_a_time() {
 
     let agent = Agent::new()
         .name("demo")
-        .model("mock")
+        .model_name("mock")
         .identity_prompt("You are Ada, a concise assistant.")
         .behavior_prompt("Be terse.")
         .context_prompt("Working directory: /tmp/demo")
@@ -172,7 +172,7 @@ async fn proactive_compact_fires_when_threshold_crossed() {
 
     let agent = Agent::new()
         .name("demo")
-        .model_with_context_window_size("mock", CONTEXT_WINDOW_SIZE)
+        .model(Model::from_name("mock").context_window_size(CONTEXT_WINDOW_SIZE))
         .identity_prompt("");
 
     let harness = TestHarness::new(MockProvider::new(vec![response]));
@@ -200,7 +200,10 @@ async fn proactive_compact_suppressed_when_model_has_no_window() {
         cache_creation_input_tokens: 0,
     };
 
-    let agent = Agent::new().name("demo").model("mock").identity_prompt("");
+    let agent = Agent::new()
+        .name("demo")
+        .model_name("mock")
+        .identity_prompt("");
 
     let harness = TestHarness::new(MockProvider::new(vec![response]));
     let output = harness.run_agent(&agent, "hi").await.unwrap();
@@ -222,7 +225,7 @@ async fn reactive_compact_fires_on_context_window_exceeded_error() {
 
     let agent = Agent::new()
         .name("demo")
-        .model_with_context_window_size("mock", 200_000)
+        .model(Model::from_name("mock").context_window_size(200_000))
         .identity_prompt("");
 
     let harness = TestHarness::with_provider(provider);
@@ -245,7 +248,7 @@ async fn reactive_compact_fires_on_mid_generation_context_window_exceeded() {
 
     let agent = Agent::new()
         .name("demo")
-        .model_with_context_window_size("mock", 200_000)
+        .model(Model::from_name("mock").context_window_size(200_000))
         .identity_prompt("");
 
     let harness = TestHarness::new(MockProvider::new(vec![response]));
@@ -269,12 +272,12 @@ async fn sub_agent_compaction_uses_own_model_window() {
 
     let child = Agent::new()
         .name("child")
-        .model_with_context_window_size("child-mock", 50_000)
+        .model(Model::from_name("child-mock").context_window_size(50_000))
         .identity_prompt("");
 
     let parent = Agent::new()
         .name("parent")
-        .model_with_context_window_size("parent-mock", 200_000)
+        .model(Model::from_name("parent-mock").context_window_size(200_000))
         .identity_prompt("")
         .sub_agents([child]);
 
@@ -340,9 +343,10 @@ async fn sub_agent_compaction_uses_own_model_window() {
 }
 
 #[tokio::test]
-async fn registry_populates_context_window_for_known_model_id() {
-    // `.model("claude-…")` consults the built-in registry via Model::from_id,
-    // so the compaction seam fires at the threshold derived from 200k.
+async fn registry_populates_context_window_for_known_model_name() {
+    // `.model_name("claude-…")` consults the built-in registry via
+    // Model::from_name, so the compaction seam fires at the threshold derived
+    // from 200k.
     let expected_threshold = compact_threshold(200_000);
     let mut response = text_response("done");
     response.usage = TokenUsage {
@@ -354,7 +358,7 @@ async fn registry_populates_context_window_for_known_model_id() {
 
     let agent = Agent::new()
         .name("claude-agent")
-        .model("claude-sonnet-4-20250514")
+        .model_name("claude-sonnet-4-20250514")
         .identity_prompt("");
 
     let harness = TestHarness::new(MockProvider::new(vec![response]));
@@ -366,9 +370,9 @@ async fn registry_populates_context_window_for_known_model_id() {
 }
 
 #[tokio::test]
-async fn model_with_context_window_size_bypasses_registry() {
-    // The override lets callers name any id (private proxy, local deployment)
-    // and set the window explicitly — without touching the registry.
+async fn explicit_context_window_size_bypasses_registry() {
+    // The override lets callers name any model (private proxy, local
+    // deployment) and set the window explicitly — without touching the registry.
     let expected_threshold = compact_threshold(30_000);
     let mut response = text_response("done");
     response.usage = TokenUsage {
@@ -380,7 +384,7 @@ async fn model_with_context_window_size_bypasses_registry() {
 
     let agent = Agent::new()
         .name("custom")
-        .model_with_context_window_size("custom-proxy-id", 30_000)
+        .model(Model::from_name("custom-proxy").context_window_size(30_000))
         .identity_prompt("");
 
     let harness = TestHarness::new(MockProvider::new(vec![response]));
@@ -401,7 +405,10 @@ async fn reactive_compact_suppressed_when_model_has_no_window() {
 
     // "mock" has no known window — reactive seam stays dormant and the
     // ContextWindowExceeded error propagates as-is.
-    let agent = Agent::new().name("demo").model("mock").identity_prompt("");
+    let agent = Agent::new()
+        .name("demo")
+        .model_name("mock")
+        .identity_prompt("");
 
     let harness = TestHarness::with_provider(provider);
     let result = harness.run_agent(&agent, "hi").await;

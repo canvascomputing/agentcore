@@ -100,7 +100,7 @@ impl ModelLookup for OpenAiProvider {
         // (vLLM, Ollama, LiteLLM), so its lookup lives here. Values are the
         // published *native* windows; deployments that disable YaRN or
         // configure a shorter `max_model_len` should override via
-        // `Agent::model_with_context_window_size`.
+        // `Agent::model(Model::from_name(name).context_window_size(n))`.
         // Newest first so "qwen3" doesn't shadow "qwen3.5" / "qwen3.6".
         if m.contains("qwen3.6") || m.contains("qwen3.5") {
             return Some(262_144);

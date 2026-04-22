@@ -105,23 +105,18 @@ impl Agent {
         self.with_spec(|c| c.name = n.into())
     }
 
-    /// Set the model ID. If not called, the agent inherits the parent's model.
-    /// The model's context window size is auto-detected from the built-in
-    /// registry (see `Model::from_id`); use `.model_with_context_window_size`
+    /// Set the model by name. Sugar for `.model(Model::from_name(name))`. If
+    /// not called, the agent inherits the parent's model. The context window
+    /// size is auto-detected from the built-in registry (see
+    /// [`Model::from_name`]); use `.model(Model::from_name(name).context_window_size(n))`
     /// to override.
-    pub fn model(self, m: impl Into<String>) -> Self {
-        self.with_spec(|c| c.model = Some(Model::from_id(m)))
+    pub fn model_name(self, name: impl Into<String>) -> Self {
+        self.with_spec(|c| c.model = Some(Model::from_name(name)))
     }
 
-    /// Set the model ID together with an explicit context window size.
-    /// Use this for local proxies, private deployments, or any id the
-    /// built-in registry doesn't cover.
-    pub fn model_with_context_window_size(
-        self,
-        id: impl Into<String>,
-        context_window_size: u64,
-    ) -> Self {
-        let model = Model::from_id(id).with_context_window_size(Some(context_window_size));
+    /// Set the full [`Model`] — name plus any capability overrides (e.g.
+    /// explicit context window size for local proxies or private deployments).
+    pub fn model(self, model: Model) -> Self {
         self.with_spec(|c| c.model = Some(model))
     }
 
@@ -241,7 +236,7 @@ impl Agent {
     /// detection order.
     pub fn provider_from_env(self) -> Result<Self> {
         let (provider, model) = crate::provider::from_env()?;
-        Ok(self.provider(provider).model(model))
+        Ok(self.provider(provider).model_name(model))
     }
 
     /// The task for this run — what to do right now.
@@ -337,7 +332,7 @@ impl Agent {
     /// silently ignored. Single source of truth for tool-driven config updates.
     pub(crate) fn apply_overrides(mut self, overrides: &Value) -> Self {
         if let Some(m) = overrides.get("model").and_then(Value::as_str) {
-            self = self.model(m);
+            self = self.model_name(m);
         }
         if let Some(i) = overrides.get("identity").and_then(Value::as_str) {
             self = self.identity_prompt(i);
@@ -371,9 +366,9 @@ impl Agent {
 
     /// Compile this agent into the pair of inputs the loop consumes.
     ///
-    /// `parent = None` starts a root run — requires an explicit `.model()`
-    /// and uses the agent's own per-run fields (provider, cancel signal, etc.)
-    /// falling back to sensible defaults.
+    /// `parent = None` starts a root run — requires an explicit `.model()` /
+    /// `.model_name()` and uses the agent's own per-run fields (provider,
+    /// cancel signal, etc.) falling back to sensible defaults.
     ///
     /// `parent = Some((parent_spec, parent_runtime))` spawns a sub-agent —
     /// externals inherit from `parent_runtime` (child's own per-run fields
@@ -392,7 +387,7 @@ impl Agent {
             (None, Some((parent_spec, _))) => parent_spec.model().clone(),
             (None, None) => {
                 return Err(AgenticError::Other(
-                    "root agent requires an explicit .model() (or must be spawned as a child)"
+                    "root agent requires an explicit .model() / .model_name() (or must be spawned as a child)"
                         .into(),
                 ));
             }
@@ -539,7 +534,7 @@ mod tests {
         // exercising the build path.
         let agent = Agent::new()
             .name("t")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .provider(std::sync::Arc::new(crate::testutil::MockProvider::text(
                 "ok",
@@ -605,7 +600,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_overrides_applies_json_fields() {
-        let base = Agent::new().name("x").model("original").max_turns(3);
+        let base = Agent::new().name("x").model_name("original").max_turns(3);
         let applied = base.apply_overrides(&serde_json::json!({
             "model": "overridden",
             "max_turns": 7,
@@ -618,7 +613,7 @@ mod tests {
         assert_eq!(applied.spec.max_input_tokens, Some(4000));
         assert_eq!(applied.spec.max_output_tokens, Some(5000));
         match &applied.spec.model {
-            Some(m) => assert_eq!(m.id, "overridden"),
+            Some(m) => assert_eq!(m.name, "overridden"),
             None => panic!("expected a resolved model"),
         }
     }
@@ -627,7 +622,7 @@ mod tests {
     async fn missing_provider_fails_run() {
         let agent = Agent::new()
             .name("test")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("x")
             .instruction_prompt("do");
         let err = agent.run().await.unwrap_err();

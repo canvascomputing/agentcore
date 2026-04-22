@@ -36,7 +36,7 @@ async fn output_resolves_with_final_text_after_cancel() {
     let events = EventLog::new();
     let (handle, output) = Agent::new()
         .name("demo")
-        .model("mock")
+        .model_name("mock")
         .provider(Arc::new(MockProvider::text("hello world")))
         .identity_prompt("")
         .instruction_prompt("greet")
@@ -57,7 +57,7 @@ async fn output_resolves_with_final_text_after_cancel() {
 #[tokio::test]
 async fn awaiting_the_future_twice_returns_an_error() {
     let (handle, mut output) = Agent::new()
-        .model("mock")
+        .model_name("mock")
         .provider(Arc::new(MockProvider::text("done")))
         .instruction_prompt("x")
         .spawn();
@@ -99,7 +99,7 @@ async fn send_injects_an_instruction_into_the_next_turn() {
 #[tokio::test]
 async fn is_cancelled_returns_true_after_cancel() {
     let (handle, output) = Agent::new()
-        .model("mock")
+        .model_name("mock")
         .provider(Arc::new(MockProvider::text("done")))
         .identity_prompt("")
         .instruction_prompt("x")
@@ -207,7 +207,7 @@ fn spawn_agent(
     let provider = Arc::new(MockProvider::new(responses));
     let (h, o) = Agent::new()
         .name("root")
-        .model("mock")
+        .model_name("mock")
         .provider(provider.clone())
         .identity_prompt("")
         .instruction_prompt("initial")

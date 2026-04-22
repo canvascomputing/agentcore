@@ -2,17 +2,17 @@
 
 use super::{AnthropicProvider, MistralProvider, OpenAiProvider};
 
-/// Model metadata: the id plus anything we know about its capabilities.
+/// Model metadata: the name plus anything we know about its capabilities.
 ///
-/// Built by [`Model::from_id`] (registry-backed) or
-/// [`Model::with_context_window_size`] (explicit override). `Model` is what
+/// Built by [`Model::from_name`] (registry-backed) or
+/// [`Model::context_window_size`] (explicit override). `Model` is what
 /// `AgentSpec.model` holds at runtime and what the compaction seams read to
 /// decide when to fire. Agents express "inherit from parent" via
 /// `AgentSpec.model: Option<Model>` (`None` = inherit) — there's no separate
 /// spec enum.
 #[derive(Debug, Clone)]
 pub struct Model {
-    pub id: String,
+    pub name: String,
     pub context_window_size: Option<u64>,
 }
 
@@ -28,25 +28,25 @@ impl Model {
     /// JSON.
     pub const COMPACTION_HEADROOM_TOKENS: u64 = 13_000;
 
-    /// Build a `Model` by looking up the id in each provider's
-    /// [`ModelLookup`] impl. Unknown ids produce a `Model` with
+    /// Build a `Model` by looking up the name in each provider's
+    /// [`ModelLookup`] impl. Unknown names produce a `Model` with
     /// `context_window_size: None` — compaction stays dormant, no error.
-    pub fn from_id(id: impl Into<String>) -> Self {
-        let id = id.into();
+    pub fn from_name(name: impl Into<String>) -> Self {
+        let name = name.into();
         let context_window_size =
-            <AnthropicProvider as ModelLookup>::lookup_context_window_size(&id)
-                .or_else(|| <OpenAiProvider as ModelLookup>::lookup_context_window_size(&id))
-                .or_else(|| <MistralProvider as ModelLookup>::lookup_context_window_size(&id));
+            <AnthropicProvider as ModelLookup>::lookup_context_window_size(&name)
+                .or_else(|| <OpenAiProvider as ModelLookup>::lookup_context_window_size(&name))
+                .or_else(|| <MistralProvider as ModelLookup>::lookup_context_window_size(&name));
         Self {
-            id,
+            name,
             context_window_size,
         }
     }
 
     /// Explicit override — skips the registry. Useful for local proxies or
-    /// private deployments whose id isn't in any provider's table.
-    pub fn with_context_window_size(mut self, size: Option<u64>) -> Self {
-        self.context_window_size = size;
+    /// private deployments whose name isn't in any provider's table.
+    pub fn context_window_size(mut self, size: u64) -> Self {
+        self.context_window_size = Some(size);
         self
     }
 
@@ -61,13 +61,13 @@ impl Model {
     }
 }
 
-/// Model-id knowledge, implemented by each provider for the families it owns.
+/// Model-name knowledge, implemented by each provider for the families it owns.
 ///
 /// Associated function (no `&self`) because the lookup is static — it maps
-/// a model id to its published context window size, which doesn't depend
+/// a model name to its published context window size, which doesn't depend
 /// on any provider instance.
 pub trait ModelLookup {
-    fn lookup_context_window_size(id: &str) -> Option<u64>;
+    fn lookup_context_window_size(name: &str) -> Option<u64>;
 }
 
 #[cfg(test)]
@@ -75,55 +75,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn from_id_resolves_claude_models() {
+    fn from_name_resolves_claude_models() {
         assert_eq!(
-            Model::from_id("claude-sonnet-4-20250514").context_window_size,
+            Model::from_name("claude-sonnet-4-20250514").context_window_size,
             Some(200_000)
         );
     }
 
     #[test]
-    fn from_id_resolves_openai_models() {
-        assert_eq!(Model::from_id("gpt-5").context_window_size, Some(400_000));
-        assert_eq!(Model::from_id("gpt-4o").context_window_size, Some(128_000));
+    fn from_name_resolves_openai_models() {
+        assert_eq!(Model::from_name("gpt-5").context_window_size, Some(400_000));
+        assert_eq!(
+            Model::from_name("gpt-4o").context_window_size,
+            Some(128_000)
+        );
     }
 
     #[test]
-    fn from_id_resolves_mistral_models() {
+    fn from_name_resolves_mistral_models() {
         assert_eq!(
-            Model::from_id("mistral-large-2411").context_window_size,
+            Model::from_name("mistral-large-2411").context_window_size,
             Some(131_072)
         );
     }
 
     #[test]
-    fn from_id_unknown_has_no_context_window_size() {
-        assert_eq!(Model::from_id("unknown").context_window_size, None);
-        assert_eq!(Model::from_id("mock").context_window_size, None);
+    fn from_name_unknown_has_no_context_window_size() {
+        assert_eq!(Model::from_name("unknown").context_window_size, None);
+        assert_eq!(Model::from_name("mock").context_window_size, None);
     }
 
     #[test]
-    fn with_context_window_size_overrides() {
-        let m = Model::from_id("unknown").with_context_window_size(Some(50_000));
+    fn context_window_size_overrides() {
+        let m = Model::from_name("unknown").context_window_size(50_000);
         assert_eq!(m.context_window_size, Some(50_000));
     }
 
     #[test]
     fn compact_threshold_200k_model() {
-        let m = Model::from_id("unknown").with_context_window_size(Some(200_000));
+        let m = Model::from_name("unknown").context_window_size(200_000);
         assert_eq!(m.compact_threshold(), Some(167_000));
     }
 
     #[test]
     fn compact_threshold_saturates_on_tiny_window() {
-        let tiny = Model::from_id("unknown").with_context_window_size(Some(100));
-        let zero = Model::from_id("unknown").with_context_window_size(Some(0));
+        let tiny = Model::from_name("unknown").context_window_size(100);
+        let zero = Model::from_name("unknown").context_window_size(0);
         assert_eq!(tiny.compact_threshold(), Some(0));
         assert_eq!(zero.compact_threshold(), Some(0));
     }
 
     #[test]
     fn compact_threshold_none_for_unknown_window() {
-        assert_eq!(Model::from_id("unknown").compact_threshold(), None);
+        assert_eq!(Model::from_name("unknown").compact_threshold(), None);
     }
 }

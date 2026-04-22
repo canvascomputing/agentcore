@@ -412,7 +412,7 @@ mod tests {
     fn one_shot_agent(text: &str) -> (AgentHandle, AgentOutputFuture) {
         Agent::new()
             .name("demo")
-            .model("mock")
+            .model_name("mock")
             .provider(Arc::new(MockProvider::text(text)))
             .identity_prompt("")
             .instruction_prompt("x")
@@ -434,7 +434,7 @@ mod tests {
         let provider = Arc::new(MockProvider::new(responses));
         let (h, o) = Agent::new()
             .name("root")
-            .model("mock")
+            .model_name("mock")
             .provider(provider.clone())
             .identity_prompt("")
             .instruction_prompt("initial")

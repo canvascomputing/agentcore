@@ -78,7 +78,7 @@ async fn main() {
 
     let discovery = Agent::new()
         .provider(provider.clone())
-        .model(&model)
+        .model_name(&model)
         .identity_prompt(DISCOVERY_PROMPT)
         .instruction_prompt("Find all files worth reading to understand this project.")
         .tool(ListDirectoryTool)
@@ -143,7 +143,7 @@ async fn main() {
     // Phase 2: Summarize each file in parallel
     let summarizer = Agent::new()
         .provider(provider.clone())
-        .model(&model)
+        .model_name(&model)
         .identity_prompt(SUMMARIZE_PROMPT)
         .tool(ReadFileTool)
         .output_schema(summarize_schema())

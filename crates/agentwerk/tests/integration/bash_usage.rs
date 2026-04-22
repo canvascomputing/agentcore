@@ -30,7 +30,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let output = Agent::new()
         .provider(provider)
-        .model(&model)
+        .model_name(&model)
         .identity_prompt(
             "You have three shell tools: ls, cat, and wc. \
              No other tools are available. Use them to accomplish the task.",

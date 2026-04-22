@@ -48,7 +48,7 @@ async fn external_sender_delivers_two_instructions_and_clone_cancels(
 
     let (agent, output) = Agent::new()
         .name("listener")
-        .model(&model)
+        .model_name(&model)
         .provider(provider)
         .identity_prompt(
             "You receive user messages. A secret-bearing message has the exact form \

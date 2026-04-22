@@ -77,7 +77,7 @@ const VALID_REPORT_JSON: &str = r#"{"category":"security","priority":"high","sum
 fn report_agent() -> Agent {
     Agent::new()
         .name("reviewer")
-        .model("mock")
+        .model_name("mock")
         .identity_prompt("You are a code reviewer. Reply with a structured report.")
         .behavior_prompt("")
         .output_schema(report_schema())
@@ -532,14 +532,14 @@ async fn sub_agent_with_schema_returns_json_in_tool_result() {
     // or strip whitespace.
     let child = Agent::new()
         .name("reviewer")
-        .model("mock")
+        .model_name("mock")
         .identity_prompt("You are a code reviewer. Reply with a structured report.")
         .behavior_prompt("")
         .output_schema(report_schema());
 
     let parent = Agent::new()
         .name("orchestrator")
-        .model("mock")
+        .model_name("mock")
         .identity_prompt("Coordinate.")
         .behavior_prompt("")
         .sub_agents([child]);
@@ -583,7 +583,7 @@ async fn ad_hoc_spawned_agent_declares_schema_via_overrides() {
     // tool's JSON args; apply_overrides wires it onto the ad-hoc child.
     let parent = Agent::new()
         .name("orchestrator")
-        .model("mock")
+        .model_name("mock")
         .identity_prompt("")
         .behavior_prompt("")
         .tool(SpawnAgentTool);
@@ -631,7 +631,7 @@ async fn ad_hoc_spawned_agent_declares_schema_via_overrides() {
 fn schema_agent() -> Agent {
     Agent::new()
         .name("classifier")
-        .model("mock")
+        .model_name("mock")
         .identity_prompt("You answer with JSON.")
         .behavior_prompt("")
         .output_schema(answer_schema())

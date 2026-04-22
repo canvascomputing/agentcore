@@ -281,7 +281,7 @@ mod tests {
     fn agent_with_response(name: &str, text: &str) -> Agent {
         Agent::new()
             .name(name)
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .instruction_prompt("go")
             .provider(Arc::new(MockProvider::text(text)))
@@ -304,7 +304,7 @@ mod tests {
 
         Agent::new()
             .name(name)
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .instruction_prompt("go")
             .tool(slow_tool)
@@ -352,7 +352,7 @@ mod tests {
     async fn run_surfaces_failures_without_blocking_others() {
         let failing = Agent::new()
             .name("fail")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .instruction_prompt("go")
             .provider(Arc::new(MockProvider::new(vec![])));
@@ -433,7 +433,7 @@ mod tests {
                 });
             Agent::new()
                 .name(&format!("w{i}"))
-                .model("mock")
+                .model_name("mock")
                 .identity_prompt("")
                 .instruction_prompt("go")
                 .tool(slow_tool)

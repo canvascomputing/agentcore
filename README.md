@@ -98,7 +98,7 @@ The `Agent` interface is the main entry point. Build with `Agent::new()`, chain 
 ```rust
 let output = Agent::new()
     .provider(provider)
-    .model("claude-sonnet-4-20250514")
+    .model_name("claude-sonnet-4-20250514")
     .instruction_prompt("Summarize src/main.rs")
     .tool(ReadFileTool)
     .run()
@@ -112,7 +112,7 @@ Use `.spawn()` when you want to keep sending instructions to your agent:
 ```rust
 let (agent, output) = Agent::new()
     .provider(provider)
-    .model("claude-sonnet-4-20250514")
+    .model_name("claude-sonnet-4-20250514")
     .identity_prompt("Answer questions about the codebase.")
     .tool(ReadFileTool)
     .spawn();
@@ -143,11 +143,9 @@ Methods on the spawned agent:
 You can configure each agent to use a single model:
 
 ```rust
-Agent::new().model("claude-sonnet-4-20250514")
-Agent::new().model_with_context_window_size("custom-model", 100_000)
+Agent::new().model_name("claude-sonnet-4-20250514")
+Agent::new().model(Model::from_name("custom-model").context_window_size(100_000))
 ```
-
-`.model(id)` detects the context window size for models from supported providers. Use `.model_with_context_window_size` in case you need to set the context window size explicitly.
 
 ### Prompting
 
@@ -158,7 +156,7 @@ use agentwerk::Agent;
 
 let output = Agent::new()
     .provider(provider)
-    .model("claude-sonnet-4-20250514")
+    .model_name("claude-sonnet-4-20250514")
     .identity_prompt("You are a helpful assistant.")
     .instruction_prompt("What does src/main.rs do?")
     .tool(ReadFileTool)
@@ -355,7 +353,7 @@ Orchestrator agents automatically have access to the `SpawnAgentTool`.
 
 ```rust
 let researcher_base = Agent::new()
-    .model("claude-haiku-4-5-20251001")
+    .model_name("claude-haiku-4-5-20251001")
     .identity_prompt("Research this topic.")
     .tool(brave_search_tool())
     .max_turns(3);
@@ -392,7 +390,7 @@ use agentwerk::{Agent, Batch, ReadFileTool};
 
 let template = Agent::new()
     .provider(provider)
-    .model("claude-haiku-4-5-20251001")
+    .model_name("claude-haiku-4-5-20251001")
     .tool(ReadFileTool);
 
 let docs = ["document A", "document B"];

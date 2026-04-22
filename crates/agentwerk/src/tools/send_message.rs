@@ -134,7 +134,7 @@ mod tests {
         let queue = Arc::new(CommandQueue::new());
         let caller = Agent::new()
             .name("alice")
-            .model("mock")
+            .model_name("mock")
             .identity_prompt("")
             .provider(Arc::new(MockProvider::text("unused")))
             .command_queue(queue.clone());

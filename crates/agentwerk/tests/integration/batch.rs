@@ -20,7 +20,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
     });
 
     let summarizer = Agent::new()
-        .model(&model)
+        .model_name(&model)
         .tool(ReadFileTool)
         .output_schema(output_schema)
         .max_turns(5);

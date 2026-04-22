@@ -28,7 +28,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let researcher = Agent::new()
         .name("researcher")
-        .model(&model)
+        .model_name(&model)
         .identity_prompt(
             "You are a research assistant. Answer the given question concisely in 1-2 sentences.",
         )
@@ -36,7 +36,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let output = Agent::new()
         .provider(provider)
-        .model(&model)
+        .model_name(&model)
         .name("orchestrator")
         .identity_prompt(
             "You coordinate research tasks. Use spawn_agent with agent: \"researcher\" to delegate questions. \

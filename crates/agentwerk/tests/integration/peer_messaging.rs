@@ -43,7 +43,7 @@ async fn orchestrator_sends_message_to_backgrounded_worker(
 
     let worker = Agent::new()
         .name("worker")
-        .model(&model)
+        .model_name(&model)
         .identity_prompt(
             "You are a worker waiting for a message. Your conversation will \
              include one message of the form '[message from orchestrator: ...] \
@@ -63,7 +63,7 @@ async fn orchestrator_sends_message_to_backgrounded_worker(
 
     let output = Agent::new()
         .provider(provider)
-        .model(&model)
+        .model_name(&model)
         .name("orchestrator")
         .identity_prompt(orchestrator_identity)
         .instruction_prompt(orchestrator_instruction)
