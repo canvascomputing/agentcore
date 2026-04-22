@@ -301,7 +301,7 @@ For protecting your budget or data, you can define clear execution rules for typ
 | `.max_output_tokens(50_000)` | no limit | Cap cumulative output tokens across the whole run |
 | `.max_schema_retries(3)` | 10 | Retry structured output compliance |
 | `.max_request_retries(5)` | 10 | Retry on API errors (429, 529, 5xx) |
-| `.request_retry_backoff_ms(2000)` | 500 | Retry request delay as exponential backoff |
+| `.request_retry_delay(2000)` | 500 | Base delay in milliseconds for exponential backoff between request retries |
 
 ### AgentOutput
 
@@ -370,7 +370,7 @@ The following fields are inherited, shared or owned by the sub-agents:
 |---|---|
 | Inherited | `provider`, `model`, `working_directory`, `event_handler`, `cancel_signal` |
 | Shared | `command_queue`, `session_store` |
-| Per sub-agent | `identity_prompt`, `instruction_prompt`, `behavior_prompt`, `context_prompt`, `tools`, `output_schema`, `max_turns`, `max_request_tokens`, `max_input_tokens`, `max_output_tokens`, `max_schema_retries`, `max_request_retries`, `request_retry_backoff_ms` |
+| Per sub-agent | `identity_prompt`, `instruction_prompt`, `behavior_prompt`, `context_prompt`, `tools`, `output_schema`, `max_turns`, `max_request_tokens`, `max_input_tokens`, `max_output_tokens`, `max_schema_retries`, `max_request_retries`, `request_retry_delay` |
 
 ### Batch
 

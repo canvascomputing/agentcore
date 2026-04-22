@@ -395,7 +395,7 @@ async fn call_provider_with_retry(
             }
             Err(e) if e.is_retryable() && attempt < spec.max_request_retries => {
                 let delay_ms =
-                    compute_delay(spec.request_retry_backoff_ms, attempt, e.retry_after_ms());
+                    compute_delay(spec.request_retry_delay, attempt, e.retry_after_ms());
                 if !cancellable_sleep(
                     std::time::Duration::from_millis(delay_ms),
                     &runtime.cancel_signal,
@@ -1506,7 +1506,7 @@ mod retry_and_events_tests {
             .model("mock")
             .identity_prompt("")
             .max_request_retries(3)
-            .request_retry_backoff_ms(10);
+            .request_retry_delay(10);
 
         let harness = TestHarness::new(provider);
         let output = harness.run_agent(&agent, "go").await.unwrap();
@@ -1524,7 +1524,7 @@ mod retry_and_events_tests {
             .model("mock")
             .identity_prompt("")
             .max_request_retries(3)
-            .request_retry_backoff_ms(10);
+            .request_retry_delay(10);
 
         let harness = TestHarness::new(provider);
         let err = harness.run_agent(&agent, "go").await.unwrap_err();
@@ -1605,7 +1605,7 @@ mod retry_and_events_tests {
             .model("mock")
             .identity_prompt("")
             .max_request_retries(4)
-            .request_retry_backoff_ms(1);
+            .request_retry_delay(1);
 
         let harness = TestHarness::new(provider);
         harness.run_agent(&agent, "go").await.unwrap();
@@ -1643,7 +1643,7 @@ mod retry_and_events_tests {
             .model("mock")
             .identity_prompt("")
             .max_request_retries(3)
-            .request_retry_backoff_ms(1);
+            .request_retry_delay(1);
 
         let harness = TestHarness::new(provider);
         let err = harness.run_agent(&agent, "go").await.unwrap_err();
@@ -1679,7 +1679,7 @@ mod retry_and_events_tests {
             .model("mock")
             .identity_prompt("")
             .max_request_retries(2)
-            .request_retry_backoff_ms(1);
+            .request_retry_delay(1);
 
         let harness = TestHarness::new(provider);
         harness.run_agent(&agent, "go").await.unwrap_err();
@@ -1716,7 +1716,7 @@ mod retry_and_events_tests {
                 .model("mock")
                 .identity_prompt("")
                 .max_request_retries(max_retries)
-                .request_retry_backoff_ms(1);
+                .request_retry_delay(1);
 
             let harness = TestHarness::new(provider);
             harness.run_agent(&agent, "go").await.unwrap_err();
@@ -1745,7 +1745,7 @@ mod retry_and_events_tests {
             .model("mock")
             .identity_prompt("")
             .max_request_retries(0)
-            .request_retry_backoff_ms(1);
+            .request_retry_delay(1);
 
         let harness = TestHarness::new(provider);
         harness.run_agent(&agent, "go").await.unwrap_err();
@@ -1768,7 +1768,7 @@ mod retry_and_events_tests {
             .model("mock")
             .identity_prompt("")
             .max_request_retries(3)
-            .request_retry_backoff_ms(1);
+            .request_retry_delay(1);
 
         let harness = TestHarness::new(provider);
         harness.run_agent(&agent, "go").await.unwrap();
@@ -1825,7 +1825,7 @@ mod retry_and_events_tests {
                 .model("mock")
                 .identity_prompt("")
                 .max_request_retries(3)
-                .request_retry_backoff_ms(1);
+                .request_retry_delay(1);
 
             let harness = TestHarness::new(provider);
             harness.run_agent(&agent, "go").await.unwrap_err();
@@ -1853,7 +1853,7 @@ mod retry_and_events_tests {
             .model_with_context_window_size("mock", 100_000)
             .identity_prompt("")
             .max_request_retries(3)
-            .request_retry_backoff_ms(1);
+            .request_retry_delay(1);
 
         let harness = TestHarness::new(provider);
         harness.run_agent(&agent, "go").await.unwrap_err();
@@ -1878,7 +1878,7 @@ mod retry_and_events_tests {
             .model("mock")
             .identity_prompt("")
             .max_request_retries(3)
-            .request_retry_backoff_ms(1);
+            .request_retry_delay(1);
 
         let harness = TestHarness::new(provider);
         harness.run_agent(&agent, "go").await.unwrap_err();
@@ -1910,7 +1910,7 @@ mod retry_and_events_tests {
             .provider(Arc::new(provider))
             .identity_prompt("")
             .max_request_retries(3)
-            .request_retry_backoff_ms(1_000)
+            .request_retry_delay(1_000)
             .event_handler(handler)
             .instruction_prompt("go");
 
@@ -1973,7 +1973,7 @@ mod retry_and_events_tests {
             .provider(Arc::new(provider))
             .identity_prompt("")
             .max_request_retries(3)
-            .request_retry_backoff_ms(2_000)
+            .request_retry_delay(2_000)
             .event_handler(handler)
             .instruction_prompt("go");
 
@@ -2050,7 +2050,7 @@ mod retry_and_events_tests {
             .provider(Arc::new(provider))
             .identity_prompt("")
             .max_request_retries(4)
-            .request_retry_backoff_ms(30_000)
+            .request_retry_delay(30_000)
             .cancel_signal(cancel.clone())
             .instruction_prompt("go");
 
@@ -2095,7 +2095,7 @@ mod retry_and_events_tests {
             .provider(Arc::new(provider))
             .identity_prompt("")
             .max_request_retries(3)
-            .request_retry_backoff_ms(1)
+            .request_retry_delay(1)
             .event_handler(handler)
             .instruction_prompt("go");
 

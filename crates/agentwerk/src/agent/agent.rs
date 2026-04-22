@@ -184,9 +184,9 @@ impl Agent {
         self.with_spec(|c| c.max_request_retries = n)
     }
 
-    /// Base delay in ms for exponential backoff on request retries.
-    pub fn request_retry_backoff_ms(self, ms: u64) -> Self {
-        self.with_spec(|c| c.request_retry_backoff_ms = ms)
+    /// Base delay in milliseconds for exponential backoff on request retries.
+    pub fn request_retry_delay(self, ms: u64) -> Self {
+        self.with_spec(|c| c.request_retry_delay = ms)
     }
 
     /// Keep the agent alive after a terminal output, parking it idle until a
@@ -361,10 +361,10 @@ impl Agent {
             self = self.max_request_retries(rr as u32);
         }
         if let Some(bo) = overrides
-            .get("request_retry_backoff_ms")
+            .get("request_retry_delay")
             .and_then(Value::as_u64)
         {
-            self = self.request_retry_backoff_ms(bo);
+            self = self.request_retry_delay(bo);
         }
         if let Some(schema) = overrides.get("output_schema").cloned() {
             self = self.output_schema(schema);

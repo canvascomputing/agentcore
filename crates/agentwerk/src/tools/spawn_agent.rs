@@ -118,9 +118,9 @@ impl Toolable for SpawnAgentTool {
                     "type": "integer",
                     "description": "Override transient-API retry count for this spawn."
                 },
-                "request_retry_backoff_ms": {
+                "request_retry_delay": {
                     "type": "integer",
-                    "description": "Override base backoff (ms) for request retries."
+                    "description": "Override base delay (ms) for request retries."
                 },
                 "background": {
                     "type": "boolean",

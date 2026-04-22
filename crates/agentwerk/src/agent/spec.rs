@@ -33,7 +33,7 @@ pub(crate) struct AgentSpec {
     pub max_turns: Option<u32>,
     pub max_schema_retries: Option<u32>,
     pub max_request_retries: u32,
-    pub request_retry_backoff_ms: u64,
+    pub request_retry_delay: u64,
     pub keep_alive: bool,
 }
 
@@ -54,7 +54,7 @@ impl Default for AgentSpec {
             max_turns: None,
             max_schema_retries: Some(10),
             max_request_retries: AgentSpec::DEFAULT_MAX_REQUEST_RETRIES,
-            request_retry_backoff_ms: AgentSpec::DEFAULT_BACKOFF_MS,
+            request_retry_delay: AgentSpec::DEFAULT_BACKOFF_MS,
             keep_alive: false,
         }
     }
