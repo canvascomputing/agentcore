@@ -9,8 +9,6 @@
 //!     next turn boundary or immediately if the agent is parked idle.
 //!   - `cancel()` — flip the shared cancel signal.
 //!   - `is_cancelled()` — read that signal.
-//!   - `is_stopped()` — read the terminal-state flag; `true` once the loop
-//!     has emitted `AgentFinished`.
 //!   - Dropping the last handle auto-cancels (RAII leak protection).
 //! - [`AgentOutputFuture`] — resolves to the final `AgentOutput` when the
 //!   loop exits. Polling it twice returns an error.
@@ -125,36 +123,6 @@ async fn cancel_breaks_an_idle_agent_out_of_its_wait() {
         .await;
     let out = output.await.expect("output");
     assert_eq!(out.status, AgentStatus::Completed);
-}
-
-#[tokio::test]
-async fn is_stopped_stays_false_during_idle() {
-    let events = EventLog::new();
-    let (_provider, handle, output) = spawn_agent(vec![text_response("first")], &events);
-
-    events
-        .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
-        .await;
-    assert!(!handle.is_stopped(), "idle is not stopped");
-
-    handle.cancel();
-    let _ = output.await;
-}
-
-#[tokio::test]
-async fn is_stopped_becomes_true_after_cancel_during_idle() {
-    let events = EventLog::new();
-    let (_provider, handle, output) = spawn_agent(vec![text_response("first")], &events);
-
-    events
-        .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
-        .await;
-    handle.cancel();
-    events
-        .wait_for(|e| matches!(e.kind, EventKind::AgentResumed))
-        .await;
-    let _ = output.await.expect("output");
-    assert!(handle.is_stopped());
 }
 
 #[tokio::test]

@@ -76,7 +76,7 @@ async fn main() {
         .cancel_signal(cancel)
         .agents(agents)
         .spawn();
-    drop(pool);
+    pool.drain();
 
     let mut partial_sums: Vec<Option<i128>> = vec![None; total_chunks];
     let mut failures = 0usize;

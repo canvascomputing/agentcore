@@ -18,7 +18,6 @@ use crate::error::{AgenticError, Result};
 pub(crate) struct HandleState {
     pub(crate) queue: Arc<CommandQueue>,
     pub(crate) cancel: Arc<AtomicBool>,
-    pub(crate) stopped: Arc<AtomicBool>,
 }
 
 /// Drop-detection token: every handle and the future own a clone. When the
@@ -79,15 +78,6 @@ impl AgentHandle {
     /// dropped).
     pub fn is_cancelled(&self) -> bool {
         self.state.cancel.load(Ordering::Relaxed)
-    }
-
-    /// Returns `true` once the loop has terminated — i.e. it has emitted
-    /// [`AgentFinished`](crate::agent::EventKind::AgentFinished) and will not
-    /// return to an idle wait. Reports *reality* (the loop is over) as
-    /// opposed to [`is_cancelled`](Self::is_cancelled) which reports the
-    /// *request*.
-    pub fn is_stopped(&self) -> bool {
-        self.state.stopped.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
@@ -162,7 +152,6 @@ impl Agent {
     pub fn spawn(self) -> (AgentHandle, AgentOutputFuture) {
         let queue = Arc::new(CommandQueue::new());
         let cancel = Arc::new(AtomicBool::new(false));
-        let stopped = Arc::new(AtomicBool::new(false));
         let life = LifeToken::new(cancel.clone());
 
         let prepared = self
@@ -170,18 +159,9 @@ impl Agent {
             .command_queue(queue.clone())
             .keep_alive();
 
-        let stopped_for_task = stopped.clone();
-        let join = tokio::spawn(async move {
-            let result = prepared.run().await;
-            stopped_for_task.store(true, Ordering::Relaxed);
-            result
-        });
+        let join = tokio::spawn(async move { prepared.run().await });
 
-        let state = Arc::new(HandleState {
-            queue,
-            cancel,
-            stopped,
-        });
+        let state = Arc::new(HandleState { queue, cancel });
         let handle = AgentHandle::new(state, life);
         let output = AgentOutputFuture::new(join);
         (handle, output)
@@ -292,16 +272,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clone_shares_is_stopped() {
-        let (handle, output) = one_shot_agent("done");
-        let other = handle.clone();
-        assert!(!handle.is_stopped() && !other.is_stopped());
-        handle.cancel();
-        let _ = output.await;
-        assert!(handle.is_stopped() && other.is_stopped());
-    }
-
-    #[tokio::test]
     async fn cancel_during_idle_preserves_completed_status() {
         let events = EventLog::new();
         let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
@@ -330,7 +300,6 @@ mod tests {
             canceller.cancel();
         });
         let _ = output.await.expect("output");
-        assert!(handle.is_stopped());
     }
 
     #[tokio::test]
@@ -376,7 +345,9 @@ mod tests {
         drop(output);
         assert!(!handle.is_cancelled());
         handle.cancel();
-        wait_until(|| handle.is_stopped()).await;
+        events
+            .wait_for(|e| matches!(e.kind, EventKind::AgentFinished { .. }))
+            .await;
     }
 
     #[tokio::test]

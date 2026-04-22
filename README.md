@@ -134,7 +134,6 @@ Methods on the spawned agent:
 | `.send(instruction)` | Send a new instruction |
 | `.cancel()` | Stop the agent |
 | `.is_cancelled()` | Check if the agent was cancelled |
-| `.is_stopped()` | Check if the agent has finished |
 | `.clone()` | Get another handle to the same agent |
 
 
@@ -441,7 +440,7 @@ while let Some((i, result)) = results.next().await {
 | Method | Description |
 |--------|-------------|
 | `.submit(agent)` | Enqueue another agent |
-| `.drain()` | Stop accepting new work; let in-flight agents finish |
+| `.drain()` | Stop adding new agents and let running agents finish |
 | `.cancel()` | Interrupt in-flight agents and close the pool |
 | `.is_cancelled()` | Check if the pool was cancelled |
 | `.clone()` | Get another handle to the same pool |
