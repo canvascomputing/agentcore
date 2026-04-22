@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::error::{AgenticError, Result};
+use crate::error::{Error, Result};
 
 use super::{AnthropicProvider, LiteLlmProvider, MistralProvider, OpenAiProvider, Provider};
 
@@ -28,7 +28,7 @@ pub(crate) fn env_required(name: &str) -> Result<String> {
     std::env::var(name)
         .ok()
         .filter(|v| !v.is_empty())
-        .ok_or_else(|| AgenticError::Other(format!("{name} environment variable not set")))
+        .ok_or_else(|| Error::Other(format!("{name} environment variable not set")))
 }
 
 /// Detect an LLM provider from environment variables and construct it from
@@ -95,7 +95,7 @@ where
             "mistral" => Ok(DetectedProvider::Mistral),
             "openai" => Ok(DetectedProvider::OpenAi),
             "litellm" => Ok(DetectedProvider::LiteLlm),
-            other => Err(AgenticError::Other(format!(
+            other => Err(Error::Other(format!(
                 "Unknown LITELLM_PROVIDER \"{other}\". Supported: anthropic, mistral, openai, litellm"
             ))),
         };
@@ -117,7 +117,7 @@ where
         return Ok(DetectedProvider::OpenAi);
     }
 
-    Err(AgenticError::Other(
+    Err(Error::Other(
         "No LLM provider found. \
          Set one of: LITELLM_PROVIDER, LITELLM_API_KEY, MISTRAL_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY"
             .into(),

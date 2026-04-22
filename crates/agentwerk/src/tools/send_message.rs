@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::agent::queue::{CommandSource, QueuePriority, QueuedCommand};
-use crate::error::{AgenticError, Result};
+use crate::error::{Error, Result};
 
 use crate::tools::tool::{ToolContext, ToolResult, Toolable};
 
@@ -114,8 +114,8 @@ impl Toolable for SendMessageTool {
     }
 }
 
-fn tool_err(message: impl Into<String>) -> AgenticError {
-    AgenticError::Tool {
+fn tool_err(message: impl Into<String>) -> Error {
+    Error::Tool {
         tool_name: NAME.into(),
         message: message.into(),
     }

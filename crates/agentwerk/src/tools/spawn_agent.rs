@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::agent::Agent;
-use crate::error::{AgenticError, Result};
+use crate::error::{Error, Result};
 use crate::util::generate_agent_name;
 
 use crate::tools::tool::{ToolContext, ToolResult, Toolable};
@@ -138,7 +138,7 @@ impl Toolable for SpawnAgentTool {
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
         Box::pin(async move {
             let args: SpawnArgs =
-                serde_json::from_value(input.clone()).map_err(|e| AgenticError::Tool {
+                serde_json::from_value(input.clone()).map_err(|e| Error::Tool {
                     tool_name: "spawn_agent".into(),
                     message: format!("Invalid input: {e}"),
                 })?;
@@ -146,7 +146,7 @@ impl Toolable for SpawnAgentTool {
             let runtime = ctx
                 .runtime
                 .as_ref()
-                .ok_or_else(|| AgenticError::Tool {
+                .ok_or_else(|| Error::Tool {
                     tool_name: "spawn_agent".into(),
                     message: "LoopRuntime not available in ToolContext".into(),
                 })?
@@ -154,7 +154,7 @@ impl Toolable for SpawnAgentTool {
             let caller = ctx
                 .caller_spec
                 .as_ref()
-                .ok_or_else(|| AgenticError::Tool {
+                .ok_or_else(|| Error::Tool {
                     tool_name: "spawn_agent".into(),
                     message: "caller LoopSpec not available in ToolContext".into(),
                 })?
@@ -170,7 +170,7 @@ impl Toolable for SpawnAgentTool {
                     .iter()
                     .find(|a: &&Agent| a.name_ref() == name.as_str())
                     .cloned()
-                    .ok_or_else(|| AgenticError::Tool {
+                    .ok_or_else(|| Error::Tool {
                         tool_name: "spawn_agent".into(),
                         message: format!("No sub-agent named '{name}'"),
                     })?,

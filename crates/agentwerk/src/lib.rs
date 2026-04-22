@@ -9,7 +9,7 @@ pub(crate) mod util;
 
 pub mod testutil;
 
-pub use error::{AgenticError, Result};
+pub use error::{Error, Result};
 
 pub use provider::{
     AnthropicProvider, CompletionRequest, ContentBlock, LiteLlmProvider, Message, MistralProvider,

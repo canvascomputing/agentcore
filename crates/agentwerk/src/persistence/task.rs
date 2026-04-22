@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 
-use crate::error::{AgenticError, Result};
+use crate::error::{Error, Result};
 use crate::util::now_millis;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,7 +148,7 @@ impl TaskStore {
             let mut task = self.require_task(id)?;
 
             if task.status == TaskStatus::Completed {
-                return Err(AgenticError::Other(format!("Task {id} already completed")));
+                return Err(Error::Other(format!("Task {id} already completed")));
             }
             self.check_not_blocked(id, &task.blocked_by)?;
 
@@ -204,7 +204,7 @@ impl TaskStore {
 
     fn require_task(&self, id: &str) -> Result<Task> {
         self.read_task(id)?
-            .ok_or_else(|| AgenticError::Other(format!("Task {id} not found")))
+            .ok_or_else(|| Error::Other(format!("Task {id} not found")))
     }
 
     fn write_task(&self, task: &Task) -> Result<()> {
@@ -254,7 +254,7 @@ impl TaskStore {
                 continue;
             };
             if blocker.status != TaskStatus::Completed {
-                return Err(AgenticError::Other(format!(
+                return Err(Error::Other(format!(
                     "Task {task_id} blocked by unfinished task {blocker_id}"
                 )));
             }
@@ -317,7 +317,7 @@ fn with_file_lock<T>(lock_path: &Path, f: impl FnOnce() -> Result<T>) -> Result<
         backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
     }
 
-    Err(AgenticError::Other(format!(
+    Err(Error::Other(format!(
         "Failed to acquire lock after {MAX_LOCK_RETRIES} attempts"
     )))
 }
@@ -333,7 +333,7 @@ fn try_lock_exclusive(file: &File) -> Result<bool> {
     if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
         Ok(false)
     } else {
-        Err(AgenticError::Io(err))
+        Err(Error::Io(err))
     }
 }
 
@@ -344,7 +344,7 @@ fn unlock(file: &File) -> Result<()> {
     if ret == 0 {
         Ok(())
     } else {
-        Err(AgenticError::Io(std::io::Error::last_os_error()))
+        Err(Error::Io(std::io::Error::last_os_error()))
     }
 }
 

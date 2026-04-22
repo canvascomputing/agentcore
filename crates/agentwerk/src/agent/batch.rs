@@ -8,7 +8,7 @@ use std::task::{Context, Poll};
 use futures_util::stream::{FuturesUnordered, Stream, StreamExt};
 use tokio::sync::mpsc;
 
-use crate::error::{AgenticError, Result};
+use crate::error::{Error, Result};
 
 use super::agent::Agent;
 use super::output::Output;
@@ -90,7 +90,7 @@ impl Batch {
             .enumerate()
             .map(|(i, slot)| {
                 slot.unwrap_or_else(|| {
-                    Err(AgenticError::Other(format!(
+                    Err(Error::Other(format!(
                         "batch: missing result for submission index {i}"
                     )))
                 })

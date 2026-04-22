@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use crate::error::{AgenticError, Result};
+use crate::error::{Error, Result};
 
 /// Why the agent loop exited.
 ///
@@ -63,13 +63,13 @@ pub(crate) struct OutputSchema {
 impl OutputSchema {
     pub(crate) fn new(schema: Value) -> Result<Self> {
         if schema.get("type").and_then(|t| t.as_str()) != Some("object") {
-            return Err(AgenticError::SchemaValidation {
+            return Err(Error::SchemaValidation {
                 path: String::new(),
                 message: "output schema must have \"type\": \"object\"".into(),
             });
         }
         if schema.get("properties").is_none() {
-            return Err(AgenticError::SchemaValidation {
+            return Err(Error::SchemaValidation {
                 path: String::new(),
                 message: "output schema must have \"properties\"".into(),
             });
@@ -130,16 +130,16 @@ fn validate_value(value: &Value, schema: &Value) -> Result<()> {
     }
 }
 
-fn type_error(message: &str) -> AgenticError {
-    AgenticError::SchemaValidation {
+fn type_error(message: &str) -> Error {
+    Error::SchemaValidation {
         path: String::new(),
         message: message.into(),
     }
 }
 
-fn prepend_path(prefix: &str, error: AgenticError) -> AgenticError {
+fn prepend_path(prefix: &str, error: Error) -> Error {
     match error {
-        AgenticError::SchemaValidation { path, message } => AgenticError::SchemaValidation {
+        Error::SchemaValidation { path, message } => Error::SchemaValidation {
             path: if path.is_empty() {
                 prefix.to_string()
             } else {
@@ -159,7 +159,7 @@ fn validate_object(value: &Value, schema: &Value) -> Result<()> {
     if let Some(required) = schema.get("required").and_then(|r| r.as_array()) {
         for key in required.iter().filter_map(|k| k.as_str()) {
             if !obj.contains_key(key) {
-                return Err(AgenticError::SchemaValidation {
+                return Err(Error::SchemaValidation {
                     path: key.into(),
                     message: "missing required field".into(),
                 });

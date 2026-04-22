@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
-use crate::error::{AgenticError, Result};
+use crate::error::{Error, Result};
 use crate::persistence::session::SessionStore;
 use crate::provider::model::Model;
 use crate::provider::Provider;
@@ -395,7 +395,7 @@ impl Agent {
             (Some(m), _) => m.clone(),
             (None, Some((parent_spec, _))) => parent_spec.model().clone(),
             (None, None) => {
-                return Err(AgenticError::Other(
+                return Err(Error::Other(
                     "root agent requires an explicit .model() / .model_name() (or must be spawned as a child)"
                         .into(),
                 ));
@@ -421,7 +421,7 @@ impl Agent {
         let provider = self
             .provider
             .clone()
-            .ok_or_else(|| AgenticError::Other("Agent::run() requires a provider".into()))?;
+            .ok_or_else(|| Error::Other("Agent::run() requires a provider".into()))?;
 
         let working_directory = self
             .working_directory
@@ -514,7 +514,7 @@ mod tests {
     use super::super::event::EventKind;
     use super::super::output::Status;
     use super::*;
-    use crate::error::AgenticError;
+    use crate::error::Error;
 
     #[test]
     fn silent_sets_a_no_op_handler() {
@@ -636,7 +636,7 @@ mod tests {
             .instruction_prompt("do");
         let err = agent.run().await.unwrap_err();
         match err {
-            AgenticError::Other(msg) => assert!(msg.contains("provider"), "got: {msg}"),
+            Error::Other(msg) => assert!(msg.contains("provider"), "got: {msg}"),
             other => panic!("expected Other, got {other:?}"),
         }
     }

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::error::{AgenticError, Result};
+use crate::error::{Error, Result};
 use crate::persistence::session::{SessionStore, TranscriptEntry, TranscriptEntryType};
 use crate::provider::retry::compute_delay;
 use crate::provider::types::{
@@ -233,7 +233,7 @@ pub(crate) fn run_loop(
                     .max_schema_retries
                     .filter(|&limit| state.schema_retries > limit);
                 if let Some(limit) = retry_limit_exceeded {
-                    return Err(AgenticError::SchemaRetryExhausted { retries: limit });
+                    return Err(Error::SchemaRetryExhausted { retries: limit });
                 }
 
                 let retry_prompt = OutputSchema::retry_message(detail);
@@ -358,9 +358,9 @@ async fn call_provider(
 
     tokio::select! {
         biased;
-        _ = wait_for_cancel(&runtime.cancel_signal) => Err(AgenticError::Aborted),
+        _ = wait_for_cancel(&runtime.cancel_signal) => Err(Error::Cancelled),
         result = runtime.provider.complete_streaming(request, on_event) => {
-            result.map_err(AgenticError::from)
+            result.map_err(Error::from)
         }
     }
 }
@@ -379,16 +379,16 @@ async fn call_provider_with_retry(
     for attempt in 0..=spec.max_request_retries {
         match call_provider(runtime, spec, state).await {
             Ok(response) => return Ok(response),
-            Err(AgenticError::Provider(ProviderError::ContextWindowExceeded {
-                provider_message,
-            })) if spec.model().context_window_size.is_some() => {
+            Err(Error::Provider(ProviderError::ContextWindowExceeded { provider_message }))
+                if spec.model().context_window_size.is_some() =>
+            {
                 compact::trigger_reactive(runtime, spec, state, turn).await?;
                 // compact::run returns NotImplemented today; once
                 // implemented this branch will retry the turn instead of
                 // surfacing the error.
-                return Err(AgenticError::Provider(
-                    ProviderError::ContextWindowExceeded { provider_message },
-                ));
+                return Err(Error::Provider(ProviderError::ContextWindowExceeded {
+                    provider_message,
+                }));
             }
             Err(e) if e.is_retryable() && attempt < spec.max_request_retries => {
                 let delay_ms = compute_delay(spec.request_retry_delay, attempt, e.retry_after_ms());
@@ -408,7 +408,7 @@ async fn call_provider_with_retry(
             }
         }
     }
-    let e = last_err.unwrap_or_else(|| AgenticError::Other("retry loop ended unexpectedly".into()));
+    let e = last_err.unwrap_or_else(|| Error::Other("retry loop ended unexpectedly".into()));
     emit_request_error(runtime, spec, format!("{e}"));
     Err(e)
 }
@@ -695,7 +695,7 @@ mod tests {
     use super::super::agent::Agent;
     use super::*;
     use crate::agent::queue::{CommandSource, QueuedCommand};
-    use crate::error::AgenticError;
+    use crate::error::Error;
     use crate::provider::types::ContentBlock;
     use crate::testutil::*;
 
@@ -997,10 +997,7 @@ mod tests {
 
         let harness = TestHarness::new(provider);
         let err = harness.run_agent(&agent, "go").await.unwrap_err();
-        assert!(matches!(
-            err,
-            AgenticError::SchemaRetryExhausted { retries: 3 }
-        ));
+        assert!(matches!(err, Error::SchemaRetryExhausted { retries: 3 }));
     }
 
     #[tokio::test]
@@ -1036,7 +1033,7 @@ mod tests {
             .instruction_prompt("do");
         let err = agent.run().await.unwrap_err();
         match err {
-            AgenticError::Other(msg) => assert!(msg.contains("provider"), "got: {msg}"),
+            Error::Other(msg) => assert!(msg.contains("provider"), "got: {msg}"),
             other => panic!("expected Other, got {other:?}"),
         }
     }
@@ -1605,7 +1602,7 @@ mod retry_and_events_tests {
 
     use super::super::agent::Agent;
     use super::*;
-    use crate::error::AgenticError;
+    use crate::error::Error;
     use crate::provider::{Model, ProviderError};
     use crate::testutil::*;
 
@@ -1677,7 +1674,7 @@ mod retry_and_events_tests {
         let err = harness.run_agent(&agent, "go").await.unwrap_err();
         assert!(matches!(
             err,
-            AgenticError::Provider(ProviderError::AuthenticationFailed { .. })
+            Error::Provider(ProviderError::AuthenticationFailed { .. })
         ));
         assert_eq!(harness.provider().request_count(), 1);
     }
@@ -1798,7 +1795,7 @@ mod retry_and_events_tests {
         let err = harness.run_agent(&agent, "go").await.unwrap_err();
         assert!(matches!(
             err,
-            AgenticError::Provider(ProviderError::AuthenticationFailed { .. })
+            Error::Provider(ProviderError::AuthenticationFailed { .. })
         ));
 
         let events = harness.events().all();

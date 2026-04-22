@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::error::{AgenticError, Result};
+use crate::error::{Error, Result};
 
 /// Resolves when the cancel flag flips to true, polling every 100 ms. Pair
 /// with `tokio::select!` to abort any mid-flight work: the loser branch is
@@ -17,12 +17,12 @@ pub(crate) async fn wait_for_cancel(cancel: &Arc<AtomicBool>) {
 }
 
 /// Sleep for `duration`, but bail as soon as `cancel` trips. Returns
-/// `Err(AgenticError::Aborted)` if cancel fired, `Ok(())` if the full
+/// `Err(Error::Cancelled)` if cancel fired, `Ok(())` if the full
 /// duration elapsed. Used by retry backoff to stay responsive to Ctrl-C.
 pub(crate) async fn cancellable_sleep(duration: Duration, cancel: &Arc<AtomicBool>) -> Result<()> {
     tokio::select! {
         biased;
-        _ = wait_for_cancel(cancel) => Err(AgenticError::Aborted),
+        _ = wait_for_cancel(cancel) => Err(Error::Cancelled),
         _ = tokio::time::sleep(duration) => Ok(()),
     }
 }

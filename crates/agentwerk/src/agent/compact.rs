@@ -3,7 +3,7 @@
 use crate::agent::event::{Event, EventKind};
 use crate::agent::r#loop::{LoopRuntime, LoopState};
 use crate::agent::spec::AgentSpec;
-use crate::error::{AgenticError, Result};
+use crate::error::{Error, Result};
 use crate::provider::types::{ContentBlock, Message};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,14 +96,14 @@ pub(crate) async fn trigger_reactive(
 }
 
 /// Compact `state.messages` in place. Not yet implemented — returns
-/// `AgenticError::NotImplemented` so callers see the trigger fired.
+/// `Error::NotImplemented` so callers see the trigger fired.
 pub(crate) async fn run(
     _runtime: &LoopRuntime,
     _spec: &AgentSpec,
     _state: &mut LoopState,
     _reason: CompactReason,
 ) -> Result<()> {
-    Err(AgenticError::NotImplemented("context compaction"))
+    Err(Error::NotImplemented("context compaction"))
 }
 
 #[cfg(test)]

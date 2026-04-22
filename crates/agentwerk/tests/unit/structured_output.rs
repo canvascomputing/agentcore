@@ -36,7 +36,7 @@
 use agentwerk::testutil::{
     text_response, tool_response, truncated_response, MockProvider, MockTool, TestHarness,
 };
-use agentwerk::{Agent, AgenticError, CompletionRequest, ContentBlock, Message, SpawnAgentTool};
+use agentwerk::{Agent, CompletionRequest, ContentBlock, Error, Message, SpawnAgentTool};
 
 fn answer_schema() -> serde_json::Value {
     serde_json::json!({
@@ -438,10 +438,7 @@ async fn retry_exhaustion_returns_schema_retry_exhausted() {
     let harness = TestHarness::new(provider);
     let err = harness.run_agent(&agent, "go").await.unwrap_err();
 
-    assert!(matches!(
-        err,
-        AgenticError::SchemaRetryExhausted { retries: 2 }
-    ));
+    assert!(matches!(err, Error::SchemaRetryExhausted { retries: 2 }));
 }
 
 #[tokio::test]

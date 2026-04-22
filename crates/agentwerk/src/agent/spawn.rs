@@ -11,7 +11,7 @@ use tokio::task::JoinHandle;
 use crate::agent::agent::Agent;
 use crate::agent::output::Output;
 use crate::agent::queue::{CommandQueue, CommandSource, QueuePriority, QueuedCommand};
-use crate::error::{AgenticError, Result};
+use crate::error::{Error, Result};
 
 /// Shared atomic state between every [`AgentHandle`] clone, the
 /// [`OutputFuture`], and the running loop.
@@ -112,7 +112,7 @@ impl Future for OutputFuture {
         let join = match guard.as_mut() {
             Some(j) => j,
             None => {
-                return Poll::Ready(Err(AgenticError::Other(
+                return Poll::Ready(Err(Error::Other(
                     "OutputFuture polled after completion".into(),
                 )))
             }
@@ -126,7 +126,7 @@ impl Future for OutputFuture {
             }
             Poll::Ready(Err(e)) => {
                 *guard = None;
-                Poll::Ready(Err(AgenticError::Other(format!("agent task failed: {e}"))))
+                Poll::Ready(Err(Error::Other(format!("agent task failed: {e}"))))
             }
         }
     }
@@ -369,12 +369,12 @@ mod tests {
     #[tokio::test]
     async fn awaiting_future_twice_returns_error() {
         // OutputFuture consumes its inner JoinHandle on completion;
-        // polling again surfaces an AgenticError::Other.
+        // polling again surfaces an Error::Other.
         let (handle, mut output) = one_shot_agent("done");
         handle.cancel();
         let _first = (&mut output).await;
         let second = output.await;
-        assert!(matches!(second, Err(AgenticError::Other(_))));
+        assert!(matches!(second, Err(Error::Other(_))));
     }
 
     fn one_shot_agent(text: &str) -> (AgentHandle, OutputFuture) {

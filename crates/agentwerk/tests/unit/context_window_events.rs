@@ -19,8 +19,8 @@ use std::sync::Arc;
 use agentwerk::provider::types::ResponseStatus;
 use agentwerk::testutil::{text_response, tool_response, MockProvider, MockTool, TestHarness};
 use agentwerk::{
-    Agent, AgenticError, CompactReason, CompletionRequest, ContentBlock, Event, EventKind, Message,
-    Model, ProviderError, TokenUsage,
+    Agent, CompactReason, CompletionRequest, ContentBlock, Error, Event, EventKind, Message, Model,
+    ProviderError, TokenUsage,
 };
 
 /// Local helper: compact threshold for a known window size, used by these tests.
@@ -416,9 +416,7 @@ async fn reactive_compact_suppressed_when_model_has_no_window() {
     assert!(
         matches!(
             result,
-            Err(AgenticError::Provider(
-                ProviderError::ContextWindowExceeded { .. }
-            ))
+            Err(Error::Provider(ProviderError::ContextWindowExceeded { .. }))
         ),
         "expected ContextWindowExceeded, got {result:?}"
     );

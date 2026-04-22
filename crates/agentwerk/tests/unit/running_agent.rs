@@ -25,7 +25,7 @@ use std::time::Duration;
 use agentwerk::provider::types::CompletionResponse;
 use agentwerk::testutil::{text_response, MockProvider};
 use agentwerk::{
-    Agent, AgentHandle, AgenticError, CompletionRequest, ContentBlock, Event, EventKind, Message,
+    Agent, AgentHandle, CompletionRequest, ContentBlock, Error, Event, EventKind, Message,
     OutputFuture, Status,
 };
 
@@ -64,7 +64,7 @@ async fn awaiting_the_future_twice_returns_an_error() {
     let _first = (&mut output).await.expect("first await succeeds");
     let second = output.await;
     assert!(
-        matches!(&second, Err(AgenticError::Other(msg)) if msg.contains("polled after completion")),
+        matches!(&second, Err(Error::Other(msg)) if msg.contains("polled after completion")),
         "expected 'polled after completion' error, got {second:?}",
     );
 }

@@ -4,8 +4,8 @@ use std::io::{self, IsTerminal, Write};
 use std::sync::Arc;
 
 use agentwerk::{
-    Agent, AgenticError, Event, EventKind, GlobTool, GrepTool, ListDirectoryTool, Output,
-    ReadFileTool, Status,
+    Agent, Error, Event, EventKind, GlobTool, GrepTool, ListDirectoryTool, Output, ReadFileTool,
+    Status,
 };
 use tokio::sync::Notify;
 
@@ -51,7 +51,7 @@ async fn main() {
         .spawn();
 
     tokio::pin!(output);
-    let mut early_result: Option<Result<Output, AgenticError>> = None;
+    let mut early_result: Option<Result<Output, Error>> = None;
 
     'session: loop {
         tokio::select! {

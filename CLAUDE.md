@@ -34,7 +34,7 @@ All code must compile with zero warnings (`RUSTFLAGS="-D warnings"`).
 ```
 crates/agentwerk/src/
   lib.rs                  public re-exports
-  error.rs                AgenticError, Result
+  error.rs                Error, Result
 
   provider/
     mod.rs                re-exports
@@ -172,7 +172,7 @@ Not allowed:
 - Restating what the code does.
 - Task, PR, issue, or changelog references ("added for X flow", "fixes #123").
 - Commented-out code: delete it; git remembers.
-- Stub or aspirational markers. If a function is not implemented, return `AgenticError::NotImplemented("...")`; do not leave a promise in a comment.
+- Stub or aspirational markers. If a function is not implemented, return `Error::NotImplemented("...")`; do not leave a promise in a comment.
 - `TODO` / `FIXME` / `NOTE` markers. Track work in GitHub issues; a marker without a plan is noise.
 - **Section dividers of any kind** (`// -----`, `// ====`, `// ####`, ASCII boxes). If a file has several concerns, split it. Rely on `impl` blocks, module boundaries, and type structure to organize code.
 
@@ -229,7 +229,7 @@ pub model: Option<Model>,
 pub model: Option<Model>,
 
 // BAD: partial coverage on an enum; drop all or document all with real content
-pub enum AgenticError {
+pub enum Error {
     /// Anything raised by a Provider call.
     Provider(ProviderError),
     Tool { ... },           // no doc
@@ -275,7 +275,7 @@ fn drain_stream(...) { ... }
 
 // BAD: stale marker
 // TODO: implement compaction
-fn compact(...) { Err(AgenticError::NotImplemented("context compaction")) }
+fn compact(...) { Err(Error::NotImplemented("context compaction")) }
 
 // BAD: section divider
 // ---------------------------------------------------------------------------
