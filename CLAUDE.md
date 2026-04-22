@@ -134,7 +134,6 @@ Use cases are in `crates/use-cases/src/cli/`. Run with `make use_case name=<name
 ### Constructors
 
 - `new()` for the primary/simple constructor.
-- `with_client()` for custom-client variants.
 - Named constructors for semantics: `open()`, `unrestricted()`, `success()`, `error()`, `empty()`, `from_id()`, `from_env()`.
 
 ### Getters / setters on mutable refs

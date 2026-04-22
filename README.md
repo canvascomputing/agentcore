@@ -92,11 +92,12 @@ let provider = OpenAiProvider::new(key);
 let provider = LiteLlmProvider::new(key);
 ```
 
-Point a provider at a custom endpoint:
+Point a provider at a custom endpoint with a custom timeout:
 
 ```rust
 let provider = AnthropicProvider::new(key)
-    .base_url("http://localhost:8000");
+    .base_url("http://localhost:8000")
+    .timeout(Duration::from_secs(120));
 ```
 
 Or pick a provider for your agent from environment variables (see [Environment](#environment)):

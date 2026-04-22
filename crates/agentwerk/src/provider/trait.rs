@@ -3,6 +3,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -64,31 +65,32 @@ pub trait Provider: Send + Sync {
     }
 }
 
-/// Default `reqwest::Client` used by every built-in provider when the caller
-/// doesn't supply their own via `with_client`. Both timeouts exist so that
-/// unreachable or silently-stuck endpoints surface as retryable
-/// `ConnectionFailed` errors (and observable `RequestRetried` /
-/// `RequestFailed` events) instead of blocking forever with no signal:
-///
-/// - `connect_timeout` fires when the TCP+TLS handshake can't complete.
-/// - `read_timeout` fires when the server accepts the connection but stops
-///   sending bytes. Applied per-chunk, so legitimate long generations keep
-///   working as long as tokens keep flowing.
-pub(crate) fn default_client() -> reqwest::Client {
+pub(crate) const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Build the `reqwest::Client` every built-in provider uses. The
+/// whole-request timeout makes a hung endpoint surface as a retryable
+/// `ConnectionFailed` instead of blocking indefinitely. The 10-minute default
+/// mirrors Anthropic's own reference agent (`claude-code`).
+pub(crate) fn build_client(timeout: Duration) -> reqwest::Client {
     reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .read_timeout(std::time::Duration::from_secs(3))
+        .timeout(timeout)
         .build()
-        .expect("reqwest::Client with timeouts should build")
+        .expect("reqwest::Client with timeout should build")
 }
 
 /// Fire-and-forget HEAD request to warm the TCP+TLS connection pool. Helper
 /// for `Provider::prewarm` overrides — call this with the provider's own
 /// `reqwest::Client` and base URL.
 pub(crate) async fn prewarm_with(client: &reqwest::Client, base_url: &str) {
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        client.head(base_url).send(),
-    )
-    .await;
+    let _ = tokio::time::timeout(Duration::from_secs(10), client.head(base_url).send()).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_request_timeout_is_ten_minutes() {
+        assert_eq!(DEFAULT_REQUEST_TIMEOUT, Duration::from_secs(600));
+    }
 }

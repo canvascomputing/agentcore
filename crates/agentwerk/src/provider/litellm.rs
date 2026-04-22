@@ -3,6 +3,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::error::ProviderResult;
 use super::openai::OpenAiProvider;
@@ -19,15 +20,15 @@ const DEFAULT_BASE_URL: &str = "http://localhost:4000";
 
 impl LiteLlmProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
-        Self::with_client(api_key, super::r#trait::default_client())
-    }
-
-    pub fn with_client(api_key: impl Into<String>, client: reqwest::Client) -> Self {
-        Self(OpenAiProvider::raw(api_key, DEFAULT_BASE_URL, client, true))
+        Self(OpenAiProvider::raw(api_key, DEFAULT_BASE_URL, true))
     }
 
     pub fn base_url(self, url: impl Into<String>) -> Self {
         Self(self.0.base_url(url))
+    }
+
+    pub fn timeout(self, d: Duration) -> Self {
+        Self(self.0.timeout(d))
     }
 
     pub(crate) fn from_env() -> Result<Self> {

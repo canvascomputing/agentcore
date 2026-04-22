@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -11,7 +12,9 @@ use crate::error::Result;
 
 use super::error::{ProviderError, ProviderResult};
 use super::model::ModelLookup;
-use super::r#trait::{CompletionRequest, Provider, ToolChoice};
+use super::r#trait::{
+    build_client, CompletionRequest, Provider, ToolChoice, DEFAULT_REQUEST_TIMEOUT,
+};
 use super::stream::{SseEvent, StreamParser};
 use super::types::{
     CompletionResponse, ContentBlock, Message, ResponseStatus, StreamEvent, TokenUsage,
@@ -23,42 +26,41 @@ pub struct OpenAiProvider {
     base_url: String,
     client: reqwest::Client,
     cache_tokens: bool,
+    timeout: Duration,
 }
 
 impl OpenAiProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
-        Self::raw(
-            api_key,
-            "https://api.openai.com",
-            super::r#trait::default_client(),
-            false,
-        )
-    }
-
-    pub fn with_client(api_key: impl Into<String>, client: reqwest::Client) -> Self {
-        Self::raw(api_key, "https://api.openai.com", client, false)
+        Self::raw(api_key, "https://api.openai.com", false)
     }
 
     /// Raw constructor used by sibling provider modules (`mistral`,
     /// `litellm`) to build an `OpenAiProvider` pointed at their own
     /// endpoint. Not part of the public API.
-    pub(crate) fn raw(
-        api_key: impl Into<String>,
-        base_url: &str,
-        client: reqwest::Client,
-        cache_tokens: bool,
-    ) -> Self {
+    pub(crate) fn raw(api_key: impl Into<String>, base_url: &str, cache_tokens: bool) -> Self {
         Self {
             api_key: api_key.into(),
             base_url: base_url.into(),
-            client,
+            client: build_client(DEFAULT_REQUEST_TIMEOUT),
             cache_tokens,
+            timeout: DEFAULT_REQUEST_TIMEOUT,
         }
     }
 
     pub fn base_url(mut self, url: impl Into<String>) -> Self {
         self.base_url = url.into();
         self
+    }
+
+    pub fn timeout(mut self, d: Duration) -> Self {
+        self.timeout = d;
+        self.client = build_client(self.timeout);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn request_timeout(&self) -> Duration {
+        self.timeout
     }
 
     pub(crate) fn from_env() -> Result<Self> {
@@ -593,6 +595,14 @@ mod tests {
             max_request_tokens: Some(1024),
             tool_choice: None,
         }
+    }
+
+    #[test]
+    fn timeout_builder_stores_duration() {
+        let p = OpenAiProvider::new("test-key");
+        assert_eq!(p.request_timeout(), DEFAULT_REQUEST_TIMEOUT);
+        let p = p.timeout(Duration::from_secs(42));
+        assert_eq!(p.request_timeout(), Duration::from_secs(42));
     }
 
     #[test]

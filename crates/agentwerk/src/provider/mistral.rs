@@ -3,6 +3,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::error::ProviderResult;
 use super::model::ModelLookup;
@@ -19,20 +20,15 @@ const DEFAULT_BASE_URL: &str = "https://api.mistral.ai";
 
 impl MistralProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
-        Self::with_client(api_key, super::r#trait::default_client())
-    }
-
-    pub fn with_client(api_key: impl Into<String>, client: reqwest::Client) -> Self {
-        Self(OpenAiProvider::raw(
-            api_key,
-            DEFAULT_BASE_URL,
-            client,
-            false,
-        ))
+        Self(OpenAiProvider::raw(api_key, DEFAULT_BASE_URL, false))
     }
 
     pub fn base_url(self, url: impl Into<String>) -> Self {
         Self(self.0.base_url(url))
+    }
+
+    pub fn timeout(self, d: Duration) -> Self {
+        Self(self.0.timeout(d))
     }
 
     pub(crate) fn from_env() -> Result<Self> {
@@ -103,5 +99,11 @@ mod tests {
         assert_eq!(lookup("claude-sonnet-4-20250514"), None);
         assert_eq!(lookup("gpt-5"), None);
         assert_eq!(lookup("llama-3-70b"), None);
+    }
+
+    #[test]
+    fn timeout_delegates_to_inner() {
+        let p = MistralProvider::new("test-key").timeout(Duration::from_secs(42));
+        assert_eq!(p.0.request_timeout(), Duration::from_secs(42));
     }
 }
