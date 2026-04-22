@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,7 @@ pub struct ToolContext {
     pub(crate) tool_registry: Option<Arc<ToolRegistry>>,
     pub(crate) runtime: Option<Arc<LoopRuntime>>,
     pub(crate) caller_spec: Option<Arc<AgentSpec>>,
+    pub(crate) cancel_signal: Arc<AtomicBool>,
 }
 
 impl ToolContext {
@@ -31,6 +33,7 @@ impl ToolContext {
             tool_registry: None,
             runtime: None,
             caller_spec: None,
+            cancel_signal: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -40,6 +43,7 @@ impl ToolContext {
     }
 
     pub(crate) fn runtime(mut self, runtime: Arc<LoopRuntime>) -> Self {
+        self.cancel_signal = runtime.cancel_signal.clone();
         self.runtime = Some(runtime);
         self
     }
@@ -47,6 +51,15 @@ impl ToolContext {
     pub(crate) fn caller_spec(mut self, spec: Arc<AgentSpec>) -> Self {
         self.caller_spec = Some(spec);
         self
+    }
+
+    /// Future that resolves once the current run is cancelled. Pair with
+    /// `tokio::select!` to drop the losing branch on Ctrl-C; dropped futures
+    /// cascade to `reqwest` aborts and (with `kill_on_drop(true)`) subprocess
+    /// kills. When the context is not attached to a running loop, the future
+    /// stays pending forever and the `select!` degrades to a plain await.
+    pub async fn wait_for_cancel(&self) {
+        crate::util::wait_for_cancel(&self.cancel_signal).await;
     }
 
     pub(crate) fn mark_tool_discovered(&self, name: &str) {

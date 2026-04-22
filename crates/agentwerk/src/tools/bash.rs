@@ -113,7 +113,7 @@ impl Toolable for BashTool {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(Self::DEFAULT_TIMEOUT_MS);
 
-            Ok(run_shell_command(command, &ctx.working_directory, timeout_ms).await)
+            Ok(run_shell_command(command, timeout_ms, ctx).await)
         })
     }
 }

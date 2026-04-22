@@ -18,7 +18,7 @@ use crate::provider::types::{
 };
 use crate::provider::{CompletionRequest, Provider, ProviderError};
 use crate::tools::{ToolCall, ToolContext, ToolRegistry, ToolResult};
-use crate::util::{format_current_date, now_millis};
+use crate::util::{cancellable_sleep, format_current_date, now_millis, wait_for_cancel};
 
 use super::compact;
 use super::event::{Event, EventKind};
@@ -326,25 +326,6 @@ fn check_guards(runtime: &LoopRuntime, spec: &AgentSpec, state: &LoopState) -> O
     None
 }
 
-/// Sleep for `duration` but poll the cancel signal every 100 ms. Returns
-/// `true` when the full duration elapsed, `false` when a cancel was observed.
-/// Lets Ctrl-C break out of a long backoff within ~100 ms instead of waiting
-/// up to `MAX_DELAY_MS` for the sleep to complete.
-async fn cancellable_sleep(duration: std::time::Duration, cancel: &Arc<AtomicBool>) -> bool {
-    let deadline = tokio::time::Instant::now() + duration;
-    loop {
-        if cancel.load(Ordering::Relaxed) {
-            return false;
-        }
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return true;
-        }
-        let tick = std::cmp::min(remaining, std::time::Duration::from_millis(100));
-        tokio::time::sleep(tick).await;
-    }
-}
-
 async fn call_provider(
     runtime: &LoopRuntime,
     spec: &AgentSpec,
@@ -375,11 +356,13 @@ async fn call_provider(
         }
     });
 
-    runtime
-        .provider
-        .complete_streaming(request, on_event)
-        .await
-        .map_err(AgenticError::from)
+    tokio::select! {
+        biased;
+        _ = wait_for_cancel(&runtime.cancel_signal) => Err(AgenticError::Aborted),
+        result = runtime.provider.complete_streaming(request, on_event) => {
+            result.map_err(AgenticError::from)
+        }
+    }
 }
 
 /// One turn's provider call with two built-in resilience seams:
@@ -409,14 +392,7 @@ async fn call_provider_with_retry(
             }
             Err(e) if e.is_retryable() && attempt < spec.max_request_retries => {
                 let delay_ms = compute_delay(spec.request_retry_delay, attempt, e.retry_after_ms());
-                if !cancellable_sleep(
-                    std::time::Duration::from_millis(delay_ms),
-                    &runtime.cancel_signal,
-                )
-                .await
-                {
-                    return Err(AgenticError::Aborted);
-                }
+                cancellable_sleep(Duration::from_millis(delay_ms), &runtime.cancel_signal).await?;
                 emit_request_retried(
                     runtime,
                     spec,

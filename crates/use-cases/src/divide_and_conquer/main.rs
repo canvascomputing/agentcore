@@ -240,7 +240,7 @@ fn python_tool() -> Tool {
         "required": ["code"]
     }))
     .read_only(true)
-    .handler(|input, _ctx| {
+    .handler(|input, ctx| {
         Box::pin(async move {
             let code = input
                 .get("code")
@@ -249,20 +249,26 @@ fn python_tool() -> Tool {
             if code.is_empty() {
                 return Ok(ToolResult::error("missing required field `code`"));
             }
-            match tokio::process::Command::new("python3")
+
+            let output_fut = tokio::process::Command::new("python3")
                 .arg("-c")
                 .arg(code)
-                .output()
-                .await
-            {
-                Err(e) => Ok(ToolResult::error(format!("failed to spawn python3: {e}"))),
-                Ok(out) if out.status.success() => {
-                    let stdout = String::from_utf8_lossy(&out.stdout);
-                    Ok(ToolResult::success(stdout.trim().to_string()))
-                }
-                Ok(out) => {
-                    let stderr = String::from_utf8_lossy(&out.stderr);
-                    Ok(ToolResult::error(format!("python error: {stderr}")))
+                .kill_on_drop(true)
+                .output();
+
+            tokio::select! {
+                biased;
+                _ = ctx.wait_for_cancel() => Ok(ToolResult::error("cancelled")),
+                result = output_fut => match result {
+                    Err(e) => Ok(ToolResult::error(format!("failed to spawn python3: {e}"))),
+                    Ok(out) if out.status.success() => {
+                        let stdout = String::from_utf8_lossy(&out.stdout);
+                        Ok(ToolResult::success(stdout.trim().to_string()))
+                    }
+                    Ok(out) => {
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        Ok(ToolResult::error(format!("python error: {stderr}")))
+                    }
                 }
             }
         })

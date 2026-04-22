@@ -1,25 +1,31 @@
 //! Shared helpers for the file and shell tools — glob matching and process invocation.
 
-use std::path::Path;
 use std::time::Duration;
 
-use crate::tools::tool::ToolResult;
+use crate::tools::tool::{ToolContext, ToolResult};
 
-/// Execute a command via `sh -c` with a timeout, returning combined stdout/stderr.
+/// Execute a command via `sh -c`, returning combined stdout/stderr. Bounded by
+/// `timeout_ms` and interruptible via the context's cancel signal: a fired
+/// cancel drops the pending output future, and `kill_on_drop(true)` cascades
+/// SIGKILL to the subprocess so a hanging `python3` / `sleep` doesn't outlive
+/// Ctrl-C.
 pub(crate) async fn run_shell_command(
     command: &str,
-    working_directory: &Path,
     timeout_ms: u64,
+    ctx: &ToolContext,
 ) -> ToolResult {
-    let result = tokio::time::timeout(
-        Duration::from_millis(timeout_ms),
-        tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .current_dir(working_directory)
-            .output(),
-    )
-    .await;
+    let output_fut = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(&ctx.working_directory)
+        .kill_on_drop(true)
+        .output();
+
+    let result = tokio::select! {
+        biased;
+        _ = ctx.wait_for_cancel() => return ToolResult::error("Command cancelled"),
+        r = tokio::time::timeout(Duration::from_millis(timeout_ms), output_fut) => r,
+    };
 
     match result {
         Err(_) => ToolResult::error(format!("Command timed out after {timeout_ms}ms")),
@@ -68,6 +74,29 @@ fn glob_match_bytes(pattern: &[u8], text: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
+    use std::time::Instant;
+
+    #[tokio::test]
+    async fn cancel_interrupts_long_running_subprocess() {
+        let ctx = ToolContext::new(std::env::current_dir().unwrap());
+        let flag = ctx.cancel_signal.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            flag.store(true, Ordering::Relaxed);
+        });
+
+        let started = Instant::now();
+        let result = run_shell_command("sleep 30", 60_000, &ctx).await;
+        let elapsed = started.elapsed();
+
+        assert!(result.is_err(), "expected cancelled result");
+        assert!(result.content().contains("cancelled"));
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "cancel should return within 500ms, took {elapsed:?}",
+        );
+    }
 
     #[test]
     fn exact_match() {
