@@ -7,9 +7,9 @@ use crate::error::{AgenticError, Result};
 /// Why the agent loop exited.
 ///
 /// Distinct from [`crate::provider::types::ResponseStatus`], which describes
-/// what the LLM API reported. `AgentStatus` describes the agent-level outcome.
+/// what the LLM API reported. `Status` describes the agent-level outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AgentStatus {
+pub enum Status {
     /// Model chose to stop — responded without tool calls (`EndTurn`).
     Completed,
     /// External cancel signal was set.
@@ -25,7 +25,7 @@ pub enum AgentStatus {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct AgentStatistics {
+pub struct Statistics {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub requests: u64,
@@ -34,22 +34,22 @@ pub struct AgentStatistics {
 }
 
 #[derive(Debug, Clone)]
-pub struct AgentOutput {
+pub struct Output {
     pub name: String,
     pub response: Option<Value>,
     pub response_raw: String,
-    pub statistics: AgentStatistics,
-    pub status: AgentStatus,
+    pub statistics: Statistics,
+    pub status: Status,
 }
 
-impl AgentOutput {
+impl Output {
     pub fn empty() -> Self {
         Self {
             name: String::new(),
             response: None,
             response_raw: String::new(),
-            statistics: AgentStatistics::default(),
-            status: AgentStatus::Completed,
+            statistics: Statistics::default(),
+            status: Status::Completed,
         }
     }
 }

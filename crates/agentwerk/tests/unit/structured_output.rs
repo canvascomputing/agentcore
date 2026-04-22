@@ -1,4 +1,4 @@
-//! How structured output flows from declaration to validated `AgentOutput`.
+//! How structured output flows from declaration to validated `Output`.
 //!
 //! `output_schema` turns the agent loop into a tiny state machine on top of
 //! the regular run loop:
@@ -8,7 +8,7 @@
 //!                                                           │
 //!                                 ┌─── valid ───────────────┘
 //!                                 ▼
-//!                       AgentOutput { response: Some(value) }
+//!                       Output { response: Some(value) }
 //!
 //!                                 ┌─── invalid ─────────────┐
 //!                                 ▼                         │
@@ -493,14 +493,14 @@ async fn validation_deferred_through_truncation() {
 #[tokio::test]
 async fn cancel_before_any_reply_skips_validation() {
     // Pre-cancelled run: check_guards fires on the first iteration; finish_early
-    // returns AgentStatus::Cancelled with response=None and never calls validate_value.
+    // returns Status::Cancelled with response=None and never calls validate_value.
     let provider = MockProvider::new(vec![text_response("would-be JSON if we got here")]);
     let harness = TestHarness::new(provider);
     harness.cancel();
     let output = harness.run_agent(&schema_agent(), "go").await.unwrap();
 
-    use agentwerk::AgentStatus;
-    assert_eq!(output.status, AgentStatus::Cancelled);
+    use agentwerk::Status;
+    assert_eq!(output.status, Status::Cancelled);
     assert_eq!(output.response, None);
     // No request was sent at all (guard fires before the first turn body).
     assert_eq!(harness.provider().request_count(), 0);
@@ -519,8 +519,8 @@ async fn turn_limit_skips_validation() {
     let harness = TestHarness::new(provider);
     let output = harness.run_agent(&agent, "go").await.unwrap();
 
-    use agentwerk::AgentStatus;
-    assert_eq!(output.status, AgentStatus::TurnLimitReached { limit: 1 });
+    use agentwerk::Status;
+    assert_eq!(output.status, Status::TurnLimitReached { limit: 1 });
     assert_eq!(output.response, None);
 }
 

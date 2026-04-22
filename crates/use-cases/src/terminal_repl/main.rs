@@ -4,8 +4,8 @@ use std::io::{self, IsTerminal, Write};
 use std::sync::Arc;
 
 use agentwerk::{
-    Agent, AgentOutput, AgentStatus, AgenticError, Event, EventKind, GlobTool, GrepTool,
-    ListDirectoryTool, ReadFileTool,
+    Agent, AgenticError, Event, EventKind, GlobTool, GrepTool, ListDirectoryTool, Output,
+    ReadFileTool, Status,
 };
 use tokio::sync::Notify;
 
@@ -51,7 +51,7 @@ async fn main() {
         .spawn();
 
     tokio::pin!(output);
-    let mut early_result: Option<Result<AgentOutput, AgenticError>> = None;
+    let mut early_result: Option<Result<Output, AgenticError>> = None;
 
     'session: loop {
         tokio::select! {
@@ -106,14 +106,14 @@ fn announce_assistant(style: &Style) {
     let _ = io::stdout().flush();
 }
 
-fn status_label(status: &AgentStatus) -> &'static str {
+fn status_label(status: &Status) -> &'static str {
     match status {
-        AgentStatus::Completed => "completed",
-        AgentStatus::Cancelled => "cancelled",
-        AgentStatus::TurnLimitReached { .. } => "turn limit reached",
-        AgentStatus::InputBudgetExhausted { .. } => "input budget exhausted",
-        AgentStatus::OutputBudgetExhausted { .. } => "output budget exhausted",
-        AgentStatus::HaltRequested => "halted",
+        Status::Completed => "completed",
+        Status::Cancelled => "cancelled",
+        Status::TurnLimitReached { .. } => "turn limit reached",
+        Status::InputBudgetExhausted { .. } => "input budget exhausted",
+        Status::OutputBudgetExhausted { .. } => "output budget exhausted",
+        Status::HaltRequested => "halted",
     }
 }
 

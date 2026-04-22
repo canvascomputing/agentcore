@@ -9,12 +9,12 @@ use std::task::{Context, Poll};
 use tokio::task::JoinHandle;
 
 use crate::agent::agent::Agent;
-use crate::agent::output::AgentOutput;
+use crate::agent::output::Output;
 use crate::agent::queue::{CommandQueue, CommandSource, QueuePriority, QueuedCommand};
 use crate::error::{AgenticError, Result};
 
 /// Shared atomic state between every [`AgentHandle`] clone, the
-/// [`AgentOutputFuture`], and the running loop.
+/// [`OutputFuture`], and the running loop.
 pub(crate) struct HandleState {
     pub(crate) queue: Arc<CommandQueue>,
     pub(crate) cancel: Arc<AtomicBool>,
@@ -87,25 +87,25 @@ impl AgentHandle {
 }
 
 /// Future that resolves to the agent's final
-/// [`AgentOutput`](crate::agent::AgentOutput).
+/// [`Output`](crate::agent::Output).
 ///
 /// The future does not own a [`LifeToken`]: only [`AgentHandle`] clones do.
 /// Dropping this future just abandons the result; whether the loop keeps
 /// running is decided by whether any handles remain.
-pub struct AgentOutputFuture {
-    join: Mutex<Option<JoinHandle<Result<AgentOutput>>>>,
+pub struct OutputFuture {
+    join: Mutex<Option<JoinHandle<Result<Output>>>>,
 }
 
-impl AgentOutputFuture {
-    pub(crate) fn new(join: JoinHandle<Result<AgentOutput>>) -> Self {
+impl OutputFuture {
+    pub(crate) fn new(join: JoinHandle<Result<Output>>) -> Self {
         Self {
             join: Mutex::new(Some(join)),
         }
     }
 }
 
-impl Future for AgentOutputFuture {
-    type Output = Result<AgentOutput>;
+impl Future for OutputFuture {
+    type Output = Result<Output>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut guard = self.join.lock().unwrap();
@@ -113,7 +113,7 @@ impl Future for AgentOutputFuture {
             Some(j) => j,
             None => {
                 return Poll::Ready(Err(AgenticError::Other(
-                    "AgentOutputFuture polled after completion".into(),
+                    "OutputFuture polled after completion".into(),
                 )))
             }
         };
@@ -137,8 +137,8 @@ impl Agent {
     ///
     /// - [`AgentHandle`] — cheap, clonable handle for injecting new
     ///   instructions, cancelling, or inspecting state.
-    /// - [`AgentOutputFuture`] — resolves to the final
-    ///   [`AgentOutput`](crate::agent::AgentOutput) once the loop exits.
+    /// - [`OutputFuture`] — resolves to the final
+    ///   [`Output`](crate::agent::Output) once the loop exits.
     ///
     /// The loop idles after each terminal output as long as any handle is
     /// alive. Dropping the last handle calls [`AgentHandle::cancel`] for you
@@ -149,7 +149,7 @@ impl Agent {
     ///
     /// Requires a running tokio runtime (`tokio::spawn` is invoked
     /// synchronously). Requires `.provider()` and `.instruction_prompt()`.
-    pub fn spawn(self) -> (AgentHandle, AgentOutputFuture) {
+    pub fn spawn(self) -> (AgentHandle, OutputFuture) {
         let queue = Arc::new(CommandQueue::new());
         let cancel = Arc::new(AtomicBool::new(false));
         let life = LifeToken::new(cancel.clone());
@@ -163,7 +163,7 @@ impl Agent {
 
         let state = Arc::new(HandleState { queue, cancel });
         let handle = AgentHandle::new(state, life);
-        let output = AgentOutputFuture::new(join);
+        let output = OutputFuture::new(join);
         (handle, output)
     }
 }
@@ -174,7 +174,7 @@ mod tests {
     use std::sync::Mutex as StdMutex;
     use std::time::Duration;
 
-    use crate::agent::{Agent, AgentStatus, Event, EventKind};
+    use crate::agent::{Agent, Event, EventKind, Status};
     use crate::provider::types::{CompletionResponse, ContentBlock, Message};
     use crate::testutil::{text_response, MockProvider};
     use crate::CompletionRequest;
@@ -183,10 +183,10 @@ mod tests {
     async fn spawn_returns_handle_and_future() {
         let (handle, output) = one_shot_agent("hello");
         let clone = handle.clone();
-        // AgentHandle is Clone; AgentOutputFuture is a Future. Cancel so the
+        // AgentHandle is Clone; OutputFuture is a Future. Cancel so the
         // keep-alive loop terminates.
         clone.cancel();
-        let _: Result<AgentOutput> = output.await;
+        let _: Result<Output> = output.await;
     }
 
     #[tokio::test]
@@ -241,10 +241,7 @@ mod tests {
 
         handle.cancel();
         let out = output.await.expect("output");
-        assert!(matches!(
-            out.status,
-            AgentStatus::Completed | AgentStatus::Cancelled
-        ));
+        assert!(matches!(out.status, Status::Completed | Status::Cancelled));
     }
 
     #[tokio::test]
@@ -284,7 +281,7 @@ mod tests {
             .wait_for(|e| matches!(e.kind, EventKind::AgentResumed))
             .await;
         let out = output.await.expect("output");
-        assert_eq!(out.status, AgentStatus::Completed);
+        assert_eq!(out.status, Status::Completed);
     }
 
     #[tokio::test]
@@ -312,7 +309,7 @@ mod tests {
             .await;
         drop(handle);
         let out = output.await.expect("output");
-        assert_eq!(out.status, AgentStatus::Completed);
+        assert_eq!(out.status, Status::Completed);
     }
 
     #[tokio::test]
@@ -371,7 +368,7 @@ mod tests {
 
     #[tokio::test]
     async fn awaiting_future_twice_returns_error() {
-        // AgentOutputFuture consumes its inner JoinHandle on completion;
+        // OutputFuture consumes its inner JoinHandle on completion;
         // polling again surfaces an AgenticError::Other.
         let (handle, mut output) = one_shot_agent("done");
         handle.cancel();
@@ -380,7 +377,7 @@ mod tests {
         assert!(matches!(second, Err(AgenticError::Other(_))));
     }
 
-    fn one_shot_agent(text: &str) -> (AgentHandle, AgentOutputFuture) {
+    fn one_shot_agent(text: &str) -> (AgentHandle, OutputFuture) {
         Agent::new()
             .name("demo")
             .model_name("mock")
@@ -393,7 +390,7 @@ mod tests {
     fn keep_alive_agent(
         responses: Vec<CompletionResponse>,
         events: &EventLog,
-    ) -> (AgentHandle, AgentOutputFuture) {
+    ) -> (AgentHandle, OutputFuture) {
         let (_, h, o) = keep_alive_agent_with_provider(responses, events);
         (h, o)
     }
@@ -401,7 +398,7 @@ mod tests {
     fn keep_alive_agent_with_provider(
         responses: Vec<CompletionResponse>,
         events: &EventLog,
-    ) -> (Arc<MockProvider>, AgentHandle, AgentOutputFuture) {
+    ) -> (Arc<MockProvider>, AgentHandle, OutputFuture) {
         let provider = Arc::new(MockProvider::new(responses));
         let (h, o) = Agent::new()
             .name("root")

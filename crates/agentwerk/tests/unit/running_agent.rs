@@ -1,4 +1,4 @@
-//! High-level unit tests for the `AgentHandle` / `AgentOutputFuture` pair
+//! High-level unit tests for the `AgentHandle` / `OutputFuture` pair
 //! returned by `Agent::spawn()`.
 //!
 //! The agent loop runs on a background tokio task. The foreground code
@@ -10,7 +10,7 @@
 //!   - `cancel()` — flip the shared cancel signal.
 //!   - `is_cancelled()` — read that signal.
 //!   - Dropping the last handle auto-cancels (RAII leak protection).
-//! - [`AgentOutputFuture`] — resolves to the final `AgentOutput` when the
+//! - [`OutputFuture`] — resolves to the final `Output` when the
 //!   loop exits. Polling it twice returns an error.
 //!
 //! These tests exercise each operation through its public surface only.
@@ -25,8 +25,8 @@ use std::time::Duration;
 use agentwerk::provider::types::CompletionResponse;
 use agentwerk::testutil::{text_response, MockProvider};
 use agentwerk::{
-    Agent, AgentHandle, AgentOutputFuture, AgentStatus, AgenticError, CompletionRequest,
-    ContentBlock, Event, EventKind, Message,
+    Agent, AgentHandle, AgenticError, CompletionRequest, ContentBlock, Event, EventKind, Message,
+    OutputFuture, Status,
 };
 
 #[tokio::test]
@@ -49,7 +49,7 @@ async fn output_resolves_with_final_text_after_cancel() {
     handle.cancel();
     let output = output.await.expect("run should succeed");
     assert_eq!(output.response_raw, "hello world");
-    assert_eq!(output.status, AgentStatus::Completed);
+    assert_eq!(output.status, Status::Completed);
 }
 
 #[tokio::test]
@@ -122,7 +122,7 @@ async fn cancel_breaks_an_idle_agent_out_of_its_wait() {
         .wait_for(|e| matches!(e.kind, EventKind::AgentResumed))
         .await;
     let out = output.await.expect("output");
-    assert_eq!(out.status, AgentStatus::Completed);
+    assert_eq!(out.status, Status::Completed);
 }
 
 #[tokio::test]
@@ -164,14 +164,14 @@ async fn dropping_the_last_handle_terminates_the_agent() {
         .await;
     drop(handle);
     let out = output.await.expect("output");
-    assert_eq!(out.status, AgentStatus::Completed);
+    assert_eq!(out.status, Status::Completed);
 }
 
 /// Spawn a fresh agent wired to a MockProvider and the given event log.
 fn spawn_agent(
     responses: Vec<CompletionResponse>,
     events: &EventLog,
-) -> (Arc<MockProvider>, AgentHandle, AgentOutputFuture) {
+) -> (Arc<MockProvider>, AgentHandle, OutputFuture) {
     let provider = Arc::new(MockProvider::new(responses));
     let (h, o) = Agent::new()
         .name("root")

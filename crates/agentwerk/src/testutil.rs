@@ -8,7 +8,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use crate::agent::queue::CommandQueue;
-use crate::agent::{Agent, AgentOutput, AgentStatus, Event, EventKind};
+use crate::agent::{Agent, Event, EventKind, Output, Status};
 use crate::error::Result;
 use crate::provider::types::{
     CompletionResponse, ContentBlock, ResponseStatus, StreamEvent, TokenUsage,
@@ -286,7 +286,7 @@ impl EventCollector {
         self.events.lock().unwrap().clone()
     }
 
-    pub fn agent_ends(&self) -> Vec<(String, u32, AgentStatus)> {
+    pub fn agent_ends(&self) -> Vec<(String, u32, Status)> {
         self.events
             .lock()
             .unwrap()
@@ -347,7 +347,7 @@ impl TestHarness {
     /// Fully configure the given `Agent` with this harness's runtime bits
     /// (provider / event handler / wd / cancel / template vars), then run it
     /// against the supplied prompt.
-    pub async fn run_agent(&self, agent: &Agent, input: &str) -> Result<AgentOutput> {
+    pub async fn run_agent(&self, agent: &Agent, input: &str) -> Result<Output> {
         let mut prepared = agent
             .clone()
             .provider(self.provider.clone())

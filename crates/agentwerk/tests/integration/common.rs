@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use agentwerk::{provider, AgentOutput, Provider};
+use agentwerk::{provider, Output, Provider};
 
 pub fn build_provider() -> (Arc<dyn Provider>, String) {
     let provider = provider::from_env().expect("LLM provider required for integration tests");
@@ -12,7 +12,7 @@ pub fn build_provider() -> (Arc<dyn Provider>, String) {
     (provider, model)
 }
 
-pub fn print_result(output: &AgentOutput) {
+pub fn print_result(output: &Output) {
     let json = serde_json::json!({
         "response": output.response.clone().unwrap_or_else(|| serde_json::Value::String(output.response_raw.clone())),
         "turns": output.statistics.turns,

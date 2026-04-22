@@ -54,9 +54,9 @@ crates/agentwerk/src/
     agent.rs              Agent (Agent::DEFAULT_MAX_REQUEST_RETRIES / DEFAULT_BACKOFF_MS, Arc<AgentSpec> + inlined per-run fields, Agent::interpolate, Agent::compile)
     spec.rs               AgentSpec (model accessor, system_prompt method, Default + DEFAULT_MAX_REQUEST_RETRIES/DEFAULT_BACKOFF_MS), interpolate, build_context_prompt
     loop.rs               LoopRuntime (environment), LoopState (initial), run_loop
-    spawn.rs              AgentHandle, AgentOutputFuture, impl Agent { spawn }
+    spawn.rs              AgentHandle, OutputFuture, impl Agent { spawn }
     event.rs              Event struct + EventKind enum (AgentStarted carries description for spawned children)
-    output.rs             AgentOutput, AgentStatus, OutputSchema (validate, retry_message)
+    output.rs             Output, Status, Statistics, OutputSchema (validate, retry_message)
     prompts.rs            DEFAULT_BEHAVIOR_PROMPT and structured-output constants
     batch.rs              Batch (builder: .run waits for all, .spawn returns BatchHandle + BatchOutputStream for dynamic pools)
     queue.rs              CommandQueue, QueuePriority, QueuedCommand (internal)
@@ -97,7 +97,7 @@ Use cases are in `crates/use-cases/src/cli/`. Run with `make use_case name=<name
 ## Key conventions
 
 - **No new dependencies without asking.** The crate is intentionally minimal (tokio, serde, serde_json, libc, reqwest, futures-util). Providers own a `reqwest::Client` directly — no transport abstraction.
-- **No ad-hoc changes to critical types without a plan.** These types form the public API and are used across the entire codebase: `Agent`, `ToolContext`, `Event`, `Toolable` trait, `CompletionRequest`, `AgentOutput`, `Batch`. Propose changes in a plan first.
+- **No ad-hoc changes to critical types without a plan.** These types form the public API and are used across the entire codebase: `Agent`, `ToolContext`, `Event`, `Toolable` trait, `CompletionRequest`, `Output`, `Batch`. Propose changes in a plan first.
 - **Tools capture dependencies at construction time** via closures or struct fields. The internal `ToolContext` handles (`runtime: Arc<LoopRuntime>`, `caller_spec: Arc<AgentSpec>`) exist solely for the agent loop to give `SpawnAgentTool` / `ToolSearchTool` read access to loop state — do not use them for new tools.
 - **`tools/tool.rs` vs `tools/`**: `tool.rs` defines the trait and infrastructure (`Toolable` trait, `Tool` struct for ad-hoc tools, `ToolRegistry`, `ToolContext`). Other files in `tools/` are concrete implementations.
 - **`agent/` vs `provider/` vs `persistence/`**: `agent/` contains the agent's builder surface (`Agent` in `werk.rs`) and everything the execution loop consumes (`AgentSpec` / `LoopRuntime` / `LoopState` / `run_loop` in `loop.rs`), events, output, and prompts. `provider/` contains LLM communication and estimated costs. `persistence/` contains internal disk storage (session transcripts, tasks).
@@ -108,20 +108,13 @@ Use cases are in `crates/use-cases/src/cli/`. Run with `make use_case name=<name
 
 ### Type names
 
-**The rule: domain-prefix any type whose bare name would be too generic to read self-documenting.** Visibility (pub vs pub(crate)) does NOT change this — both crate users and crate authors benefit from self-documenting names.
+**The rule: headline types re-exported at the crate root use bare, single-word names. Everything else is qualified enough to read self-documenting on its own — either an inherently specific compound, a vendor-prefixed variant, or an internal type whose module path disambiguates it.**
 
-- **Generic single-word nouns always get the prefix.** `Status`, `Output`, `Spec`, `Runtime`, `Statistics` are too vague on their own. They become `AgentStatus`, `AgentOutput`, `AgentSpec`, `LoopRuntime`, `AgentStatistics`.
-- **Inherently specific compounds stand alone.** `LoopState`, `EventKind`, `OutputSchema`, `CompactReason`, `CompletionRequest`, `CompletionResponse`, `TokenUsage`, `ContentBlock`, `StreamEvent`, `ToolCall`, `ToolRegistry`, `ResponseStatus`, `CommandQueue`, `SessionStore`, `TaskStore`, `ModelLookup`, `ProviderError`, `ProviderResult` already say what they are.
+- **Crate-root headline types use bare single-word names.** `Agent`, `Tool`, `Event`, `Message`, `Result`, `Output`, `Status`, `Statistics`, `OutputFuture` — all re-exported at `agentwerk::`, and their bare names read unambiguously from that crate path. New headline types follow the same pattern.
+- **Inherently specific compounds stand alone.** `LoopState`, `LoopRuntime`, `AgentSpec`, `AgentHandle`, `EventKind`, `OutputSchema`, `CompactReason`, `CompletionRequest`, `CompletionResponse`, `TokenUsage`, `ContentBlock`, `StreamEvent`, `ToolCall`, `ToolRegistry`, `ResponseStatus`, `CommandQueue`, `SessionStore`, `TaskStore`, `ModelLookup`, `ProviderError`, `ProviderResult` already say what they are.
 - **Vendor-prefixed types** follow the same logic — `AnthropicProvider`, `OpenAiProvider`, `MistralProvider`, `LiteLlmProvider`, `BashTool`, `ReadFileTool`. The prefix disambiguates which thing.
 - **Acronyms follow Rust API guidelines**: `LiteLlmProvider`, not `LiteLLMProvider`. Already consistent: `OpenAiProvider`.
-- **Two structs may not share a bare name in one module.** When that would happen, keep both qualified — don't use a domain prefix as a tiebreaker for one.
-
-**Documented exceptions** (kept against the rule, deliberately):
-- `Message` (re-exported at root) — Anthropic API convention; "message" in an LLM crate is unambiguous and rename cost is high.
-- `Result` (re-exported at root) — Rust idiom: crate-level `Result` aliases (`std::io::Result`, `anyhow::Result`) are standard; `agentwerk::Result` follows suit.
-- `Agent` (re-exported at root) — THE central type; carries the crate name as its noun, no prefix needed.
-- `Tool` (re-exported at root) — concrete struct for ad-hoc tools, mirrors the `Agent` shape (`Tool::new()` + builder methods, no `.build()` terminator). The companion trait is named `Toolable` to free the `Tool` name for the struct.
-- `Event` (re-exported at root) — the caller-facing event stream an `Agent` run emits. Analogous to `Agent` / `Tool`: a headline type whose bare name reads unambiguously from the crate root. Paired with `EventKind` (compound, stands on its own).
+- **Two structs may not share a bare name in one module.** When that would happen, keep both qualified — don't pick one to prefix as a tiebreaker.
 
 **Variant naming in `EventKind`.** State-transition events use past-participle form (`AgentStarted`, `AgentFinished`, `ToolCallStarted`, `ToolCallFinished`, `RequestRetried`, `ContextCompacted`, `OutputTruncated`, `InputBudgetExhausted`). Terminal-failure variants use the `Error` suffix (`RequestError`, `ToolCallError`) — the variant names the outcome, and its `error: String` payload echoes the variant name. Don't mix `Error` / `Failed`.
 
@@ -194,7 +187,7 @@ Not allowed:
 
 ```rust
 // GOOD: places the file in the bigger picture and states the problem it solves
-//! The execution kernel. Runs a compiled `Agent` turn by turn until it yields an `AgentOutput`.
+//! The execution kernel. Runs a compiled `Agent` turn by turn until it yields an `Output`.
 
 //! Single error type every fallible API returns, so callers match one `Result` surface.
 

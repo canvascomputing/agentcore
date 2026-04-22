@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use crate::error::{AgenticError, Result};
 
 use super::agent::Agent;
-use super::output::AgentOutput;
+use super::output::Output;
 
 const DEFAULT_CONCURRENCY: usize = 1;
 
@@ -74,12 +74,12 @@ impl Batch {
     /// order: `results[i]` corresponds to the `i`th agent added via
     /// [`agent`](Self::agent) / [`agents`](Self::agents). A failing agent does
     /// not abort the others.
-    pub async fn run(self) -> Vec<Result<AgentOutput>> {
+    pub async fn run(self) -> Vec<Result<Output>> {
         let total = self.agents.len();
         let (handle, stream) = self.spawn();
         handle.drain();
 
-        let mut slots: Vec<Option<Result<AgentOutput>>> = (0..total).map(|_| None).collect();
+        let mut slots: Vec<Option<Result<Output>>> = (0..total).map(|_| None).collect();
         for (index, result) in stream.collect().await {
             if index < slots.len() {
                 slots[index] = Some(result);
@@ -103,7 +103,7 @@ impl Batch {
     /// - [`BatchHandle`] — cheap, clonable handle for submitting more agents
     ///   or cancelling.
     /// - [`BatchOutputStream`] — yields
-    ///   `(submission_index, Result<AgentOutput>)` in completion order. The
+    ///   `(submission_index, Result<Output>)` in completion order. The
     ///   `submission_index` matches the position the agent was added:
     ///   preloaded [`agents`](Self::agents) take indices `0..n`, then dynamic
     ///   [`submit`](BatchHandle::submit) calls continue the sequence. Ends
@@ -115,7 +115,7 @@ impl Batch {
     pub fn spawn(self) -> (BatchHandle, BatchOutputStream) {
         let concurrency = self.concurrency;
         let (submit_tx, submit_rx) = mpsc::unbounded_channel::<(usize, Agent)>();
-        let (output_tx, output_rx) = mpsc::unbounded_channel::<(usize, Result<AgentOutput>)>();
+        let (output_tx, output_rx) = mpsc::unbounded_channel::<(usize, Result<Output>)>();
         let cancel = self
             .cancel_signal
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
@@ -143,11 +143,11 @@ impl Batch {
 
 async fn dispatch(
     mut submit_rx: mpsc::UnboundedReceiver<(usize, Agent)>,
-    output_tx: mpsc::UnboundedSender<(usize, Result<AgentOutput>)>,
+    output_tx: mpsc::UnboundedSender<(usize, Result<Output>)>,
     concurrency: usize,
     cancel: Arc<AtomicBool>,
 ) {
-    let mut in_flight: FuturesUnordered<tokio::task::JoinHandle<(usize, Result<AgentOutput>)>> =
+    let mut in_flight: FuturesUnordered<tokio::task::JoinHandle<(usize, Result<Output>)>> =
         FuturesUnordered::new();
     let mut closed = false;
 
@@ -237,19 +237,19 @@ impl BatchHandle {
 }
 
 /// Stream of per-agent results from a [`Batch::spawn`] pool. Yields
-/// `(submission_index, Result<AgentOutput>)` in completion order. The
+/// `(submission_index, Result<Output>)` in completion order. The
 /// `submission_index` matches the position the agent was added — preloaded
 /// [`Batch::agents`] first, then dynamic [`BatchHandle::submit`] calls — so
 /// the caller can correlate a streamed result back to its input without
-/// inspecting [`AgentOutput::name`]. Ends once the pool is closed (all
+/// inspecting [`Output::name`]. Ends once the pool is closed (all
 /// handles dropped, [`drain`](BatchHandle::drain)ed, or
 /// [`cancel`](BatchHandle::cancel)led) and the backlog completes.
 pub struct BatchOutputStream {
-    rx: mpsc::UnboundedReceiver<(usize, Result<AgentOutput>)>,
+    rx: mpsc::UnboundedReceiver<(usize, Result<Output>)>,
 }
 
 impl Stream for BatchOutputStream {
-    type Item = (usize, Result<AgentOutput>);
+    type Item = (usize, Result<Output>);
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.rx.poll_recv(cx)
@@ -258,12 +258,12 @@ impl Stream for BatchOutputStream {
 
 impl BatchOutputStream {
     /// Collect every remaining result in completion order.
-    pub async fn collect(self) -> Vec<(usize, Result<AgentOutput>)> {
+    pub async fn collect(self) -> Vec<(usize, Result<Output>)> {
         StreamExt::collect(self).await
     }
 
     /// Await the next result, or `None` once the pool has drained.
-    pub async fn next(&mut self) -> Option<(usize, Result<AgentOutput>)> {
+    pub async fn next(&mut self) -> Option<(usize, Result<Output>)> {
         StreamExt::next(self).await
     }
 }
@@ -556,7 +556,7 @@ mod tests {
         let mut seen = 0;
         while let Some((_, r)) = stream.next().await {
             let out = r.unwrap();
-            assert_eq!(out.status, crate::agent::AgentStatus::Completed);
+            assert_eq!(out.status, crate::agent::Status::Completed);
             seen += 1;
         }
         assert_eq!(seen, 2);
@@ -572,7 +572,7 @@ mod tests {
 
         let (_, result) = stream.next().await.expect("result after cancel");
         let out = result.unwrap();
-        assert_eq!(out.status, crate::agent::AgentStatus::Cancelled);
+        assert_eq!(out.status, crate::agent::Status::Cancelled);
         assert!(pool.is_cancelled());
         drop(pool);
         assert!(stream.next().await.is_none());

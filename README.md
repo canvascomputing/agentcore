@@ -74,7 +74,7 @@ make use_case name=<name>    # run one
 - [Tools](#tools): built-in file, search, shell, and web tools
 - [Events](#events): agent and provider activity
 - [Guardrails](#guardrails): retries, token caps, and turn limits
-- [AgentOutput](#agentoutput): validated, schema-based responses
+- [Output](#output): validated, schema-based responses
 - [Sub-agents](#sub-agents): nested workers
 - [Batches](#batches): parallel execution
 - [Todo](#todo): planned work
@@ -335,7 +335,7 @@ For protecting your budget or data, you can define clear execution rules for typ
 | `.max_request_retries(5)` | 10 | Retry on API errors (429, 529, 5xx) |
 | `.request_retry_delay(2000)` | 500 | Base delay in milliseconds for exponential backoff between request retries |
 
-### AgentOutput
+### Output
 
 The result of running an agent.
 

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::agent::compact::CompactReason;
-use crate::agent::output::AgentStatus;
+use crate::agent::output::Status;
 use crate::provider::types::TokenUsage;
 
 #[derive(Debug, Clone)]
@@ -92,7 +92,7 @@ pub enum EventKind {
     },
     AgentFinished {
         turns: u32,
-        status: AgentStatus,
+        status: Status,
     },
     TurnStarted {
         turn: u32,
@@ -186,7 +186,7 @@ mod tests {
             EventKind::AgentStarted { description: None },
             EventKind::AgentFinished {
                 turns: 3,
-                status: AgentStatus::Completed,
+                status: Status::Completed,
             },
             EventKind::TurnStarted { turn: 1 },
             EventKind::TurnFinished { turn: 1 },

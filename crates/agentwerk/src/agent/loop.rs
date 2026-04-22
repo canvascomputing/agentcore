@@ -1,4 +1,4 @@
-//! The execution kernel. Runs a compiled `Agent` turn by turn until it yields an `AgentOutput` or hits a guard.
+//! The execution kernel. Runs a compiled `Agent` turn by turn until it yields an `Output` or hits a guard.
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -22,7 +22,7 @@ use crate::util::{format_current_date, now_millis};
 
 use super::compact;
 use super::event::{Event, EventKind};
-use super::output::{AgentOutput, AgentStatistics, AgentStatus, OutputSchema};
+use super::output::{Output, OutputSchema, Statistics, Status};
 use super::prompts::{self as prompts};
 use super::queue::{CommandQueue, QueuePriority};
 use super::spec::AgentSpec;
@@ -120,7 +120,7 @@ pub(crate) fn run_loop(
     spec: Arc<AgentSpec>,
     mut state: LoopState,
     description: Option<String>,
-) -> Pin<Box<dyn Future<Output = Result<AgentOutput>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Output>> + Send>> {
     Box::pin(async move {
         runtime.provider.prewarm().await;
         record_transcript(
@@ -149,12 +149,7 @@ pub(crate) fn run_loop(
                     // exits through this error path; return a clean Cancelled
                     // status instead of bubbling the last provider error.
                     if runtime.cancel_signal.load(Ordering::Relaxed) {
-                        return Ok(finish_early(
-                            &runtime,
-                            &spec,
-                            &mut state,
-                            AgentStatus::Cancelled,
-                        ));
+                        return Ok(finish_early(&runtime, &spec, &mut state, Status::Cancelled));
                     }
                     return Err(e);
                 }
@@ -250,7 +245,7 @@ pub(crate) fn run_loop(
             let validated = output_validation.expect("Err handled above");
             let agent_end = EventKind::AgentFinished {
                 turns: state.turn,
-                status: AgentStatus::Completed,
+                status: Status::Completed,
             };
 
             emit(&runtime, &spec, agent_end);
@@ -260,7 +255,7 @@ pub(crate) fn run_loop(
                 &state,
                 text,
                 validated,
-                AgentStatus::Completed,
+                Status::Completed,
             ));
         }
     })
@@ -270,11 +265,11 @@ fn finish_early(
     runtime: &LoopRuntime,
     spec: &AgentSpec,
     state: &mut LoopState,
-    status: AgentStatus,
-) -> AgentOutput {
+    status: Status,
+) -> Output {
     let text = last_assistant_text(&state.messages);
     match &status {
-        AgentStatus::InputBudgetExhausted { usage, limit } => emit(
+        Status::InputBudgetExhausted { usage, limit } => emit(
             runtime,
             spec,
             EventKind::InputBudgetExhausted {
@@ -282,7 +277,7 @@ fn finish_early(
                 limit: *limit,
             },
         ),
-        AgentStatus::OutputBudgetExhausted { usage, limit } => emit(
+        Status::OutputBudgetExhausted { usage, limit } => emit(
             runtime,
             spec,
             EventKind::OutputBudgetExhausted {
@@ -303,18 +298,18 @@ fn finish_early(
     build_output(spec, state, text, None, status)
 }
 
-fn check_guards(runtime: &LoopRuntime, spec: &AgentSpec, state: &LoopState) -> Option<AgentStatus> {
+fn check_guards(runtime: &LoopRuntime, spec: &AgentSpec, state: &LoopState) -> Option<Status> {
     if runtime.cancel_signal.load(Ordering::Relaxed) {
-        return Some(AgentStatus::Cancelled);
+        return Some(Status::Cancelled);
     }
     if let Some(limit) = spec.max_turns {
         if state.turn >= limit {
-            return Some(AgentStatus::TurnLimitReached { limit });
+            return Some(Status::TurnLimitReached { limit });
         }
     }
     if let Some(limit) = spec.max_input_tokens {
         if state.total_usage.input_tokens >= limit {
-            return Some(AgentStatus::InputBudgetExhausted {
+            return Some(Status::InputBudgetExhausted {
                 usage: state.total_usage.input_tokens,
                 limit,
             });
@@ -322,7 +317,7 @@ fn check_guards(runtime: &LoopRuntime, spec: &AgentSpec, state: &LoopState) -> O
     }
     if let Some(limit) = spec.max_output_tokens {
         if state.total_usage.output_tokens >= limit {
-            return Some(AgentStatus::OutputBudgetExhausted {
+            return Some(Status::OutputBudgetExhausted {
                 usage: state.total_usage.output_tokens,
                 limit,
             });
@@ -682,13 +677,13 @@ fn build_output(
     state: &LoopState,
     text: String,
     response: Option<Value>,
-    status: AgentStatus,
-) -> AgentOutput {
-    AgentOutput {
+    status: Status,
+) -> Output {
+    Output {
         name: spec.name.clone(),
         response,
         response_raw: text,
-        statistics: AgentStatistics {
+        statistics: Statistics {
             input_tokens: state.total_usage.input_tokens,
             output_tokens: state.total_usage.output_tokens,
             requests: state.request_count,
@@ -735,7 +730,7 @@ mod tests {
             .identity_prompt("You are a test assistant.")
     }
 
-    fn assert_lifecycle_events(harness: &TestHarness, output: &AgentOutput) {
+    fn assert_lifecycle_events(harness: &TestHarness, output: &Output) {
         let events = harness.events().all();
 
         let agent_end_status = events.iter().find_map(|e| match &e.kind {
@@ -841,7 +836,7 @@ mod tests {
 
         let harness = TestHarness::new(provider);
         let output = harness.run_agent(&agent, "go").await.unwrap();
-        assert_eq!(output.status, AgentStatus::TurnLimitReached { limit: 2 });
+        assert_eq!(output.status, Status::TurnLimitReached { limit: 2 });
         assert_eq!(output.statistics.turns, 2);
         assert_lifecycle_events(&harness, &output);
     }
@@ -861,7 +856,7 @@ mod tests {
         let harness = TestHarness::new(provider);
         harness.cancel();
         let output = harness.run_agent(&agent, "go").await.unwrap();
-        assert_eq!(output.status, AgentStatus::Cancelled);
+        assert_eq!(output.status, Status::Cancelled);
         assert_lifecycle_events(&harness, &output);
     }
 
@@ -1090,7 +1085,7 @@ mod tests {
     async fn simple_text_response_status_completed() {
         let harness = TestHarness::new(MockProvider::text("Hello!"));
         let output = harness.run_agent(&simple_agent(), "Hi").await.unwrap();
-        assert_eq!(output.status, AgentStatus::Completed);
+        assert_eq!(output.status, Status::Completed);
         assert_lifecycle_events(&harness, &output);
     }
 
@@ -1106,7 +1101,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(output.status, AgentStatus::Completed);
+        assert_eq!(output.status, Status::Completed);
         assert_eq!(output.response_raw, "...completed response");
         assert_eq!(harness.provider().request_count(), 2);
         assert_lifecycle_events(&harness, &output);
@@ -1163,7 +1158,7 @@ mod tests {
         let output = harness.run_agent(&agent, "go").await.unwrap();
         assert_eq!(
             output.status,
-            AgentStatus::InputBudgetExhausted {
+            Status::InputBudgetExhausted {
                 usage: 5000,
                 limit: 4000
             }
@@ -1220,7 +1215,7 @@ mod tests {
         let output = harness.run_agent(&agent, "go").await.unwrap();
         assert_eq!(
             output.status,
-            AgentStatus::InputBudgetExhausted {
+            Status::InputBudgetExhausted {
                 usage: 4000,
                 limit: 4000
             }
@@ -1248,7 +1243,7 @@ mod tests {
         let output = harness.run_agent(&agent, "go").await.unwrap();
         assert_eq!(
             output.status,
-            AgentStatus::OutputBudgetExhausted {
+            Status::OutputBudgetExhausted {
                 usage: 4000,
                 limit: 4000
             }
@@ -1301,7 +1296,7 @@ mod tests {
         let output = harness.run_agent(&agent, "go").await.unwrap();
         assert_eq!(
             output.status,
-            AgentStatus::OutputBudgetExhausted {
+            Status::OutputBudgetExhausted {
                 usage: 5000,
                 limit: 4000
             }
@@ -1329,7 +1324,7 @@ mod tests {
         let output = harness.run_agent(&agent, "go").await.unwrap();
         assert_eq!(
             output.status,
-            AgentStatus::OutputBudgetExhausted {
+            Status::OutputBudgetExhausted {
                 usage: 5000,
                 limit: 4000
             }
@@ -1497,7 +1492,7 @@ mod tests {
         let agent = simple_agent();
         let output = harness.run_agent(&agent, "hi").await.unwrap();
 
-        assert_eq!(output.status, AgentStatus::Completed);
+        assert_eq!(output.status, Status::Completed);
         assert_eq!(output.statistics.turns, 1);
     }
 
@@ -2248,7 +2243,7 @@ mod retry_and_events_tests {
         let elapsed = start.elapsed();
 
         let output = run_result.unwrap();
-        assert_eq!(output.status, AgentStatus::Cancelled);
+        assert_eq!(output.status, Status::Cancelled);
         assert!(
             elapsed < std::time::Duration::from_secs(2),
             "cancel during a 30s backoff must exit within 2s (took {:?})",

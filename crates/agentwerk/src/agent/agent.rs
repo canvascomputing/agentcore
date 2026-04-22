@@ -15,7 +15,7 @@ use crate::tools::{SpawnAgentTool, ToolRegistry, Toolable};
 use crate::util::generate_agent_name;
 
 use super::event::Event;
-use super::output::{AgentOutput, OutputSchema};
+use super::output::{Output, OutputSchema};
 use super::queue::CommandQueue;
 use super::r#loop::{run_loop, LoopRuntime, LoopState};
 use super::spec::{build_context_prompt, AgentSpec};
@@ -307,7 +307,7 @@ impl Agent {
     }
 
     /// Execute this agent to completion. Requires `.provider()` and `.instruction_prompt()`.
-    pub async fn run(&self) -> Result<AgentOutput> {
+    pub async fn run(&self) -> Result<Output> {
         let (spec, runtime) = self.compile(None)?;
         let runtime = Arc::new(runtime);
         let instruction = self.interpolate(&self.instruction_prompt);
@@ -326,7 +326,7 @@ impl Agent {
         parent_spec: &AgentSpec,
         parent_runtime: &LoopRuntime,
         description: Option<String>,
-    ) -> Result<AgentOutput> {
+    ) -> Result<Output> {
         let (spec, runtime) = self.compile(Some((parent_spec, parent_runtime)))?;
         let runtime = Arc::new(runtime);
         let instruction = self.interpolate(&self.instruction_prompt);
@@ -512,7 +512,7 @@ fn build_tools(spec: &AgentSpec) -> Arc<ToolRegistry> {
 #[cfg(test)]
 mod tests {
     use super::super::event::EventKind;
-    use super::super::output::AgentStatus;
+    use super::super::output::Status;
     use super::*;
     use crate::error::AgenticError;
 
@@ -530,7 +530,7 @@ mod tests {
             "t",
             EventKind::AgentFinished {
                 turns: 1,
-                status: AgentStatus::Completed,
+                status: Status::Completed,
             },
         ));
     }
