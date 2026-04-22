@@ -57,6 +57,7 @@ bump: test
 	esac; \
 	new="$$major.$$minor.$$patch"; \
 	sed -i '' "s/^version = \"$$current\"/version = \"$$new\"/" crates/agentwerk/Cargo.toml; \
+	cargo check --workspace --quiet; \
 	git add -A && git commit -m "v$$new" && \
 	git tag "v$$new" && \
 	echo "$$current → $$new" && \
