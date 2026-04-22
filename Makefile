@@ -1,4 +1,4 @@
-.PHONY: build test test_integration fmt clean update use_case litellm bump publish
+.PHONY: build test test_integration fmt clean update use_case litellm bump
 
 # Build the project (warnings are errors)
 build: fmt
@@ -43,9 +43,10 @@ else
 	@echo "Run with: make use_case name=<name> args=\"...\""
 endif
 
-# Bump version: make bump part=patch (default), minor, or major
+# Bump version, test, commit, and tag for release: make bump part=patch (default), minor, or major
+# GitHub Actions handles the crates.io publish via trusted publishing after you push the tag
 part ?= patch
-bump:
+bump: test
 	@current=$$(grep '^version' crates/agentwerk/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
 	IFS='.' read -r major minor patch <<< "$$current"; \
 	case "$(part)" in \
@@ -56,15 +57,10 @@ bump:
 	esac; \
 	new="$$major.$$minor.$$patch"; \
 	sed -i '' "s/^version = \"$$current\"/version = \"$$new\"/" crates/agentwerk/Cargo.toml; \
-	echo "$$current → $$new"
-
-# Publish to crates.io via trusted publishing: make publish
-# Commits, tags, and prints push commands — GitHub Actions handles the actual publish
-publish: test
-	@version=$$(grep '^version' crates/agentwerk/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
-	git add -A && git commit -m "v$$version" && \
-	git tag "v$$version" && \
-	echo "Tagged v$$version — now run:" && \
+	git add -A && git commit -m "v$$new" && \
+	git tag "v$$new" && \
+	echo "$$current → $$new" && \
+	echo "Tagged v$$new — now run:" && \
 	echo "  git push && git push --tags"
 
 # Start a LiteLLM proxy on localhost:4000
