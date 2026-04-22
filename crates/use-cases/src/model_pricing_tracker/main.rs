@@ -74,6 +74,8 @@ async fn main() {
         .name("pricing_tracker")
         .provider_from_env()
         .expect("LLM provider required")
+        .model_from_env()
+        .expect("model name required")
         .identity_prompt(ORCHESTRATOR_PROMPT)
         .sub_agents([pricing_researcher])
         .output_schema(output_schema())

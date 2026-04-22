@@ -34,6 +34,8 @@ async fn main() {
         .name("report_writer")
         .provider_from_env()
         .expect("LLM provider required")
+        .model_from_env()
+        .expect("model name required")
         .identity_prompt(REPORT_WRITER_PROMPT)
         .sub_agents(researchers)
         .output_schema(output_schema())

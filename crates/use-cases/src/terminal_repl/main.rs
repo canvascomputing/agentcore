@@ -37,6 +37,8 @@ async fn main() {
         .name("orchestrator")
         .provider_from_env()
         .expect("LLM provider required")
+        .model_from_env()
+        .expect("model name required")
         .identity_prompt(IDENTITY)
         .instruction_prompt(first)
         .tool(GlobTool)

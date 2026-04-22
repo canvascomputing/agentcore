@@ -7,7 +7,9 @@ use std::sync::Arc;
 use agentwerk::{provider, AgentOutput, Provider};
 
 pub fn build_provider() -> (Arc<dyn Provider>, String) {
-    provider::from_env().expect("LLM provider required for integration tests")
+    let provider = provider::from_env().expect("LLM provider required for integration tests");
+    let model = provider::model_from_env().expect("model name required for integration tests");
+    (provider, model)
 }
 
 pub fn print_result(output: &AgentOutput) {
