@@ -82,7 +82,7 @@ impl AgentHandle {
     }
 
     /// Returns `true` once the loop has terminated — i.e. it has emitted
-    /// [`AgentEnd`](crate::agent::AgentEventKind::AgentEnd) and will not
+    /// [`AgentFinished`](crate::agent::EventKind::AgentFinished) and will not
     /// return to an idle wait. Reports *reality* (the loop is over) as
     /// opposed to [`is_cancelled`](Self::is_cancelled) which reports the
     /// *request*.
@@ -194,7 +194,7 @@ mod tests {
     use std::sync::Mutex as StdMutex;
     use std::time::Duration;
 
-    use crate::agent::{Agent, AgentEvent, AgentEventKind, AgentStatus};
+    use crate::agent::{Agent, AgentStatus, Event, EventKind};
     use crate::provider::types::{CompletionResponse, ContentBlock, Message};
     use crate::testutil::{text_response, MockProvider};
     use crate::CompletionRequest;
@@ -213,10 +213,10 @@ mod tests {
     async fn spawn_starts_loop_immediately() {
         let events = EventLog::new();
         let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
-        // AgentStart is the first event emitted by run_loop — observable
+        // AgentStarted is the first event emitted by run_loop — observable
         // before we await the future.
         events
-            .wait_for(|e| matches!(e.kind, AgentEventKind::AgentStart { .. }))
+            .wait_for(|e| matches!(e.kind, EventKind::AgentStarted { .. }))
             .await;
         handle.cancel();
         let _ = output.await;
@@ -247,7 +247,7 @@ mod tests {
         );
 
         events
-            .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+            .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
             .await;
         handle.send("follow-up");
         wait_until(|| provider.request_count() >= 2).await;
@@ -307,11 +307,11 @@ mod tests {
         let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
 
         events
-            .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+            .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
             .await;
         handle.cancel();
         events
-            .wait_for(|e| matches!(e.kind, AgentEventKind::AgentResumed))
+            .wait_for(|e| matches!(e.kind, EventKind::AgentResumed))
             .await;
         let out = output.await.expect("output");
         assert_eq!(out.status, AgentStatus::Completed);
@@ -323,7 +323,7 @@ mod tests {
         let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
 
         events
-            .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+            .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
             .await;
         let canceller = handle.clone();
         tokio::spawn(async move {
@@ -339,7 +339,7 @@ mod tests {
         let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
 
         events
-            .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+            .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
             .await;
         drop(handle);
         let out = output.await.expect("output");
@@ -353,7 +353,7 @@ mod tests {
 
         let survivor = handle.clone();
         events
-            .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+            .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
             .await;
         drop(handle);
         // Cancel is NOT set while another handle is alive.
@@ -371,7 +371,7 @@ mod tests {
         let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
 
         events
-            .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+            .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
             .await;
         drop(output);
         assert!(!handle.is_cancelled());
@@ -387,12 +387,12 @@ mod tests {
             &events,
         );
         events
-            .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+            .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
             .await;
         handle.send("wake up");
         wait_until(|| provider.request_count() >= 2).await;
         events
-            .wait_for(|e| matches!(e.kind, AgentEventKind::AgentResumed))
+            .wait_for(|e| matches!(e.kind, EventKind::AgentResumed))
             .await;
         handle.cancel();
         let _ = output.await;
@@ -444,7 +444,7 @@ mod tests {
     }
 
     struct EventLog {
-        events: Arc<StdMutex<Vec<AgentEvent>>>,
+        events: Arc<StdMutex<Vec<Event>>>,
     }
 
     impl EventLog {
@@ -454,12 +454,12 @@ mod tests {
             }
         }
 
-        fn handler(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> {
+        fn handler(&self) -> Arc<dyn Fn(Event) + Send + Sync> {
             let events = self.events.clone();
             Arc::new(move |e| events.lock().unwrap().push(e))
         }
 
-        async fn wait_for<F: Fn(&AgentEvent) -> bool>(&self, pred: F) {
+        async fn wait_for<F: Fn(&Event) -> bool>(&self, pred: F) {
             for _ in 0..200 {
                 if self.events.lock().unwrap().iter().any(&pred) {
                     return;

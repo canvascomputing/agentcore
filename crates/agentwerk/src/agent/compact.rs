@@ -1,6 +1,6 @@
 //! Context-window compaction seam. Decides when a conversation is too big for the model and hands off to the compaction strategy.
 
-use crate::agent::event::{AgentEvent, AgentEventKind};
+use crate::agent::event::{Event, EventKind};
 use crate::agent::r#loop::{LoopRuntime, LoopState};
 use crate::agent::spec::AgentSpec;
 use crate::error::{AgenticError, Result};
@@ -46,7 +46,7 @@ fn text_bytes_in_content_block(block: &ContentBlock) -> usize {
     }
 }
 
-/// Proactive seam: emit [`AgentEventKind::CompactTriggered`] and invoke [`run`]
+/// Proactive seam: emit [`EventKind::ContextCompacted`] and invoke [`run`]
 /// when the estimated next-request size crosses the threshold. No-op when
 /// the agent's model has no known context window size.
 pub(crate) async fn trigger_if_over_threshold(
@@ -61,9 +61,9 @@ pub(crate) async fn trigger_if_over_threshold(
     if tokens < threshold {
         return Ok(());
     }
-    (runtime.event_handler)(AgentEvent::new(
+    (runtime.event_handler)(Event::new(
         spec.name.clone(),
-        AgentEventKind::CompactTriggered {
+        EventKind::ContextCompacted {
             turn: state.turn,
             token_count: tokens,
             threshold,
@@ -73,7 +73,7 @@ pub(crate) async fn trigger_if_over_threshold(
     run(runtime, spec, state, CompactReason::Proactive).await
 }
 
-/// Reactive seam: emit [`AgentEventKind::CompactTriggered`] (sentinel token
+/// Reactive seam: emit [`EventKind::ContextCompacted`] (sentinel token
 /// count / threshold of `0`) and invoke [`run`]. Fired when the provider
 /// itself reports a context-window overflow — either pre-flight or
 /// mid-generation.
@@ -83,9 +83,9 @@ pub(crate) async fn trigger_reactive(
     state: &mut LoopState,
     turn: u32,
 ) -> Result<()> {
-    (runtime.event_handler)(AgentEvent::new(
+    (runtime.event_handler)(Event::new(
         spec.name.clone(),
-        AgentEventKind::CompactTriggered {
+        EventKind::ContextCompacted {
             turn,
             token_count: 0,
             threshold: 0,

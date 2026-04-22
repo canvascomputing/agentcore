@@ -106,7 +106,7 @@ let output = Agent::new()
 
 #### Keep Agents Alive
 
-Use `.spawn()` instead of `.run()` when you want to keep sending instructions to the agent:
+Use `.spawn()` when you want to keep sending instructions to your agent:
 
 ```rust
 let (agent, output) = Agent::new()
@@ -126,13 +126,15 @@ let output = output.await?;
 
 The agent waits for the next `send` after each reply. Call `cancel()` to stop it.
 
+Methods on the spawned agent:
+
 | Method | Description |
 |--------|-------------|
-| `send(instruction)` | Send a new instruction |
-| `cancel()` | Stop the agent |
-| `is_cancelled()` | Check if the agent was cancelled |
-| `is_stopped()` | Check if the agent has finished |
-| `clone()` | Get another handle to the same agent |
+| `.send(instruction)` | Send a new instruction |
+| `.cancel()` | Stop the agent |
+| `.is_cancelled()` | Check if the agent was cancelled |
+| `.is_stopped()` | Check if the agent has finished |
+| `.clone()` | Get another handle to the same agent |
 
 
 ### Models
@@ -163,14 +165,14 @@ let output = Agent::new()
     .await?;
 ```
 
-The following prompts can be configured:
+The following methods on `Agent` configure prompts:
 
 | Method | Description |
 |--------|-------------|
-| `identity_prompt(_file)` | Persistent identity of the agent |
-| `instruction_prompt(_file)` | Task for the current run |
-| `context_prompt(_file)` | Additional context appended after environment metadata (working directory, platform, OS version, date) |
-| `behavior_prompt(_file)` | Override the default behavioral directives (`DEFAULT_BEHAVIOR_PROMPT`) |
+| `.identity_prompt(_file)` | Persistent identity of the agent |
+| `.instruction_prompt(_file)` | Task for the current run |
+| `.context_prompt(_file)` | Additional context appended after environment metadata (working directory, platform, OS version, date) |
+| `.behavior_prompt(_file)` | Override the default behavioral directives (`DEFAULT_BEHAVIOR_PROMPT`) |
 
 ```rust
 Agent::new()
@@ -252,16 +254,16 @@ let agent = Agent::new()
 You can inspect what your agent is doing and how the LLM provider API is used:
 
 ```rust
-use agentwerk::{AgentEvent, AgentEventKind};
+use agentwerk::{Event, EventKind};
 
-let handler = Arc::new(|event: AgentEvent| match &event.kind {
-    AgentEventKind::ToolCallStart { tool_name, .. } => {
+let handler = Arc::new(|event: Event| match &event.kind {
+    EventKind::ToolCallStarted { tool_name, .. } => {
         eprintln!("[{}] → {tool_name}", event.agent_name);
     }
-    AgentEventKind::ToolCallError { tool_name, error, .. } => {
+    EventKind::ToolCallError { tool_name, error, .. } => {
         eprintln!("[{}] ✗ {tool_name}: {error}", event.agent_name);
     }
-    AgentEventKind::AgentEnd { turns, status } => {
+    EventKind::AgentFinished { turns, status } => {
         eprintln!("[{}] done in {turns} turns ({status:?})", event.agent_name);
     }
     _ => {}
@@ -269,29 +271,33 @@ let handler = Arc::new(|event: AgentEvent| match &event.kind {
 ```
 
 > When `.event_handler(...)` is not set, agents log tool activity and lifecycle events to
-> stderr via `AgentEvent::default_logger()`. You can call `.silent()` on the agent to silence the output.
+> stderr via `Event::default_logger()`. You can call `.silent()` on the agent to silence the output.
 
 | | Kind | Description |
 |-|------|-------------|
-| **Agent** | `AgentStart` | Agent run begins |
-| | `AgentEnd` | Agent run ends; `status` encodes the outcome (completed, cancelled, turn-limit, budget) |
-| | `TurnStart` | Agentic loop turn begins |
-| | `TurnEnd` | Agentic loop turn ends |
-| | `AgentIdle` | Keep-alive agent waits for new input |
-| | `AgentResumed` | Keep-alive agent resumes after idle |
-| | `CompactTriggered` | Context window nears its limit and triggers compaction |
-| **Provider** | `RequestStart` | Provider request begins |
-| | `RequestEnd` | Provider request ends |
-| | `ResponseTextChunk` | Streamed text token arrives |
-| | `TokenUsage` | Provider reports token counts for the last request |
-| | `OutputTruncated` | Response exceeds the allowed length and is cut off |
-| **Tools** | `ToolCallStart` | Tool invocation begins |
-| | `ToolCallEnd` | Tool invocation succeeds |
-| | `ToolCallError` | Tool invocation fails |
+| **Agent** | `AgentStarted` | Agent run began |
+| | `AgentFinished` | Agent run finished |
+| | `TurnStarted` | Agentic loop turn began |
+| | `TurnFinished` | Agentic loop turn finished |
+| | `AgentPaused` | Keep-alive agent is waiting for new input |
+| | `AgentResumed` | Keep-alive agent resumed after being paused |
+| **Provider** | `RequestStarted` | Provider request began |
+| | `RequestFinished` | Provider request finished |
+| | `RequestRetried` | Transient provider error triggered a retry |
+| | `RequestError` | Provider request failed after exhausting retries |
+| | `TextChunkReceived` | Streamed text token arrived |
+| | `TokensReported` | Provider reported token counts for the last request |
+| **Context** | `OutputTruncated` | Response was cut off at the configured length cap |
+| | `ContextCompacted` | Conversation history was compacted to stay within the model's window |
+| | `InputBudgetExhausted` | Cumulative input tokens crossed `max_input_tokens` |
+| | `OutputBudgetExhausted` | Cumulative output tokens crossed `max_output_tokens` |
+| **Tool** | `ToolCallStarted` | Tool invocation began |
+| | `ToolCallFinished` | Tool invocation succeeded |
+| | `ToolCallError` | Tool invocation failed |
 
 ### Guardrails
 
-For protecting your budget or data, you can define clear execution rules for typical LLM failures:
+For protecting your budget or data, you can define clear execution rules for typical LLM failures. You can configure the following on your `Agent`:
 
 | Method | Default | Description |
 |--------|---------|-------------|

@@ -11,7 +11,7 @@ use super::common;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use agentwerk::{Agent, AgentEvent, AgentEventKind};
+use agentwerk::{Agent, Event, EventKind};
 
 #[tokio::test]
 async fn external_sender_delivers_two_instructions_and_clone_cancels(
@@ -22,13 +22,13 @@ async fn external_sender_delivers_two_instructions_and_clone_cancels(
     let secret_b = five_digit_secret(1);
     eprintln!("[test] secrets generated: a={secret_a} b={secret_b}");
 
-    let events: Arc<Mutex<Vec<AgentEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
     let collected = events.clone();
     let text_buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let buf_for_handler = text_buf.clone();
-    let event_handler = Arc::new(move |e: AgentEvent| {
+    let event_handler = Arc::new(move |e: Event| {
         match &e.kind {
-            AgentEventKind::ResponseTextChunk { content } => {
+            EventKind::TextChunkReceived { content } => {
                 buf_for_handler.lock().unwrap().push_str(content);
             }
             _ => {
@@ -65,8 +65,7 @@ async fn external_sender_delivers_two_instructions_and_clone_cancels(
         .spawn();
 
     wait_for(&events, |all| {
-        all.iter()
-            .any(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+        all.iter().any(|e| matches!(e.kind, EventKind::AgentPaused))
     })
     .await?;
 
@@ -101,13 +100,12 @@ async fn external_sender_delivers_two_instructions_and_clone_cancels(
     );
     let all = events.lock().unwrap();
     assert!(
-        all.iter()
-            .any(|e| matches!(e.kind, AgentEventKind::AgentIdle)),
+        all.iter().any(|e| matches!(e.kind, EventKind::AgentPaused)),
         "agent should have idled at least once"
     );
     assert!(
         all.iter()
-            .any(|e| matches!(e.kind, AgentEventKind::AgentResumed)),
+            .any(|e| matches!(e.kind, EventKind::AgentResumed)),
         "agent should have resumed at least once"
     );
     let text = listener_text(&all);
@@ -133,23 +131,20 @@ fn five_digit_secret(salt: u32) -> u32 {
     (mixed % 90_000) + 10_000
 }
 
-fn listener_text(events: &[AgentEvent]) -> String {
+fn listener_text(events: &[Event]) -> String {
     events
         .iter()
         .filter(|e| e.agent_name == "listener")
         .filter_map(|e| match &e.kind {
-            AgentEventKind::ResponseTextChunk { content } => Some(content.as_str()),
+            EventKind::TextChunkReceived { content } => Some(content.as_str()),
             _ => None,
         })
         .collect()
 }
 
-async fn wait_for<F>(
-    events: &Arc<Mutex<Vec<AgentEvent>>>,
-    pred: F,
-) -> std::result::Result<(), String>
+async fn wait_for<F>(events: &Arc<Mutex<Vec<Event>>>, pred: F) -> std::result::Result<(), String>
 where
-    F: Fn(&[AgentEvent]) -> bool,
+    F: Fn(&[Event]) -> bool,
 {
     const TIMEOUT: Duration = Duration::from_secs(60);
     let deadline = Instant::now() + TIMEOUT;
@@ -168,26 +163,26 @@ where
 
 /// Render an event as a single crisp line. Returns `None` for the noisy
 /// streaming/usage events that would flood the log.
-fn format_event(e: &AgentEvent) -> Option<String> {
+fn format_event(e: &Event) -> Option<String> {
     match &e.kind {
-        AgentEventKind::AgentStart { description } => Some(match description {
+        EventKind::AgentStarted { description } => Some(match description {
             Some(d) => format!("start  ({d})"),
             None => "start".into(),
         }),
-        AgentEventKind::AgentEnd { turns, status } => {
+        EventKind::AgentFinished { turns, status } => {
             Some(format!("end    ({turns} turns, {status:?})"))
         }
-        AgentEventKind::TurnStart { turn } => Some(format!("turn   {turn}")),
-        AgentEventKind::ToolCallStart {
+        EventKind::TurnStarted { turn } => Some(format!("turn   {turn}")),
+        EventKind::ToolCallStarted {
             tool_name, input, ..
         } => Some(format!("tool   {tool_name}({})", one_line(input))),
-        AgentEventKind::ToolCallEnd {
+        EventKind::ToolCallFinished {
             tool_name, output, ..
         } => Some(format!("tool   {tool_name} -> ok {}", truncate(output, 80))),
-        AgentEventKind::ToolCallError {
+        EventKind::ToolCallError {
             tool_name, error, ..
         } => Some(format!("tool   {tool_name} -> err {}", truncate(error, 80))),
-        AgentEventKind::CompactTriggered {
+        EventKind::ContextCompacted {
             turn,
             token_count,
             threshold,
@@ -195,9 +190,9 @@ fn format_event(e: &AgentEvent) -> Option<String> {
         } => Some(format!(
             "compact turn={turn} {token_count}/{threshold} ({reason:?})"
         )),
-        AgentEventKind::OutputTruncated { turn } => Some(format!("truncated turn={turn}")),
-        AgentEventKind::AgentIdle => Some("idle".into()),
-        AgentEventKind::AgentResumed => Some("resumed".into()),
+        EventKind::OutputTruncated { turn } => Some(format!("truncated turn={turn}")),
+        EventKind::AgentPaused => Some("idle".into()),
+        EventKind::AgentResumed => Some("resumed".into()),
         _ => None,
     }
 }

@@ -11,7 +11,7 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use agentwerk::{Agent, AgentEvent, AgentEventKind, AgenticError, Tool, ToolResult};
+use agentwerk::{Agent, AgenticError, Event, EventKind, Tool, ToolResult};
 
 #[tokio::main]
 async fn main() {
@@ -195,18 +195,18 @@ fn urlencode(s: &str) -> String {
         .collect()
 }
 
-fn log_event(event: &AgentEvent) {
+fn log_event(event: &Event) {
     match &event.kind {
-        AgentEventKind::RequestStart { model } => {
+        EventKind::RequestStarted { model } => {
             eprintln!("[{}] requesting {model}...", event.agent_name);
         }
-        AgentEventKind::ToolCallStart {
+        EventKind::ToolCallStarted {
             tool_name, input, ..
         } if tool_name != "StructuredOutput" => {
             let detail = tool_call_summary(tool_name, input);
             eprintln!("[{}] {tool_name}: {detail}", event.agent_name);
         }
-        AgentEventKind::ToolCallError {
+        EventKind::ToolCallError {
             tool_name, error, ..
         } => {
             eprintln!("[error] {tool_name}: {error}");

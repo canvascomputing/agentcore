@@ -21,7 +21,7 @@ use crate::tools::{ToolCall, ToolContext, ToolRegistry, ToolResult};
 use crate::util::{format_current_date, now_millis};
 
 use super::compact;
-use super::event::{AgentEvent, AgentEventKind};
+use super::event::{Event, EventKind};
 use super::output::{AgentOutput, AgentStatistics, AgentStatus, OutputSchema};
 use super::prompts::{self as prompts};
 use super::queue::{CommandQueue, QueuePriority};
@@ -34,7 +34,7 @@ use super::spec::AgentSpec;
 pub(crate) struct LoopRuntime {
     // Externals — inherited across sub-agents.
     pub provider: Arc<dyn Provider>,
-    pub event_handler: Arc<dyn Fn(AgentEvent) + Send + Sync>,
+    pub event_handler: Arc<dyn Fn(Event) + Send + Sync>,
     pub cancel_signal: Arc<AtomicBool>,
     pub working_directory: PathBuf,
     pub command_queue: Option<Arc<CommandQueue>>,
@@ -129,7 +129,7 @@ pub(crate) fn run_loop(
             state.messages.last().unwrap(),
             None,
         );
-        emit_agent_start(&runtime, &spec, description);
+        emit_agent_started(&runtime, &spec, description);
 
         loop {
             if let Some(status) = check_guards(&runtime, &spec, &state) {
@@ -139,8 +139,8 @@ pub(crate) fn run_loop(
             state.turn += 1;
             let turn = state.turn;
 
-            emit_turn_start(&runtime, &spec, turn);
-            emit_request_start(&runtime, &spec);
+            emit_turn_started(&runtime, &spec, turn);
+            emit_request_started(&runtime, &spec);
 
             let response = match call_provider_with_retry(&runtime, &spec, &mut state, turn).await {
                 Ok(r) => r,
@@ -160,7 +160,7 @@ pub(crate) fn run_loop(
                 }
             };
 
-            emit_request_end(&runtime, &spec);
+            emit_request_finished(&runtime, &spec);
             record_usage(&runtime, &spec, &mut state, &response);
 
             let (text, tool_calls) = parse_response(&response);
@@ -198,7 +198,7 @@ pub(crate) fn run_loop(
                     None,
                 );
                 drain_command_queue(&runtime, &spec, &mut state);
-                emit_turn_end(&runtime, &spec, turn);
+                emit_turn_finished(&runtime, &spec, turn);
                 continue;
             }
 
@@ -207,13 +207,13 @@ pub(crate) fn run_loop(
                 state
                     .messages
                     .push(Message::user(prompts::MAX_TOKENS_CONTINUATION));
-                emit_turn_end(&runtime, &spec, turn);
+                emit_turn_finished(&runtime, &spec, turn);
                 continue;
             }
 
             let drain_found_messages = drain_pending_messages(&runtime, &spec, &mut state);
             if drain_found_messages {
-                emit_turn_end(&runtime, &spec, turn);
+                emit_turn_finished(&runtime, &spec, turn);
                 continue;
             }
 
@@ -222,7 +222,7 @@ pub(crate) fn run_loop(
             let idle_found_message =
                 spec.keep_alive && idle_until_message(&runtime, &spec, &mut state).await;
             if idle_found_message {
-                emit_turn_end(&runtime, &spec, turn);
+                emit_turn_finished(&runtime, &spec, turn);
                 continue;
             }
 
@@ -243,18 +243,18 @@ pub(crate) fn run_loop(
 
                 let retry_prompt = OutputSchema::retry_message(detail);
                 state.messages.push(Message::user(retry_prompt));
-                emit_turn_end(&runtime, &spec, turn);
+                emit_turn_finished(&runtime, &spec, turn);
                 continue;
             }
 
             let validated = output_validation.expect("Err handled above");
-            let agent_end = AgentEventKind::AgentEnd {
+            let agent_end = EventKind::AgentFinished {
                 turns: state.turn,
                 status: AgentStatus::Completed,
             };
 
             emit(&runtime, &spec, agent_end);
-            emit_turn_end(&runtime, &spec, turn);
+            emit_turn_finished(&runtime, &spec, turn);
             return Ok(build_output(
                 &spec,
                 &state,
@@ -273,10 +273,29 @@ fn finish_early(
     status: AgentStatus,
 ) -> AgentOutput {
     let text = last_assistant_text(&state.messages);
+    match &status {
+        AgentStatus::InputBudgetExhausted { usage, limit } => emit(
+            runtime,
+            spec,
+            EventKind::InputBudgetExhausted {
+                usage: *usage,
+                limit: *limit,
+            },
+        ),
+        AgentStatus::OutputBudgetExhausted { usage, limit } => emit(
+            runtime,
+            spec,
+            EventKind::OutputBudgetExhausted {
+                usage: *usage,
+                limit: *limit,
+            },
+        ),
+        _ => {}
+    }
     emit(
         runtime,
         spec,
-        AgentEventKind::AgentEnd {
+        EventKind::AgentFinished {
             turns: state.turn,
             status: status.clone(),
         },
@@ -352,9 +371,9 @@ async fn call_provider(
     let agent_name = spec.name.clone();
     let on_event = Arc::new(move |event: StreamEvent| {
         if let StreamEvent::TextDelta { text, .. } = &event {
-            event_handler(AgentEvent::new(
+            event_handler(Event::new(
                 agent_name.clone(),
-                AgentEventKind::ResponseTextChunk {
+                EventKind::TextChunkReceived {
                     content: text.clone(),
                 },
             ));
@@ -394,8 +413,7 @@ async fn call_provider_with_retry(
                 ));
             }
             Err(e) if e.is_retryable() && attempt < spec.max_request_retries => {
-                let delay_ms =
-                    compute_delay(spec.request_retry_delay, attempt, e.retry_after_ms());
+                let delay_ms = compute_delay(spec.request_retry_delay, attempt, e.retry_after_ms());
                 if !cancellable_sleep(
                     std::time::Duration::from_millis(delay_ms),
                     &runtime.cancel_signal,
@@ -414,13 +432,13 @@ async fn call_provider_with_retry(
                 last_err = Some(e);
             }
             Err(e) => {
-                emit_request_failed(runtime, spec, format!("{e}"));
+                emit_request_error(runtime, spec, format!("{e}"));
                 return Err(e);
             }
         }
     }
     let e = last_err.unwrap_or_else(|| AgenticError::Other("retry loop ended unexpectedly".into()));
-    emit_request_failed(runtime, spec, format!("{e}"));
+    emit_request_error(runtime, spec, format!("{e}"));
     Err(e)
 }
 
@@ -435,7 +453,7 @@ fn record_usage(
     emit(
         runtime,
         spec,
-        AgentEventKind::TokenUsage {
+        EventKind::TokensReported {
             model: response.model.clone(),
             usage: response.usage.clone(),
         },
@@ -470,7 +488,7 @@ async fn execute_tools(
         emit(
             runtime,
             spec,
-            AgentEventKind::ToolCallStart {
+            EventKind::ToolCallStarted {
                 tool_name: call.name.clone(),
                 call_id: call.id.clone(),
                 input: call.input.clone(),
@@ -493,12 +511,12 @@ async fn execute_tools(
                 .map(|c| c.name.clone())
                 .unwrap_or_default();
             let event = match result {
-                ToolResult::Success(output) => AgentEventKind::ToolCallEnd {
+                ToolResult::Success(output) => EventKind::ToolCallFinished {
                     tool_name,
                     call_id: tool_use_id.clone(),
                     output,
                 },
-                ToolResult::Failure(error) => AgentEventKind::ToolCallError {
+                ToolResult::Failure(error) => EventKind::ToolCallError {
                     tool_name,
                     call_id: tool_use_id.clone(),
                     error,
@@ -540,7 +558,7 @@ async fn idle_until_message(
     state: &mut LoopState,
 ) -> bool {
     state.is_idle = true;
-    emit_agent_idle(runtime, spec);
+    emit_agent_paused(runtime, spec);
     let woken = wait_for_message(runtime, spec, state).await;
     state.is_idle = false;
     emit_agent_resumed(runtime, spec);
@@ -567,37 +585,37 @@ async fn wait_for_message(runtime: &LoopRuntime, spec: &AgentSpec, state: &mut L
     }
 }
 
-fn emit(runtime: &LoopRuntime, spec: &AgentSpec, kind: AgentEventKind) {
-    (runtime.event_handler)(AgentEvent::new(spec.name.clone(), kind));
+fn emit(runtime: &LoopRuntime, spec: &AgentSpec, kind: EventKind) {
+    (runtime.event_handler)(Event::new(spec.name.clone(), kind));
 }
 
-fn emit_agent_start(runtime: &LoopRuntime, spec: &AgentSpec, description: Option<String>) {
-    emit(runtime, spec, AgentEventKind::AgentStart { description });
+fn emit_agent_started(runtime: &LoopRuntime, spec: &AgentSpec, description: Option<String>) {
+    emit(runtime, spec, EventKind::AgentStarted { description });
 }
 
-fn emit_turn_start(runtime: &LoopRuntime, spec: &AgentSpec, turn: u32) {
-    emit(runtime, spec, AgentEventKind::TurnStart { turn });
+fn emit_turn_started(runtime: &LoopRuntime, spec: &AgentSpec, turn: u32) {
+    emit(runtime, spec, EventKind::TurnStarted { turn });
 }
 
-fn emit_turn_end(runtime: &LoopRuntime, spec: &AgentSpec, turn: u32) {
-    emit(runtime, spec, AgentEventKind::TurnEnd { turn });
+fn emit_turn_finished(runtime: &LoopRuntime, spec: &AgentSpec, turn: u32) {
+    emit(runtime, spec, EventKind::TurnFinished { turn });
 }
 
-fn emit_request_start(runtime: &LoopRuntime, spec: &AgentSpec) {
+fn emit_request_started(runtime: &LoopRuntime, spec: &AgentSpec) {
     emit(
         runtime,
         spec,
-        AgentEventKind::RequestStart {
+        EventKind::RequestStarted {
             model: spec.model().id.clone(),
         },
     );
 }
 
-fn emit_request_end(runtime: &LoopRuntime, spec: &AgentSpec) {
+fn emit_request_finished(runtime: &LoopRuntime, spec: &AgentSpec) {
     emit(
         runtime,
         spec,
-        AgentEventKind::RequestEnd {
+        EventKind::RequestFinished {
             model: spec.model().id.clone(),
         },
     );
@@ -607,34 +625,34 @@ fn emit_request_retried(
     runtime: &LoopRuntime,
     spec: &AgentSpec,
     attempt: u32,
-    max_retries: u32,
+    max_attempts: u32,
     error: String,
 ) {
     emit(
         runtime,
         spec,
-        AgentEventKind::RequestRetried {
+        EventKind::RequestRetried {
             attempt,
-            max_retries,
+            max_attempts,
             error,
         },
     );
 }
 
-fn emit_request_failed(runtime: &LoopRuntime, spec: &AgentSpec, error: String) {
-    emit(runtime, spec, AgentEventKind::RequestFailed { error });
+fn emit_request_error(runtime: &LoopRuntime, spec: &AgentSpec, error: String) {
+    emit(runtime, spec, EventKind::RequestError { error });
 }
 
 fn emit_output_truncated(runtime: &LoopRuntime, spec: &AgentSpec, turn: u32) {
-    emit(runtime, spec, AgentEventKind::OutputTruncated { turn });
+    emit(runtime, spec, EventKind::OutputTruncated { turn });
 }
 
-fn emit_agent_idle(runtime: &LoopRuntime, spec: &AgentSpec) {
-    emit(runtime, spec, AgentEventKind::AgentIdle);
+fn emit_agent_paused(runtime: &LoopRuntime, spec: &AgentSpec) {
+    emit(runtime, spec, EventKind::AgentPaused);
 }
 
 fn emit_agent_resumed(runtime: &LoopRuntime, spec: &AgentSpec) {
-    emit(runtime, spec, AgentEventKind::AgentResumed);
+    emit(runtime, spec, EventKind::AgentResumed);
 }
 
 fn record_transcript(
@@ -721,33 +739,36 @@ mod tests {
         let events = harness.events().all();
 
         let agent_end_status = events.iter().find_map(|e| match &e.kind {
-            AgentEventKind::AgentEnd { status, .. } => Some(status.clone()),
+            EventKind::AgentFinished { status, .. } => Some(status.clone()),
             _ => None,
         });
         assert_eq!(
             agent_end_status.as_ref(),
             Some(&output.status),
-            "AgentEnd status must match output.status"
+            "AgentFinished status must match output.status"
         );
 
         let last_significant = events
             .iter()
             .rev()
-            .find(|e| !matches!(e.kind, AgentEventKind::TurnEnd { .. }));
+            .find(|e| !matches!(e.kind, EventKind::TurnFinished { .. }));
         assert!(
             matches!(
                 last_significant.map(|e| &e.kind),
-                Some(AgentEventKind::AgentEnd { .. })
+                Some(EventKind::AgentFinished { .. })
             ),
-            "AgentEnd must be the last significant event"
+            "AgentFinished must be the last significant event"
         );
 
         for (i, event) in events.iter().enumerate() {
-            if matches!(event.kind, AgentEventKind::OutputTruncated { .. }) {
+            if matches!(event.kind, EventKind::OutputTruncated { .. }) {
                 let after_agent_end = events[..i]
                     .iter()
-                    .any(|e| matches!(e.kind, AgentEventKind::AgentEnd { .. }));
-                assert!(!after_agent_end, "OutputTruncated at {i} after AgentEnd");
+                    .any(|e| matches!(e.kind, EventKind::AgentFinished { .. }));
+                assert!(
+                    !after_agent_end,
+                    "OutputTruncated at {i} after AgentFinished"
+                );
             }
         }
     }
@@ -777,13 +798,13 @@ mod tests {
         let saw_error = events.iter().any(|e| {
             matches!(
                 &e.kind,
-                AgentEventKind::ToolCallError { tool_name, error, .. }
+                EventKind::ToolCallError { tool_name, error, .. }
                     if tool_name == "boom" && error == "disk full"
             )
         });
         let saw_end = events
             .iter()
-            .any(|e| matches!(e.kind, AgentEventKind::ToolCallEnd { .. }));
+            .any(|e| matches!(e.kind, EventKind::ToolCallFinished { .. }));
         assert!(saw_error, "a failing tool must emit ToolCallError");
         assert!(!saw_end, "a failing tool must not also emit ToolCallEnd");
     }
@@ -1114,7 +1135,7 @@ mod tests {
             .all()
             .iter()
             .filter_map(|e| match &e.kind {
-                AgentEventKind::OutputTruncated { turn } => Some(*turn),
+                EventKind::OutputTruncated { turn } => Some(*turn),
                 _ => None,
             })
             .collect();
@@ -1148,6 +1169,24 @@ mod tests {
             }
         );
         assert_lifecycle_events(&harness, &output);
+
+        let events = harness.events().all();
+        let budget_index = events
+            .iter()
+            .position(|e| matches!(e.kind, EventKind::InputBudgetExhausted { .. }))
+            .expect("InputBudgetExhausted must fire before AgentFinished");
+        let finished_index = events
+            .iter()
+            .position(|e| matches!(e.kind, EventKind::AgentFinished { .. }))
+            .expect("AgentFinished must fire");
+        assert!(budget_index < finished_index);
+        assert!(matches!(
+            events[budget_index].kind,
+            EventKind::InputBudgetExhausted {
+                usage: 5000,
+                limit: 4000,
+            }
+        ));
     }
 
     #[tokio::test]
@@ -1177,6 +1216,24 @@ mod tests {
             }
         );
         assert_lifecycle_events(&harness, &output);
+
+        let events = harness.events().all();
+        let budget_index = events
+            .iter()
+            .position(|e| matches!(e.kind, EventKind::OutputBudgetExhausted { .. }))
+            .expect("OutputBudgetExhausted must fire before AgentFinished");
+        let finished_index = events
+            .iter()
+            .position(|e| matches!(e.kind, EventKind::AgentFinished { .. }))
+            .expect("AgentFinished must fire");
+        assert!(budget_index < finished_index);
+        assert!(matches!(
+            events[budget_index].kind,
+            EventKind::OutputBudgetExhausted {
+                usage: 5000,
+                limit: 4000,
+            }
+        ));
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -1364,8 +1421,8 @@ mod tests {
             .all()
             .iter()
             .filter_map(|e| match &e.kind {
-                AgentEventKind::AgentIdle => Some("idle"),
-                AgentEventKind::AgentResumed => Some("resumed"),
+                EventKind::AgentPaused => Some("idle"),
+                EventKind::AgentResumed => Some("resumed"),
                 _ => None,
             })
             .collect();
@@ -1470,25 +1527,25 @@ mod retry_and_events_tests {
         }
     }
 
-    fn retries_in(events: &[AgentEvent]) -> Vec<(u32, u32, String)> {
+    fn retries_in(events: &[Event]) -> Vec<(u32, u32, String)> {
         events
             .iter()
             .filter_map(|e| match &e.kind {
-                AgentEventKind::RequestRetried {
+                EventKind::RequestRetried {
                     attempt,
-                    max_retries,
+                    max_attempts,
                     error,
-                } => Some((*attempt, *max_retries, error.clone())),
+                } => Some((*attempt, *max_attempts, error.clone())),
                 _ => None,
             })
             .collect()
     }
 
-    fn failures_in(events: &[AgentEvent]) -> Vec<String> {
+    fn failures_in(events: &[Event]) -> Vec<String> {
         events
             .iter()
             .filter_map(|e| match &e.kind {
-                AgentEventKind::RequestFailed { error } => Some(error.clone()),
+                EventKind::RequestError { error } => Some(error.clone()),
                 _ => None,
             })
             .collect()
@@ -1552,44 +1609,46 @@ mod retry_and_events_tests {
         assert_eq!(
             names,
             vec![
-                "AgentStart",
-                "TurnStart",
-                "RequestStart",
-                "RequestEnd",
-                "TokenUsage",
-                "ToolCallStart",
-                "ToolCallEnd",
-                "TurnEnd",
-                "TurnStart",
-                "RequestStart",
-                "ResponseTextChunk",
-                "RequestEnd",
-                "TokenUsage",
-                "AgentEnd",
-                "TurnEnd",
+                "AgentStarted",
+                "TurnStarted",
+                "RequestStarted",
+                "RequestFinished",
+                "TokensReported",
+                "ToolCallStarted",
+                "ToolCallFinished",
+                "TurnFinished",
+                "TurnStarted",
+                "RequestStarted",
+                "TextChunkReceived",
+                "RequestFinished",
+                "TokensReported",
+                "AgentFinished",
+                "TurnFinished",
             ]
         );
     }
 
-    fn event_name(event: &AgentEvent) -> &'static str {
+    fn event_name(event: &Event) -> &'static str {
         match &event.kind {
-            AgentEventKind::AgentStart { .. } => "AgentStart",
-            AgentEventKind::AgentEnd { .. } => "AgentEnd",
-            AgentEventKind::TurnStart { .. } => "TurnStart",
-            AgentEventKind::TurnEnd { .. } => "TurnEnd",
-            AgentEventKind::RequestStart { .. } => "RequestStart",
-            AgentEventKind::RequestEnd { .. } => "RequestEnd",
-            AgentEventKind::RequestRetried { .. } => "RequestRetried",
-            AgentEventKind::RequestFailed { .. } => "RequestFailed",
-            AgentEventKind::ResponseTextChunk { .. } => "ResponseTextChunk",
-            AgentEventKind::ToolCallStart { .. } => "ToolCallStart",
-            AgentEventKind::ToolCallEnd { .. } => "ToolCallEnd",
-            AgentEventKind::ToolCallError { .. } => "ToolCallError",
-            AgentEventKind::TokenUsage { .. } => "TokenUsage",
-            AgentEventKind::OutputTruncated { .. } => "OutputTruncated",
-            AgentEventKind::CompactTriggered { .. } => "CompactTriggered",
-            AgentEventKind::AgentIdle => "AgentIdle",
-            AgentEventKind::AgentResumed => "AgentResumed",
+            EventKind::AgentStarted { .. } => "AgentStarted",
+            EventKind::AgentFinished { .. } => "AgentFinished",
+            EventKind::TurnStarted { .. } => "TurnStarted",
+            EventKind::TurnFinished { .. } => "TurnFinished",
+            EventKind::RequestStarted { .. } => "RequestStarted",
+            EventKind::RequestFinished { .. } => "RequestFinished",
+            EventKind::RequestRetried { .. } => "RequestRetried",
+            EventKind::RequestError { .. } => "RequestError",
+            EventKind::TextChunkReceived { .. } => "TextChunkReceived",
+            EventKind::ToolCallStarted { .. } => "ToolCallStarted",
+            EventKind::ToolCallFinished { .. } => "ToolCallFinished",
+            EventKind::ToolCallError { .. } => "ToolCallError",
+            EventKind::TokensReported { .. } => "TokensReported",
+            EventKind::OutputTruncated { .. } => "OutputTruncated",
+            EventKind::ContextCompacted { .. } => "ContextCompacted",
+            EventKind::InputBudgetExhausted { .. } => "InputBudgetExhausted",
+            EventKind::OutputBudgetExhausted { .. } => "OutputBudgetExhausted",
+            EventKind::AgentPaused => "AgentPaused",
+            EventKind::AgentResumed => "AgentResumed",
         }
     }
 
@@ -1615,11 +1674,11 @@ mod retry_and_events_tests {
             .all()
             .iter()
             .filter_map(|e| match &e.kind {
-                AgentEventKind::RequestRetried {
+                EventKind::RequestRetried {
                     attempt,
-                    max_retries,
+                    max_attempts,
                     ..
-                } => Some((*attempt, *max_retries)),
+                } => Some((*attempt, *max_attempts)),
                 _ => None,
             })
             .collect();
@@ -1628,7 +1687,7 @@ mod retry_and_events_tests {
             .events()
             .all()
             .iter()
-            .filter(|e| matches!(e.kind, AgentEventKind::RequestFailed { .. }))
+            .filter(|e| matches!(e.kind, EventKind::RequestError { .. }))
             .count();
         assert_eq!(failed_count, 0, "no terminal failure on eventual success");
     }
@@ -1656,7 +1715,7 @@ mod retry_and_events_tests {
         let failed: Vec<&str> = events
             .iter()
             .filter_map(|e| match &e.kind {
-                AgentEventKind::RequestFailed { error } => Some(error.as_str()),
+                EventKind::RequestError { error } => Some(error.as_str()),
                 _ => None,
             })
             .collect();
@@ -1664,7 +1723,7 @@ mod retry_and_events_tests {
         assert!(failed[0].contains("unauthorized"));
         assert!(!events
             .iter()
-            .any(|e| matches!(e.kind, AgentEventKind::RequestRetried { .. })));
+            .any(|e| matches!(e.kind, EventKind::RequestRetried { .. })));
     }
 
     #[tokio::test]
@@ -1835,7 +1894,7 @@ mod retry_and_events_tests {
             assert_eq!(failures.len(), 1, "{needle}");
             assert!(
                 failures[0].contains(needle),
-                "RequestFailed must carry error detail '{needle}', got: {}",
+                "RequestError must carry error detail '{needle}', got: {}",
                 failures[0]
             );
             assert!(retries_in(&events).is_empty(), "{needle}");
@@ -1843,7 +1902,7 @@ mod retry_and_events_tests {
     }
 
     #[tokio::test]
-    async fn context_window_exceeded_with_known_window_does_not_emit_request_failed() {
+    async fn context_window_exceeded_with_known_window_does_not_emit_request_error() {
         let provider =
             MockProvider::with_results(vec![Err(ProviderError::ContextWindowExceeded {
                 provider_message: "context overflow".into(),
@@ -1861,7 +1920,7 @@ mod retry_and_events_tests {
         let events = harness.events().all();
         let compact_count = events
             .iter()
-            .filter(|e| matches!(e.kind, AgentEventKind::CompactTriggered { .. }))
+            .filter(|e| matches!(e.kind, EventKind::ContextCompacted { .. }))
             .count();
         assert_eq!(compact_count, 1);
         assert!(failures_in(&events).is_empty());
@@ -1899,8 +1958,8 @@ mod retry_and_events_tests {
             }),
             Ok(text_response("ok")),
         ]);
-        let collected: Arc<StdMutex<Vec<AgentEvent>>> = Arc::new(StdMutex::new(Vec::new()));
-        let handler: Arc<dyn Fn(AgentEvent) + Send + Sync> = {
+        let collected: Arc<StdMutex<Vec<Event>>> = Arc::new(StdMutex::new(Vec::new()));
+        let handler: Arc<dyn Fn(Event) + Send + Sync> = {
             let c = collected.clone();
             Arc::new(move |e| c.lock().unwrap().push(e))
         };
@@ -1924,7 +1983,7 @@ mod retry_and_events_tests {
                     .lock()
                     .unwrap()
                     .iter()
-                    .filter(|e| matches!(e.kind, AgentEventKind::RequestRetried { .. }))
+                    .filter(|e| matches!(e.kind, EventKind::RequestRetried { .. }))
                     .count()
             };
             assert_eq!(retries(), 0, "no retry event before sleep");
@@ -1962,8 +2021,8 @@ mod retry_and_events_tests {
             Err(rate_limit_error()),
             Err(rate_limit_error()),
         ]);
-        let collected: Arc<StdMutex<Vec<AgentEvent>>> = Arc::new(StdMutex::new(Vec::new()));
-        let handler: Arc<dyn Fn(AgentEvent) + Send + Sync> = {
+        let collected: Arc<StdMutex<Vec<Event>>> = Arc::new(StdMutex::new(Vec::new()));
+        let handler: Arc<dyn Fn(Event) + Send + Sync> = {
             let c = collected.clone();
             Arc::new(move |e| c.lock().unwrap().push(e))
         };
@@ -1987,7 +2046,7 @@ mod retry_and_events_tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|e| matches!(e.kind, AgentEventKind::RequestRetried { .. }))
+                .filter(|e| matches!(e.kind, EventKind::RequestRetried { .. }))
                 .count()
         };
 
@@ -2029,7 +2088,7 @@ mod retry_and_events_tests {
             .lock()
             .unwrap()
             .iter()
-            .filter(|e| matches!(e.kind, AgentEventKind::RequestFailed { .. }))
+            .filter(|e| matches!(e.kind, EventKind::RequestError { .. }))
             .count();
         assert_eq!(failures, 1, "one terminal failure after retries exhaust");
     }
@@ -2084,8 +2143,8 @@ mod retry_and_events_tests {
                 provider_message: "terminal".into(),
             }),
         ]);
-        let collected: Arc<StdMutex<Vec<AgentEvent>>> = Arc::new(StdMutex::new(Vec::new()));
-        let handler: Arc<dyn Fn(AgentEvent) + Send + Sync> = {
+        let collected: Arc<StdMutex<Vec<Event>>> = Arc::new(StdMutex::new(Vec::new()));
+        let handler: Arc<dyn Fn(Event) + Send + Sync> = {
             let c = collected.clone();
             Arc::new(move |e| c.lock().unwrap().push(e))
         };

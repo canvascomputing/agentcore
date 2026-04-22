@@ -4,8 +4,8 @@ use std::io::{self, Write};
 use std::sync::Arc;
 
 use agentwerk::{
-    Agent, AgentEvent, AgentEventKind, AgentOutput, AgenticError, GlobTool, GrepTool,
-    ListDirectoryTool, ReadFileTool,
+    Agent, AgentOutput, AgenticError, Event, EventKind, GlobTool, GrepTool, ListDirectoryTool,
+    ReadFileTool,
 };
 use tokio::sync::Notify;
 
@@ -35,9 +35,7 @@ async fn main() {
         .tool(GrepTool)
         .tool(ListDirectoryTool)
         .tool(ReadFileTool)
-        .event_handler(Arc::new(move |e: AgentEvent| {
-            print_event(&e, &handler_idle)
-        }))
+        .event_handler(Arc::new(move |e: Event| print_event(&e, &handler_idle)))
         .spawn();
 
     tokio::pin!(output);
@@ -87,13 +85,13 @@ async fn main() {
     std::process::exit(0);
 }
 
-fn print_event(event: &AgentEvent, idle: &Arc<Notify>) {
+fn print_event(event: &Event, idle: &Arc<Notify>) {
     match &event.kind {
-        AgentEventKind::ResponseTextChunk { content } => {
+        EventKind::TextChunkReceived { content } => {
             print!("{content}");
             let _ = io::stdout().flush();
         }
-        AgentEventKind::ToolCallStart {
+        EventKind::ToolCallStarted {
             tool_name, input, ..
         } => {
             let arg = input["pattern"]
@@ -102,22 +100,22 @@ fn print_event(event: &AgentEvent, idle: &Arc<Notify>) {
                 .unwrap_or("");
             eprintln!("· {tool_name}({arg})");
         }
-        AgentEventKind::ToolCallError {
+        EventKind::ToolCallError {
             tool_name, error, ..
         } => eprintln!("✗ {tool_name}: {error}"),
-        AgentEventKind::RequestRetried {
+        EventKind::RequestRetried {
             attempt,
-            max_retries,
+            max_attempts,
             error,
         } => {
             let short = error.split_once(':').map(|(h, _)| h).unwrap_or(error);
-            eprintln!("↻ retry {attempt}/{max_retries}: {short}");
+            eprintln!("↻ retry {attempt}/{max_attempts}: {short}");
         }
-        AgentEventKind::RequestFailed { error } => {
+        EventKind::RequestError { error } => {
             let short = error.split_once(':').map(|(h, _)| h).unwrap_or(error);
             eprintln!("✗ request failed: {short}");
         }
-        AgentEventKind::AgentIdle | AgentEventKind::AgentEnd { .. } => {
+        EventKind::AgentPaused | EventKind::AgentFinished { .. } => {
             println!();
             idle.notify_one();
         }

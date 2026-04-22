@@ -14,7 +14,7 @@ use crate::provider::Provider;
 use crate::tools::{SpawnAgentTool, ToolRegistry, Toolable};
 use crate::util::generate_agent_name;
 
-use super::event::AgentEvent;
+use super::event::Event;
 use super::output::{AgentOutput, OutputSchema};
 use super::queue::CommandQueue;
 use super::r#loop::{run_loop, LoopRuntime, LoopState};
@@ -34,7 +34,7 @@ pub struct Agent {
     pub(crate) instruction_prompt: String,
     pub(crate) template_variables: HashMap<String, Value>,
     pub(crate) working_directory: Option<PathBuf>,
-    pub(crate) event_handler: Option<Arc<dyn Fn(AgentEvent) + Send + Sync>>,
+    pub(crate) event_handler: Option<Arc<dyn Fn(Event) + Send + Sync>>,
     pub(crate) cancel_signal: Option<Arc<AtomicBool>>,
     pub(crate) command_queue: Option<Arc<CommandQueue>>,
     pub(crate) session_dir: Option<PathBuf>,
@@ -266,7 +266,7 @@ impl Agent {
         self
     }
 
-    pub fn event_handler(mut self, h: Arc<dyn Fn(AgentEvent) + Send + Sync>) -> Self {
+    pub fn event_handler(mut self, h: Arc<dyn Fn(Event) + Send + Sync>) -> Self {
         self.event_handler = Some(h);
         self
     }
@@ -360,10 +360,7 @@ impl Agent {
         if let Some(rr) = overrides.get("max_request_retries").and_then(Value::as_u64) {
             self = self.max_request_retries(rr as u32);
         }
-        if let Some(bo) = overrides
-            .get("request_retry_delay")
-            .and_then(Value::as_u64)
-        {
+        if let Some(bo) = overrides.get("request_retry_delay").and_then(Value::as_u64) {
             self = self.request_retry_delay(bo);
         }
         if let Some(schema) = overrides.get("output_schema").cloned() {
@@ -427,10 +424,10 @@ impl Agent {
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-        let event_handler: Arc<dyn Fn(AgentEvent) + Send + Sync> = self
+        let event_handler: Arc<dyn Fn(Event) + Send + Sync> = self
             .event_handler
             .clone()
-            .unwrap_or_else(AgentEvent::default_logger);
+            .unwrap_or_else(Event::default_logger);
 
         let cancel_signal = self
             .cancel_signal
@@ -510,7 +507,7 @@ fn build_tools(spec: &AgentSpec) -> Arc<ToolRegistry> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::event::AgentEventKind;
+    use super::super::event::EventKind;
     use super::super::output::AgentStatus;
     use super::*;
     use crate::error::AgenticError;
@@ -525,9 +522,9 @@ mod tests {
             .clone();
         // Every variant passes through without panicking; no output is asserted —
         // the point is that a handler is present and benign.
-        handler(AgentEvent::new(
+        handler(Event::new(
             "t",
-            AgentEventKind::AgentEnd {
+            EventKind::AgentFinished {
                 turns: 1,
                 status: AgentStatus::Completed,
             },

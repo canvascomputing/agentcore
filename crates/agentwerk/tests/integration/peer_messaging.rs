@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use agentwerk::{Agent, AgentEvent, AgentEventKind, SendMessageTool};
+use agentwerk::{Agent, Event, EventKind, SendMessageTool};
 
 #[tokio::test]
 async fn orchestrator_sends_message_to_backgrounded_worker(
@@ -27,9 +27,9 @@ async fn orchestrator_sends_message_to_backgrounded_worker(
         % 90_000
         + 10_000;
 
-    let events: Arc<Mutex<Vec<AgentEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
     let collected = events.clone();
-    let event_handler = Arc::new(move |e: AgentEvent| {
+    let event_handler = Arc::new(move |e: Event| {
         if let Some(line) = format_event(&e) {
             eprintln!("[{}] {line}", e.agent_name);
         }
@@ -86,15 +86,15 @@ async fn orchestrator_sends_message_to_backgrounded_worker(
     let all = events.lock().unwrap();
     let worker_started = all
         .iter()
-        .any(|e| matches!(e.kind, AgentEventKind::AgentStart { .. }) && e.agent_name == "worker");
+        .any(|e| matches!(e.kind, EventKind::AgentStarted { .. }) && e.agent_name == "worker");
     let worker_ended = all
         .iter()
-        .any(|e| matches!(e.kind, AgentEventKind::AgentEnd { .. }) && e.agent_name == "worker");
+        .any(|e| matches!(e.kind, EventKind::AgentFinished { .. }) && e.agent_name == "worker");
     let send_ok = all.iter().any(|e| {
         e.agent_name == "orchestrator"
             && matches!(
                 &e.kind,
-                AgentEventKind::ToolCallEnd { tool_name, .. }
+                EventKind::ToolCallFinished { tool_name, .. }
                     if tool_name == "send_message"
             )
     });
@@ -102,7 +102,7 @@ async fn orchestrator_sends_message_to_backgrounded_worker(
         .iter()
         .filter(|e| e.agent_name == "worker")
         .filter_map(|e| match &e.kind {
-            AgentEventKind::ResponseTextChunk { content } => Some(content.as_str()),
+            EventKind::TextChunkReceived { content } => Some(content.as_str()),
             _ => None,
         })
         .collect();
@@ -125,26 +125,26 @@ async fn orchestrator_sends_message_to_backgrounded_worker(
 
 /// Render an event as a single crisp line. Returns `None` for the noisy
 /// streaming/usage events that would flood the log.
-fn format_event(e: &AgentEvent) -> Option<String> {
+fn format_event(e: &Event) -> Option<String> {
     match &e.kind {
-        AgentEventKind::AgentStart { description } => Some(match description {
+        EventKind::AgentStarted { description } => Some(match description {
             Some(d) => format!("start  ({d})"),
             None => "start".into(),
         }),
-        AgentEventKind::AgentEnd { turns, status } => {
+        EventKind::AgentFinished { turns, status } => {
             Some(format!("end    ({turns} turns, {status:?})"))
         }
-        AgentEventKind::TurnStart { turn } => Some(format!("turn   {turn}")),
-        AgentEventKind::ToolCallStart {
+        EventKind::TurnStarted { turn } => Some(format!("turn   {turn}")),
+        EventKind::ToolCallStarted {
             tool_name, input, ..
         } => Some(format!("tool   {tool_name}({})", one_line(input))),
-        AgentEventKind::ToolCallEnd {
+        EventKind::ToolCallFinished {
             tool_name, output, ..
         } => Some(format!("tool   {tool_name} -> ok {}", truncate(output, 80))),
-        AgentEventKind::ToolCallError {
+        EventKind::ToolCallError {
             tool_name, error, ..
         } => Some(format!("tool   {tool_name} -> err {}", truncate(error, 80))),
-        AgentEventKind::CompactTriggered {
+        EventKind::ContextCompacted {
             turn,
             token_count,
             threshold,
@@ -152,10 +152,10 @@ fn format_event(e: &AgentEvent) -> Option<String> {
         } => Some(format!(
             "compact turn={turn} {token_count}/{threshold} ({reason:?})"
         )),
-        AgentEventKind::OutputTruncated { turn } => Some(format!("truncated turn={turn}")),
-        AgentEventKind::AgentIdle => Some("idle".into()),
-        AgentEventKind::AgentResumed => Some("resumed".into()),
-        // Quiet: TurnEnd, RequestStart/End, ResponseTextChunk, TokenUsage.
+        EventKind::OutputTruncated { turn } => Some(format!("truncated turn={turn}")),
+        EventKind::AgentPaused => Some("idle".into()),
+        EventKind::AgentResumed => Some("resumed".into()),
+        // Quiet: TurnFinished, RequestStarted/Finished, TextChunkReceived, TokensReported.
         _ => None,
     }
 }

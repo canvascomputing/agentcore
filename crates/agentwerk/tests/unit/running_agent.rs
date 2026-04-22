@@ -10,7 +10,7 @@
 //!   - `cancel()` — flip the shared cancel signal.
 //!   - `is_cancelled()` — read that signal.
 //!   - `is_stopped()` — read the terminal-state flag; `true` once the loop
-//!     has emitted `AgentEnd`.
+//!     has emitted `AgentFinished`.
 //!   - Dropping the last handle auto-cancels (RAII leak protection).
 //! - [`AgentOutputFuture`] — resolves to the final `AgentOutput` when the
 //!   loop exits. Polling it twice returns an error.
@@ -27,8 +27,8 @@ use std::time::Duration;
 use agentwerk::provider::types::CompletionResponse;
 use agentwerk::testutil::{text_response, MockProvider};
 use agentwerk::{
-    Agent, AgentEvent, AgentEventKind, AgentHandle, AgentOutputFuture, AgentStatus, AgenticError,
-    CompletionRequest, ContentBlock, Message,
+    Agent, AgentHandle, AgentOutputFuture, AgentStatus, AgenticError, CompletionRequest,
+    ContentBlock, Event, EventKind, Message,
 };
 
 #[tokio::test]
@@ -46,7 +46,7 @@ async fn output_resolves_with_final_text_after_cancel() {
     // Wait until the loop has produced its terminal output and parked idle;
     // cancelling before that would abort turn 1 with `Cancelled` status.
     events
-        .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+        .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
         .await;
     handle.cancel();
     let output = output.await.expect("run should succeed");
@@ -80,7 +80,7 @@ async fn send_injects_an_instruction_into_the_next_turn() {
     );
 
     events
-        .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+        .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
         .await;
     handle.send("follow-up");
     wait_until(|| provider.request_count() >= 2).await;
@@ -117,11 +117,11 @@ async fn cancel_breaks_an_idle_agent_out_of_its_wait() {
     let (_provider, handle, output) = spawn_agent(vec![text_response("first")], &events);
 
     events
-        .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+        .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
         .await;
     handle.cancel();
     events
-        .wait_for(|e| matches!(e.kind, AgentEventKind::AgentResumed))
+        .wait_for(|e| matches!(e.kind, EventKind::AgentResumed))
         .await;
     let out = output.await.expect("output");
     assert_eq!(out.status, AgentStatus::Completed);
@@ -133,7 +133,7 @@ async fn is_stopped_stays_false_during_idle() {
     let (_provider, handle, output) = spawn_agent(vec![text_response("first")], &events);
 
     events
-        .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+        .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
         .await;
     assert!(!handle.is_stopped(), "idle is not stopped");
 
@@ -147,11 +147,11 @@ async fn is_stopped_becomes_true_after_cancel_during_idle() {
     let (_provider, handle, output) = spawn_agent(vec![text_response("first")], &events);
 
     events
-        .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+        .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
         .await;
     handle.cancel();
     events
-        .wait_for(|e| matches!(e.kind, AgentEventKind::AgentResumed))
+        .wait_for(|e| matches!(e.kind, EventKind::AgentResumed))
         .await;
     let _ = output.await.expect("output");
     assert!(handle.is_stopped());
@@ -168,7 +168,7 @@ async fn send_and_cancel_on_a_clone_reach_the_original_task() {
     let canceller = original.clone();
 
     events
-        .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+        .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
         .await;
     sender.send("via-clone");
     wait_until(|| provider.request_count() >= 2).await;
@@ -192,7 +192,7 @@ async fn dropping_the_last_handle_terminates_the_agent() {
     let (_provider, handle, output) = spawn_agent(vec![text_response("first")], &events);
 
     events
-        .wait_for(|e| matches!(e.kind, AgentEventKind::AgentIdle))
+        .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
         .await;
     drop(handle);
     let out = output.await.expect("output");
@@ -217,7 +217,7 @@ fn spawn_agent(
 }
 
 struct EventLog {
-    events: Arc<Mutex<Vec<AgentEvent>>>,
+    events: Arc<Mutex<Vec<Event>>>,
 }
 
 impl EventLog {
@@ -227,12 +227,12 @@ impl EventLog {
         }
     }
 
-    fn handler(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> {
+    fn handler(&self) -> Arc<dyn Fn(Event) + Send + Sync> {
         let events = self.events.clone();
         Arc::new(move |e| events.lock().unwrap().push(e))
     }
 
-    async fn wait_for<F: Fn(&AgentEvent) -> bool>(&self, pred: F) {
+    async fn wait_for<F: Fn(&Event) -> bool>(&self, pred: F) {
         for _ in 0..200 {
             if self.events.lock().unwrap().iter().any(&pred) {
                 return;

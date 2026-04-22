@@ -7,13 +7,13 @@ use crate::agent::output::AgentStatus;
 use crate::provider::types::TokenUsage;
 
 #[derive(Debug, Clone)]
-pub struct AgentEvent {
+pub struct Event {
     pub agent_name: String,
-    pub kind: AgentEventKind,
+    pub kind: EventKind,
 }
 
-impl AgentEvent {
-    pub(crate) fn new(agent_name: impl Into<String>, kind: AgentEventKind) -> Self {
+impl Event {
+    pub(crate) fn new(agent_name: impl Into<String>, kind: EventKind) -> Self {
         Self {
             agent_name: agent_name.into(),
             kind,
@@ -24,33 +24,33 @@ impl AgentEvent {
     ///
     /// Installed automatically when [`Agent`] is built without `.event_handler(...)`.
     /// Prints one line per notable event; chatty events (streamed text, token usage,
-    /// turn/request boundaries, idle/resumed) are skipped. Call `.silent()` on the
+    /// turn/request boundaries, paused/resumed) are skipped. Call `.silent()` on the
     /// agent to opt out, or pass a custom handler for richer formatting.
     ///
     /// [`Agent`]: crate::agent::Agent
-    pub fn default_logger() -> Arc<dyn Fn(AgentEvent) + Send + Sync> {
-        Arc::new(|event: AgentEvent| {
+    pub fn default_logger() -> Arc<dyn Fn(Event) + Send + Sync> {
+        Arc::new(|event: Event| {
             let agent = &event.agent_name;
             match &event.kind {
-                AgentEventKind::AgentStart {
+                EventKind::AgentStarted {
                     description: Some(d),
                 } => {
                     eprintln!("[{agent}] start: {d}");
                 }
-                AgentEventKind::AgentEnd { turns, status } => {
+                EventKind::AgentFinished { turns, status } => {
                     eprintln!("[{agent}] done ({turns} turns, {status:?})");
                 }
-                AgentEventKind::ToolCallStart {
+                EventKind::ToolCallStarted {
                     tool_name, input, ..
                 } => {
                     eprintln!("[{agent}] → {tool_name}({})", compact_input(input));
                 }
-                AgentEventKind::ToolCallError {
+                EventKind::ToolCallError {
                     tool_name, error, ..
                 } => {
                     eprintln!("[{agent}] ✗ {tool_name}: {error}");
                 }
-                AgentEventKind::CompactTriggered {
+                EventKind::ContextCompacted {
                     turn,
                     token_count,
                     threshold,
@@ -60,17 +60,23 @@ impl AgentEvent {
                         "[{agent}] compact turn={turn} {token_count}/{threshold} ({reason:?})"
                     );
                 }
-                AgentEventKind::OutputTruncated { turn } => {
+                EventKind::OutputTruncated { turn } => {
                     eprintln!("[{agent}] truncated turn={turn}");
                 }
-                AgentEventKind::RequestRetried {
+                EventKind::InputBudgetExhausted { usage, limit } => {
+                    eprintln!("[{agent}] ✗ input budget exhausted ({usage}/{limit})");
+                }
+                EventKind::OutputBudgetExhausted { usage, limit } => {
+                    eprintln!("[{agent}] ✗ output budget exhausted ({usage}/{limit})");
+                }
+                EventKind::RequestRetried {
                     attempt,
-                    max_retries,
+                    max_attempts,
                     error,
                 } => {
-                    eprintln!("[{agent}] ↻ retry {attempt}/{max_retries} ({error})");
+                    eprintln!("[{agent}] ↻ retry {attempt}/{max_attempts} ({error})");
                 }
-                AgentEventKind::RequestFailed { error } => {
+                EventKind::RequestError { error } => {
                     eprintln!("[{agent}] ✗ request failed: {error}");
                 }
                 _ => {}
@@ -80,26 +86,26 @@ impl AgentEvent {
 }
 
 #[derive(Debug, Clone)]
-pub enum AgentEventKind {
-    AgentStart {
+pub enum EventKind {
+    AgentStarted {
         description: Option<String>,
     },
-    AgentEnd {
+    AgentFinished {
         turns: u32,
         status: AgentStatus,
     },
-    TurnStart {
+    TurnStarted {
         turn: u32,
     },
-    TurnEnd {
+    TurnFinished {
         turn: u32,
     },
-    ToolCallStart {
+    ToolCallStarted {
         tool_name: String,
         call_id: String,
         input: serde_json::Value,
     },
-    ToolCallEnd {
+    ToolCallFinished {
         tool_name: String,
         call_id: String,
         output: String,
@@ -109,37 +115,45 @@ pub enum AgentEventKind {
         call_id: String,
         error: String,
     },
-    TokenUsage {
+    TokensReported {
         model: String,
         usage: TokenUsage,
     },
-    ResponseTextChunk {
+    TextChunkReceived {
         content: String,
     },
-    RequestStart {
+    RequestStarted {
         model: String,
     },
-    RequestEnd {
+    RequestFinished {
         model: String,
     },
     RequestRetried {
         attempt: u32,
-        max_retries: u32,
+        max_attempts: u32,
         error: String,
     },
-    RequestFailed {
+    RequestError {
         error: String,
     },
     OutputTruncated {
         turn: u32,
     },
-    CompactTriggered {
+    ContextCompacted {
         turn: u32,
         token_count: u64,
         threshold: u64,
         reason: CompactReason,
     },
-    AgentIdle,
+    InputBudgetExhausted {
+        usage: u64,
+        limit: u64,
+    },
+    OutputBudgetExhausted {
+        usage: u64,
+        limit: u64,
+    },
+    AgentPaused,
     AgentResumed,
 }
 
@@ -164,87 +178,97 @@ mod tests {
     /// Exhaustive match keeps this test honest when a new variant is added.
     #[test]
     fn default_logger_handles_every_variant() {
-        let logger = AgentEvent::default_logger();
-        let every: Vec<AgentEventKind> = vec![
-            AgentEventKind::AgentStart {
+        let logger = Event::default_logger();
+        let every: Vec<EventKind> = vec![
+            EventKind::AgentStarted {
                 description: Some("desc".into()),
             },
-            AgentEventKind::AgentStart { description: None },
-            AgentEventKind::AgentEnd {
+            EventKind::AgentStarted { description: None },
+            EventKind::AgentFinished {
                 turns: 3,
                 status: AgentStatus::Completed,
             },
-            AgentEventKind::TurnStart { turn: 1 },
-            AgentEventKind::TurnEnd { turn: 1 },
-            AgentEventKind::ToolCallStart {
+            EventKind::TurnStarted { turn: 1 },
+            EventKind::TurnFinished { turn: 1 },
+            EventKind::ToolCallStarted {
                 tool_name: "glob".into(),
                 call_id: "c1".into(),
                 input: serde_json::json!({"pattern": "**/*.rs"}),
             },
-            AgentEventKind::ToolCallEnd {
+            EventKind::ToolCallFinished {
                 tool_name: "glob".into(),
                 call_id: "c1".into(),
                 output: "ok".into(),
             },
-            AgentEventKind::ToolCallError {
+            EventKind::ToolCallError {
                 tool_name: "glob".into(),
                 call_id: "c1".into(),
                 error: "boom".into(),
             },
-            AgentEventKind::TokenUsage {
+            EventKind::TokensReported {
                 model: "m".into(),
                 usage: TokenUsage::default(),
             },
-            AgentEventKind::ResponseTextChunk {
+            EventKind::TextChunkReceived {
                 content: "hi".into(),
             },
-            AgentEventKind::RequestStart { model: "m".into() },
-            AgentEventKind::RequestEnd { model: "m".into() },
-            AgentEventKind::RequestRetried {
+            EventKind::RequestStarted { model: "m".into() },
+            EventKind::RequestFinished { model: "m".into() },
+            EventKind::RequestRetried {
                 attempt: 1,
-                max_retries: 5,
+                max_attempts: 5,
                 error: "rate limited".into(),
             },
-            AgentEventKind::RequestFailed {
+            EventKind::RequestError {
                 error: "auth failed".into(),
             },
-            AgentEventKind::OutputTruncated { turn: 2 },
-            AgentEventKind::CompactTriggered {
+            EventKind::OutputTruncated { turn: 2 },
+            EventKind::ContextCompacted {
                 turn: 2,
                 token_count: 9_000,
                 threshold: 10_000,
                 reason: CompactReason::Proactive,
             },
-            AgentEventKind::AgentIdle,
-            AgentEventKind::AgentResumed,
+            EventKind::InputBudgetExhausted {
+                usage: 4_200,
+                limit: 4_000,
+            },
+            EventKind::OutputBudgetExhausted {
+                usage: 5_200,
+                limit: 5_000,
+            },
+            EventKind::AgentPaused,
+            EventKind::AgentResumed,
         ];
 
-        // If a new variant is added to AgentEventKind, this match fails to
+        // If a new variant is added to EventKind, this match fails to
         // compile and the test list above must be extended.
         for kind in &every {
             match kind {
-                AgentEventKind::AgentStart { .. }
-                | AgentEventKind::AgentEnd { .. }
-                | AgentEventKind::TurnStart { .. }
-                | AgentEventKind::TurnEnd { .. }
-                | AgentEventKind::ToolCallStart { .. }
-                | AgentEventKind::ToolCallEnd { .. }
-                | AgentEventKind::ToolCallError { .. }
-                | AgentEventKind::TokenUsage { .. }
-                | AgentEventKind::ResponseTextChunk { .. }
-                | AgentEventKind::RequestStart { .. }
-                | AgentEventKind::RequestEnd { .. }
-                | AgentEventKind::RequestRetried { .. }
-                | AgentEventKind::RequestFailed { .. }
-                | AgentEventKind::OutputTruncated { .. }
-                | AgentEventKind::CompactTriggered { .. }
-                | AgentEventKind::AgentIdle
-                | AgentEventKind::AgentResumed => {}
+                EventKind::AgentStarted { .. }
+                | EventKind::AgentFinished { .. }
+                | EventKind::TurnStarted { .. }
+                | EventKind::TurnFinished { .. }
+                | EventKind::ToolCallStarted { .. }
+                | EventKind::ToolCallFinished { .. }
+                | EventKind::ToolCallError { .. }
+                | EventKind::TokensReported { .. }
+                | EventKind::TextChunkReceived { .. }
+                | EventKind::RequestStarted { .. }
+                | EventKind::RequestFinished { .. }
+                | EventKind::RequestRetried { .. }
+                | EventKind::RequestError { .. }
+                | EventKind::OutputTruncated { .. }
+                | EventKind::ContextCompacted { .. }
+                | EventKind::InputBudgetExhausted { .. }
+                | EventKind::OutputBudgetExhausted { .. }
+                | EventKind::AgentPaused
+                | EventKind::AgentResumed => {}
             }
         }
 
         for kind in every {
-            logger(AgentEvent::new("test", kind));
+            logger(Event::new("test", kind));
         }
     }
 

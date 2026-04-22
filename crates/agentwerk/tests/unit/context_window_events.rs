@@ -19,8 +19,8 @@ use std::sync::Arc;
 use agentwerk::provider::types::ResponseStatus;
 use agentwerk::testutil::{text_response, tool_response, MockProvider, MockTool, TestHarness};
 use agentwerk::{
-    Agent, AgentEvent, AgentEventKind, AgenticError, CompactReason, CompletionRequest,
-    ContentBlock, Message, Model, ProviderError, TokenUsage,
+    Agent, AgenticError, CompactReason, CompletionRequest, ContentBlock, Event, EventKind, Message,
+    Model, ProviderError, TokenUsage,
 };
 
 /// Local helper: compact threshold for a known window size, used by these tests.
@@ -208,7 +208,7 @@ async fn proactive_compact_suppressed_when_model_has_no_window() {
     assert_eq!(output.response_raw, "done");
     assert!(
         compact_reasons(&harness.events().all()).is_empty(),
-        "no CompactTriggered when the model has no known window",
+        "no ContextCompacted when the model has no known window",
     );
 }
 
@@ -261,7 +261,7 @@ async fn reactive_compact_fires_on_mid_generation_context_window_exceeded() {
 #[tokio::test]
 async fn sub_agent_compaction_uses_own_model_window() {
     // Parent and child carry independent `Model`s with different windows.
-    // Each one's CompactTriggered event should reflect its own threshold,
+    // Each one's ContextCompacted event should reflect its own threshold,
     // and the `event.agent_name` should match the emitter — proving windows
     // don't leak across the parent/child boundary.
     let parent_threshold = compact_threshold(200_000);
@@ -280,8 +280,8 @@ async fn sub_agent_compaction_uses_own_model_window() {
 
     // Response script (shared across parent + child runs via the same mock):
     //   1. parent turn 1 — small usage, stays under parent threshold, spawns child
-    //   2. child  turn 1 — usage crosses child threshold  → child's  CompactTriggered
-    //   3. parent turn 2 — usage crosses parent threshold → parent's CompactTriggered
+    //   2. child  turn 1 — usage crosses child threshold  → child's  ContextCompacted
+    //   3. parent turn 2 — usage crosses parent threshold → parent's ContextCompacted
     let parent_turn1 = tool_response(
         "spawn_agent",
         "sa1",
@@ -319,21 +319,21 @@ async fn sub_agent_compaction_uses_own_model_window() {
     let child_event = events
         .iter()
         .find_map(|e| match &e.kind {
-            AgentEventKind::CompactTriggered {
+            EventKind::ContextCompacted {
                 threshold, reason, ..
             } if e.agent_name == "child" => Some((*threshold, *reason)),
             _ => None,
         })
-        .expect("child should emit CompactTriggered");
+        .expect("child should emit ContextCompacted");
     let parent_event = events
         .iter()
         .find_map(|e| match &e.kind {
-            AgentEventKind::CompactTriggered {
+            EventKind::ContextCompacted {
                 threshold, reason, ..
             } if e.agent_name == "parent" => Some((*threshold, *reason)),
             _ => None,
         })
-        .expect("parent should emit CompactTriggered");
+        .expect("parent should emit ContextCompacted");
 
     assert_eq!(child_event, (child_threshold, CompactReason::Proactive));
     assert_eq!(parent_event, (parent_threshold, CompactReason::Proactive));
@@ -417,7 +417,7 @@ async fn reactive_compact_suppressed_when_model_has_no_window() {
     );
     assert!(
         compact_reasons(&harness.events().all()).is_empty(),
-        "no CompactTriggered when the model has no known window"
+        "no ContextCompacted when the model has no known window"
     );
 }
 
@@ -499,24 +499,24 @@ fn replace_value_with_placeholder(line: &str) -> String {
     format!("{key}: <{placeholder}>")
 }
 
-fn compact_reasons(events: &[AgentEvent]) -> Vec<CompactReason> {
+fn compact_reasons(events: &[Event]) -> Vec<CompactReason> {
     events
         .iter()
         .filter_map(|e| match e.kind {
-            AgentEventKind::CompactTriggered { reason, .. } => Some(reason),
+            EventKind::ContextCompacted { reason, .. } => Some(reason),
             _ => None,
         })
         .collect()
 }
 
 /// Extract `(turn, token_count, threshold, reason)` of the first
-/// `CompactTriggered` event. Panics if none was emitted — callers use this
+/// `ContextCompacted` event. Panics if none was emitted — callers use this
 /// when the event is the behavior under test.
-fn first_compact(events: &[AgentEvent]) -> (u32, u64, u64, CompactReason) {
+fn first_compact(events: &[Event]) -> (u32, u64, u64, CompactReason) {
     events
         .iter()
         .find_map(|e| match e.kind {
-            AgentEventKind::CompactTriggered {
+            EventKind::ContextCompacted {
                 turn,
                 token_count,
                 threshold,
@@ -524,5 +524,5 @@ fn first_compact(events: &[AgentEvent]) -> (u32, u64, u64, CompactReason) {
             } => Some((turn, token_count, threshold, reason)),
             _ => None,
         })
-        .expect("CompactTriggered event must be emitted")
+        .expect("ContextCompacted event must be emitted")
 }

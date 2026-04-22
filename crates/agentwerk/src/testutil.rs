@@ -8,7 +8,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use crate::agent::queue::CommandQueue;
-use crate::agent::{Agent, AgentEvent, AgentEventKind, AgentOutput, AgentStatus};
+use crate::agent::{Agent, AgentOutput, AgentStatus, Event, EventKind};
 use crate::error::Result;
 use crate::provider::types::{
     CompletionResponse, ContentBlock, ResponseStatus, StreamEvent, TokenUsage,
@@ -230,18 +230,18 @@ pub fn test_tool_context() -> ToolContext {
     ToolContext::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
-pub struct AgentEventCollector {
-    events: Arc<Mutex<Vec<AgentEvent>>>,
+pub struct EventCollector {
+    events: Arc<Mutex<Vec<Event>>>,
 }
 
-impl AgentEventCollector {
+impl EventCollector {
     pub fn new() -> Self {
         Self {
             events: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
-    pub fn callback(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> {
+    pub fn callback(&self) -> Arc<dyn Fn(Event) + Send + Sync> {
         let events = self.events.clone();
         Arc::new(move |e| events.lock().unwrap().push(e))
     }
@@ -252,7 +252,7 @@ impl AgentEventCollector {
             .unwrap()
             .iter()
             .filter_map(|e| match &e.kind {
-                AgentEventKind::ResponseTextChunk { content } => Some(content.clone()),
+                EventKind::TextChunkReceived { content } => Some(content.clone()),
                 _ => None,
             })
             .collect()
@@ -264,7 +264,7 @@ impl AgentEventCollector {
             .unwrap()
             .iter()
             .filter_map(|e| match &e.kind {
-                AgentEventKind::ToolCallStart { tool_name, .. } => Some(tool_name.clone()),
+                EventKind::ToolCallStarted { tool_name, .. } => Some(tool_name.clone()),
                 _ => None,
             })
             .collect()
@@ -276,13 +276,13 @@ impl AgentEventCollector {
             .unwrap()
             .iter()
             .filter_map(|e| match &e.kind {
-                AgentEventKind::AgentStart { .. } => Some(e.agent_name.clone()),
+                EventKind::AgentStarted { .. } => Some(e.agent_name.clone()),
                 _ => None,
             })
             .collect()
     }
 
-    pub fn all(&self) -> Vec<AgentEvent> {
+    pub fn all(&self) -> Vec<Event> {
         self.events.lock().unwrap().clone()
     }
 
@@ -292,7 +292,7 @@ impl AgentEventCollector {
             .unwrap()
             .iter()
             .filter_map(|e| match &e.kind {
-                AgentEventKind::AgentEnd { turns, status } => {
+                EventKind::AgentFinished { turns, status } => {
                     Some((e.agent_name.clone(), *turns, status.clone()))
                 }
                 _ => None,
@@ -303,7 +303,7 @@ impl AgentEventCollector {
 
 pub struct TestHarness {
     provider: Arc<MockProvider>,
-    events: AgentEventCollector,
+    events: EventCollector,
     template_variables: HashMap<String, serde_json::Value>,
     working_directory: PathBuf,
     cancel_signal: Arc<AtomicBool>,
@@ -321,7 +321,7 @@ impl TestHarness {
     pub fn with_provider(provider: Arc<MockProvider>) -> Self {
         Self {
             provider,
-            events: AgentEventCollector::new(),
+            events: EventCollector::new(),
             template_variables: HashMap::new(),
             working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             cancel_signal: Arc::new(AtomicBool::new(false)),
@@ -367,7 +367,7 @@ impl TestHarness {
         prepared.run().await
     }
 
-    pub fn events(&self) -> &AgentEventCollector {
+    pub fn events(&self) -> &EventCollector {
         &self.events
     }
 

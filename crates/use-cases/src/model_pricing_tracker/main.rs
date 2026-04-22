@@ -11,7 +11,7 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use agentwerk::{Agent, AgentEvent, AgentEventKind, WebFetchTool};
+use agentwerk::{Agent, Event, EventKind, WebFetchTool};
 
 const PRICING_RESEARCHER_PROMPT: &str = "\
 You are a pricing researcher. Fetch current model pricing from provider websites.\n\n\
@@ -107,12 +107,12 @@ async fn main() {
     );
 }
 
-fn log_event(event: &AgentEvent) {
+fn log_event(event: &Event) {
     match &event.kind {
-        AgentEventKind::RequestStart { model, .. } => {
+        EventKind::RequestStarted { model, .. } => {
             eprintln!("[{}] requesting {model}...", event.agent_name);
         }
-        AgentEventKind::ToolCallStart {
+        EventKind::ToolCallStarted {
             tool_name, input, ..
         } if tool_name != "StructuredOutput" => {
             eprintln!(
@@ -121,7 +121,7 @@ fn log_event(event: &AgentEvent) {
                 tool_call_detail(tool_name, input)
             );
         }
-        AgentEventKind::ToolCallError {
+        EventKind::ToolCallError {
             tool_name, error, ..
         } => {
             eprintln!("[error] {tool_name}: {error}");

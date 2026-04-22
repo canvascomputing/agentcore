@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use agentwerk::{batch, Agent, AgentEventKind, GlobTool, ListDirectoryTool, ReadFileTool};
+use agentwerk::{batch, Agent, EventKind, GlobTool, ListDirectoryTool, ReadFileTool};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 
@@ -90,7 +90,7 @@ async fn main() {
         .cancel_signal(cancel.clone())
         .max_turns(20)
         .event_handler(Arc::new(|event| match &event.kind {
-            AgentEventKind::ToolCallStart {
+            EventKind::ToolCallStarted {
                 tool_name, input, ..
             } => {
                 let detail = input["path"]
@@ -103,7 +103,7 @@ async fn main() {
                     eprintln!("[discover] {tool_name}({detail})");
                 }
             }
-            AgentEventKind::ToolCallError {
+            EventKind::ToolCallError {
                 tool_name, error, ..
             } => {
                 eprintln!("[discover] error in {tool_name}: {error}");
@@ -163,10 +163,10 @@ async fn main() {
             .working_directory(config.folder.clone())
             .cancel_signal(cancel.clone())
             .event_handler(Arc::new(move |event| match &event.kind {
-                AgentEventKind::ToolCallError { error, .. } => {
+                EventKind::ToolCallError { error, .. } => {
                     eprintln!("[summarize] {file_name}: error: {error}");
                 }
-                AgentEventKind::AgentEnd { .. } => {
+                EventKind::AgentFinished { .. } => {
                     let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
                     eprintln!("[summarize] {done}/{total} {file_name}");
                 }

@@ -14,7 +14,7 @@ pub(crate) mod spec;
 pub use agent::Agent;
 pub use batch::batch;
 pub use compact::CompactReason;
-pub use event::{AgentEvent, AgentEventKind};
+pub use event::{Event, EventKind};
 pub use output::{AgentOutput, AgentStatistics, AgentStatus};
 pub use prompts::DEFAULT_BEHAVIOR_PROMPT;
 pub(crate) use r#loop::LoopRuntime;
