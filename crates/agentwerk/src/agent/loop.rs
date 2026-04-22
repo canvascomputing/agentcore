@@ -295,8 +295,16 @@ fn check_guards(runtime: &LoopRuntime, spec: &AgentSpec, state: &LoopState) -> O
     }
     if let Some(limit) = spec.max_input_tokens {
         if state.total_usage.input_tokens >= limit {
-            return Some(AgentStatus::BudgetExhausted {
+            return Some(AgentStatus::InputBudgetExhausted {
                 usage: state.total_usage.input_tokens,
+                limit,
+            });
+        }
+    }
+    if let Some(limit) = spec.max_output_tokens {
+        if state.total_usage.output_tokens >= limit {
+            return Some(AgentStatus::OutputBudgetExhausted {
+                usage: state.total_usage.output_tokens,
                 limit,
             });
         }
@@ -336,7 +344,7 @@ async fn call_provider(
         system_prompt: spec.system_prompt(&runtime.template_variables),
         messages: state.messages.clone(),
         tools: tool_defs,
-        max_output_tokens: spec.max_output_tokens,
+        max_request_tokens: spec.max_request_tokens,
         tool_choice: None,
     };
 
@@ -1134,7 +1142,36 @@ mod tests {
         let output = harness.run_agent(&agent, "go").await.unwrap();
         assert_eq!(
             output.status,
-            AgentStatus::BudgetExhausted {
+            AgentStatus::InputBudgetExhausted {
+                usage: 5000,
+                limit: 4000
+            }
+        );
+        assert_lifecycle_events(&harness, &output);
+    }
+
+    #[tokio::test]
+    async fn output_token_budget_guard() {
+        let mut response = tool_response("t", "c1", serde_json::json!({}));
+        response.usage = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 5000,
+            ..Default::default()
+        };
+        let provider = MockProvider::new(vec![response, text_response("done")]);
+
+        let agent = Agent::new()
+            .name("test")
+            .model("mock")
+            .identity_prompt("")
+            .max_output_tokens(4000)
+            .tool(MockTool::new("t", false, "ok"));
+
+        let harness = TestHarness::new(provider);
+        let output = harness.run_agent(&agent, "go").await.unwrap();
+        assert_eq!(
+            output.status,
+            AgentStatus::OutputBudgetExhausted {
                 usage: 5000,
                 limit: 4000
             }

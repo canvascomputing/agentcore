@@ -385,7 +385,7 @@ fn serialize_request(request: &CompletionRequest) -> Value {
         "model": request.model,
         "messages": serialize_messages(request),
     });
-    if let Some(n) = request.max_output_tokens {
+    if let Some(n) = request.max_request_tokens {
         body["max_tokens"] = Value::from(n);
     }
     if !request.tools.is_empty() {
@@ -592,7 +592,7 @@ mod tests {
                 }],
             }],
             tools: vec![],
-            max_output_tokens: Some(1024),
+            max_request_tokens: Some(1024),
             tool_choice: None,
         }
     }
@@ -624,7 +624,7 @@ mod tests {
                 description: "Get weather".into(),
                 input_schema: serde_json::json!({"type": "object", "properties": {"city": {"type": "string"}}}),
             }],
-            max_output_tokens: Some(1024),
+            max_request_tokens: Some(1024),
             tool_choice: Some(ToolChoice::Auto),
         };
         let body = serialize_request(&request);
@@ -641,7 +641,7 @@ mod tests {
             system_prompt: String::new(),
             messages: vec![],
             tools: vec![],
-            max_output_tokens: Some(1024),
+            max_request_tokens: Some(1024),
             tool_choice: Some(ToolChoice::Specific {
                 name: "read_file".into(),
             }),

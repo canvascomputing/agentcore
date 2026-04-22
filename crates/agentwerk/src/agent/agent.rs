@@ -136,9 +136,10 @@ impl Agent {
         self.with_spec(|c| c.identity_prompt = s)
     }
 
-    /// Maximum output tokens per LLM request. Omit to use the provider default.
-    pub fn max_output_tokens(self, n: u32) -> Self {
-        self.with_spec(|c| c.max_output_tokens = Some(n))
+    /// Maximum output tokens per LLM request (serialized as `max_tokens` on the
+    /// wire). Omit to use the provider default.
+    pub fn max_request_tokens(self, n: u32) -> Self {
+        self.with_spec(|c| c.max_request_tokens = Some(n))
     }
 
     /// Maximum agentic loop iterations. Omit for no limit.
@@ -146,9 +147,14 @@ impl Agent {
         self.with_spec(|c| c.max_turns = Some(n))
     }
 
-    /// Maximum cumulative input tokens before the agent stops.
+    /// Maximum cumulative input tokens across the whole run before the agent stops.
     pub fn max_input_tokens(self, n: u64) -> Self {
         self.with_spec(|c| c.max_input_tokens = Some(n))
+    }
+
+    /// Maximum cumulative output tokens across the whole run before the agent stops.
+    pub fn max_output_tokens(self, n: u64) -> Self {
+        self.with_spec(|c| c.max_output_tokens = Some(n))
     }
 
     /// Register a tool.
@@ -336,8 +342,14 @@ impl Agent {
         if let Some(i) = overrides.get("identity").and_then(Value::as_str) {
             self = self.identity_prompt(i);
         }
+        if let Some(t) = overrides.get("max_request_tokens").and_then(Value::as_u64) {
+            self = self.max_request_tokens(t as u32);
+        }
+        if let Some(t) = overrides.get("max_input_tokens").and_then(Value::as_u64) {
+            self = self.max_input_tokens(t);
+        }
         if let Some(t) = overrides.get("max_output_tokens").and_then(Value::as_u64) {
-            self = self.max_output_tokens(t as u32);
+            self = self.max_output_tokens(t);
         }
         if let Some(mt) = overrides.get("max_turns").and_then(Value::as_u64) {
             self = self.max_turns(mt as u32);

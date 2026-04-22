@@ -65,7 +65,7 @@ impl AnthropicProvider {
             "system": request.system_prompt,
             "messages": serialize_messages(&request.messages),
         });
-        if let Some(n) = request.max_output_tokens {
+        if let Some(n) = request.max_request_tokens {
             body["max_tokens"] = Value::from(n);
         }
         if !request.tools.is_empty() {
@@ -488,7 +488,7 @@ mod tests {
                 content: vec![ContentBlock::Text { text: "Hi".into() }],
             }],
             tools: vec![],
-            max_output_tokens: Some(1024),
+            max_request_tokens: Some(1024),
             tool_choice: None,
         }
     }

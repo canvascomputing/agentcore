@@ -94,9 +94,17 @@ impl Toolable for SpawnAgentTool {
                     "type": "integer",
                     "description": "Cap the agentic loop for this spawn. Ad-hoc agents default to 10."
                 },
+                "max_request_tokens": {
+                    "type": "integer",
+                    "description": "Cap output tokens per LLM request for this spawn (wire field: max_tokens)."
+                },
+                "max_input_tokens": {
+                    "type": "integer",
+                    "description": "Cap cumulative input tokens across the whole run for this spawn."
+                },
                 "max_output_tokens": {
                     "type": "integer",
-                    "description": "Cap output tokens per LLM request for this spawn."
+                    "description": "Cap cumulative output tokens across the whole run for this spawn."
                 },
                 "max_schema_retries": {
                     "type": "integer",

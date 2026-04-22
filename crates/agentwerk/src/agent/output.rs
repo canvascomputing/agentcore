@@ -17,7 +17,9 @@ pub enum AgentStatus {
     /// Configured `max_turns` limit reached.
     TurnLimitReached { limit: u32 },
     /// Configured `max_input_tokens` budget exceeded.
-    BudgetExhausted { usage: u64, limit: u64 },
+    InputBudgetExhausted { usage: u64, limit: u64 },
+    /// Configured `max_output_tokens` budget exceeded.
+    OutputBudgetExhausted { usage: u64, limit: u64 },
     /// A turn hook callback halted the agent.
     HaltRequested,
 }
