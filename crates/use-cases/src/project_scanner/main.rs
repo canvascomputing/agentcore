@@ -4,7 +4,7 @@
 //!
 //! Usage: project-scanner [OPTIONS] [FOLDER]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -179,40 +179,27 @@ async fn main() {
         .run()
         .await;
 
-    // Phase 3: Aggregate
+    // Phase 3: Aggregate — `results` is in submission order, so indices align with `files`.
     let mut languages = BTreeSet::new();
-    let mut by_file: BTreeMap<&str, (&str, &str)> = BTreeMap::new();
+    let mut file_summaries: Vec<Value> = Vec::new();
 
-    for result in &results {
-        match result {
-            Ok(output) => {
-                let file = output
-                    .name
-                    .strip_prefix("summarize-")
-                    .unwrap_or(&output.name);
-                if let Some(ref data) = output.response {
-                    let lang = data["language"].as_str().unwrap_or("unknown");
-                    let summary = data["summary"].as_str().unwrap_or("");
-                    languages.insert(lang.to_string());
-                    by_file.insert(file, (summary, lang));
-                }
-            }
-            Err(e) => eprintln!("[error] {e}"),
-        }
+    for (file, result) in files.iter().zip(results.iter()) {
+        let Ok(output) = result else {
+            eprintln!("[error] {}", result.as_ref().err().unwrap());
+            continue;
+        };
+        let Some(ref data) = output.response else {
+            continue;
+        };
+        let lang = data["language"].as_str().unwrap_or("unknown");
+        let summary = data["summary"].as_str().unwrap_or("");
+        languages.insert(lang.to_string());
+        file_summaries.push(json!({
+            "file": file,
+            "summary": summary,
+            "language": lang,
+        }));
     }
-
-    let file_summaries: Vec<_> = files
-        .iter()
-        .filter_map(|f| {
-            by_file.get(f.as_str()).map(|(summary, lang)| {
-                json!({
-                    "file": f,
-                    "summary": summary,
-                    "language": lang,
-                })
-            })
-        })
-        .collect();
 
     let output = json!({
         "languages": languages.into_iter().collect::<Vec<_>>(),

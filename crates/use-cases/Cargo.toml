@@ -26,3 +26,7 @@ path = "src/model_pricing_tracker/main.rs"
 [[bin]]
 name = "terminal-repl"
 path = "src/terminal_repl/main.rs"
+
+[[bin]]
+name = "divide-and-conquer"
+path = "src/divide_and_conquer/main.rs"

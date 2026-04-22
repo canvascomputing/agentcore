@@ -1,7 +1,7 @@
 //! Run many agents with a shared concurrency cap. `Batch::run` waits for a fixed set; `Batch::spawn` hands back a pool you can submit into while it's running.
 
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -70,37 +70,60 @@ impl Batch {
         self
     }
 
-    /// Run every added agent to completion. Returns results in completion
-    /// order; correlate each to its input via [`AgentOutput::name`]. A failing
-    /// agent does not abort the others.
+    /// Run every added agent to completion. Returns results in **submission**
+    /// order: `results[i]` corresponds to the `i`th agent added via
+    /// [`agent`](Self::agent) / [`agents`](Self::agents). A failing agent does
+    /// not abort the others.
     pub async fn run(self) -> Vec<Result<AgentOutput>> {
+        let total = self.agents.len();
         let (handle, stream) = self.spawn();
-        drop(handle);
-        stream.collect().await
+        handle.drain();
+
+        let mut slots: Vec<Option<Result<AgentOutput>>> = (0..total).map(|_| None).collect();
+        for (index, result) in stream.collect().await {
+            if index < slots.len() {
+                slots[index] = Some(result);
+            }
+        }
+        slots
+            .into_iter()
+            .enumerate()
+            .map(|(i, slot)| {
+                slot.unwrap_or_else(|| {
+                    Err(AgenticError::Other(format!(
+                        "batch: missing result for submission index {i}"
+                    )))
+                })
+            })
+            .collect()
     }
 
     /// Start a dispatcher on a background tokio task and return a pair:
     ///
     /// - [`BatchHandle`] — cheap, clonable handle for submitting more agents
     ///   or cancelling.
-    /// - [`BatchOutputStream`] — yields each agent's result in completion
-    ///   order; ends once all handles are dropped (or [`cancel`](
-    ///   BatchHandle::cancel) is called) and the in-flight backlog drains.
-    ///
-    /// Agents added via [`agent`](Self::agent) / [`agents`](Self::agents)
-    /// before calling `spawn` are enqueued immediately.
+    /// - [`BatchOutputStream`] — yields
+    ///   `(submission_index, Result<AgentOutput>)` in completion order. The
+    ///   `submission_index` matches the position the agent was added:
+    ///   preloaded [`agents`](Self::agents) take indices `0..n`, then dynamic
+    ///   [`submit`](BatchHandle::submit) calls continue the sequence. Ends
+    ///   once all handles are dropped or [`drain`](BatchHandle::drain)ed (let
+    ///   in-flight finish), or [`cancel`](BatchHandle::cancel) is called
+    ///   (interrupt in-flight) and the backlog completes.
     ///
     /// Requires a running tokio runtime.
     pub fn spawn(self) -> (BatchHandle, BatchOutputStream) {
         let concurrency = self.concurrency;
-        let (submit_tx, submit_rx) = mpsc::unbounded_channel::<Agent>();
-        let (output_tx, output_rx) = mpsc::unbounded_channel::<Result<AgentOutput>>();
+        let (submit_tx, submit_rx) = mpsc::unbounded_channel::<(usize, Agent)>();
+        let (output_tx, output_rx) = mpsc::unbounded_channel::<(usize, Result<AgentOutput>)>();
         let cancel = self
             .cancel_signal
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+        let counter = Arc::new(AtomicUsize::new(0));
 
         for agent in self.agents {
-            let _ = submit_tx.send(agent);
+            let index = counter.fetch_add(1, Ordering::Relaxed);
+            let _ = submit_tx.send((index, agent));
         }
 
         let dispatcher_cancel = cancel.clone();
@@ -111,6 +134,7 @@ impl Batch {
         let handle = BatchHandle {
             sender: submit_tx,
             cancel,
+            counter,
         };
         let output = BatchOutputStream { rx: output_rx };
         (handle, output)
@@ -118,12 +142,12 @@ impl Batch {
 }
 
 async fn dispatch(
-    mut submit_rx: mpsc::UnboundedReceiver<Agent>,
-    output_tx: mpsc::UnboundedSender<Result<AgentOutput>>,
+    mut submit_rx: mpsc::UnboundedReceiver<(usize, Agent)>,
+    output_tx: mpsc::UnboundedSender<(usize, Result<AgentOutput>)>,
     concurrency: usize,
     cancel: Arc<AtomicBool>,
 ) {
-    let mut in_flight: FuturesUnordered<tokio::task::JoinHandle<Result<AgentOutput>>> =
+    let mut in_flight: FuturesUnordered<tokio::task::JoinHandle<(usize, Result<AgentOutput>)>> =
         FuturesUnordered::new();
     let mut closed = false;
 
@@ -136,18 +160,22 @@ async fn dispatch(
         tokio::select! {
             biased;
             Some(join) = in_flight.next(), if !in_flight.is_empty() => {
-                let result = join.unwrap_or_else(|e| {
-                    Err(AgenticError::Other(format!("agent task failed: {e}")))
-                });
-                let _ = output_tx.send(result);
+                // A task-level JoinError means the spawned future panicked or was
+                // aborted — the submission index is then unrecoverable, so the slot
+                // will be backfilled with a synthetic error by `Batch::run`.
+                if let Ok(pair) = join {
+                    let _ = output_tx.send(pair);
+                }
             }
-            maybe_agent = submit_rx.recv(), if !closed && in_flight.len() < concurrency => {
-                let Some(agent) = maybe_agent else {
+            maybe = submit_rx.recv(), if !closed && in_flight.len() < concurrency => {
+                let Some((index, agent)) = maybe else {
                     closed = true;
                     continue;
                 };
                 let agent = agent.cancel_signal(cancel.clone());
-                in_flight.push(tokio::spawn(async move { agent.run().await }));
+                in_flight.push(tokio::spawn(async move {
+                    (index, agent.run().await)
+                }));
             }
             else => return,
         }
@@ -158,19 +186,28 @@ async fn dispatch(
 /// [`Batch::spawn`].
 ///
 /// While any clone of the handle is alive, the pool accepts new submissions.
-/// Dropping the last clone closes the pool gracefully: queued and in-flight
-/// agents finish, then the output stream ends.
+/// Dropping the last clone (or calling [`drain`](Self::drain) on it) closes
+/// the pool gracefully: queued and in-flight agents finish, then the output
+/// stream ends. Use [`cancel`](Self::cancel) to interrupt instead.
 #[derive(Clone)]
 pub struct BatchHandle {
-    sender: mpsc::UnboundedSender<Agent>,
+    sender: mpsc::UnboundedSender<(usize, Agent)>,
     cancel: Arc<AtomicBool>,
+    counter: Arc<AtomicUsize>,
 }
 
 impl BatchHandle {
-    /// Enqueue another agent for the pool. Silently dropped if the pool has
-    /// already been cancelled or the dispatcher has exited.
-    pub fn submit(&self, agent: Agent) {
-        let _ = self.sender.send(agent);
+    /// Enqueue another agent for the pool. Returns the submission index that
+    /// will accompany this agent's result on the [`BatchOutputStream`].
+    /// Indices are assigned monotonically and continue the sequence begun by
+    /// the preloaded [`Batch::agents`] / [`Batch::agent`] calls. If the pool
+    /// has already been cancelled or the dispatcher has exited the agent is
+    /// silently dropped; the returned index is still reserved but no result
+    /// will arrive for it.
+    pub fn submit(&self, agent: Agent) -> usize {
+        let index = self.counter.fetch_add(1, Ordering::Relaxed);
+        let _ = self.sender.send((index, agent));
+        index
     }
 
     /// Signal all in-flight agents to stop (via their `cancel_signal`) and
@@ -190,18 +227,29 @@ impl BatchHandle {
     pub fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
     }
+
+    /// Release this handle. When the last clone is gone, the dispatcher
+    /// flushes in-flight agents to completion and ends the output stream.
+    /// Non-blocking: results still arrive on the [`BatchOutputStream`]. Sugar
+    /// for `drop(handle)`, but visible at the call site — pairs with
+    /// [`cancel`](Self::cancel) (interrupt) to name the two exit modes.
+    pub fn drain(self) {}
 }
 
-/// Stream of per-agent results from a [`Batch::spawn`] pool. Yields one
-/// [`Result<AgentOutput>`] per submitted agent in completion order. Ends once
-/// the pool is closed (all handles dropped or cancelled) and the backlog
-/// drains.
+/// Stream of per-agent results from a [`Batch::spawn`] pool. Yields
+/// `(submission_index, Result<AgentOutput>)` in completion order. The
+/// `submission_index` matches the position the agent was added — preloaded
+/// [`Batch::agents`] first, then dynamic [`BatchHandle::submit`] calls — so
+/// the caller can correlate a streamed result back to its input without
+/// inspecting [`AgentOutput::name`]. Ends once the pool is closed (all
+/// handles dropped, [`drain`](BatchHandle::drain)ed, or
+/// [`cancel`](BatchHandle::cancel)led) and the backlog completes.
 pub struct BatchOutputStream {
-    rx: mpsc::UnboundedReceiver<Result<AgentOutput>>,
+    rx: mpsc::UnboundedReceiver<(usize, Result<AgentOutput>)>,
 }
 
 impl Stream for BatchOutputStream {
-    type Item = Result<AgentOutput>;
+    type Item = (usize, Result<AgentOutput>);
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.rx.poll_recv(cx)
@@ -209,13 +257,13 @@ impl Stream for BatchOutputStream {
 }
 
 impl BatchOutputStream {
-    /// Collect every remaining result.
-    pub async fn collect(self) -> Vec<Result<AgentOutput>> {
+    /// Collect every remaining result in completion order.
+    pub async fn collect(self) -> Vec<(usize, Result<AgentOutput>)> {
         StreamExt::collect(self).await
     }
 
     /// Await the next result, or `None` once the pool has drained.
-    pub async fn next(&mut self) -> Option<Result<AgentOutput>> {
+    pub async fn next(&mut self) -> Option<(usize, Result<AgentOutput>)> {
         StreamExt::next(self).await
     }
 }
@@ -270,19 +318,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_preserves_agent_names() {
+    async fn run_returns_results_in_submission_order() {
         let results = Batch::new()
             .concurrency(4)
             .agents(["a", "b", "c"].iter().map(|n| agent_with_response(n, "ok")))
             .run()
             .await;
         assert_eq!(results.len(), 3);
-        let mut names: Vec<String> = results
+        let names: Vec<String> = results
             .iter()
             .map(|r| r.as_ref().unwrap().name.clone())
             .collect();
-        names.sort();
         assert_eq!(names, vec!["a", "b", "c"]);
+    }
+
+    #[tokio::test]
+    async fn run_submission_order_ignores_completion_order() {
+        // First submitted agent finishes last; result must still land at index 0.
+        let slow = agent_with_delay("slow", 80, "slow");
+        let fast = agent_with_response("fast", "fast");
+
+        let results = Batch::new()
+            .concurrency(4)
+            .agent(slow)
+            .agent(fast)
+            .run()
+            .await;
+        assert_eq!(results[0].as_ref().unwrap().name, "slow");
+        assert_eq!(results[1].as_ref().unwrap().name, "fast");
     }
 
     #[tokio::test]
@@ -302,8 +365,49 @@ mod tests {
             .run()
             .await;
         assert_eq!(results.len(), 3);
-        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 2);
-        assert_eq!(results.iter().filter(|r| r.is_err()).count(), 1);
+        assert!(results[0].is_ok());
+        assert!(results[1].is_err());
+        assert!(results[2].is_ok());
+    }
+
+    #[tokio::test]
+    async fn stream_yields_submission_indices() {
+        let (pool, mut stream) = Batch::new()
+            .concurrency(4)
+            .agents(["a", "b", "c"].iter().map(|n| agent_with_response(n, "ok")))
+            .spawn();
+        drop(pool);
+
+        let mut seen: Vec<(usize, String)> = Vec::new();
+        while let Some((index, result)) = stream.next().await {
+            seen.push((index, result.unwrap().name));
+        }
+        seen.sort_by_key(|(i, _)| *i);
+        assert_eq!(
+            seen,
+            vec![(0, "a".into()), (1, "b".into()), (2, "c".into()),],
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_returns_monotonic_indices_continuing_preloaded() {
+        let (pool, mut stream) = Batch::new()
+            .concurrency(4)
+            .agent(agent_with_response("preloaded", "ok"))
+            .spawn();
+
+        let idx_b = pool.submit(agent_with_response("b", "ok"));
+        let idx_c = pool.submit(agent_with_response("c", "ok"));
+        assert_eq!(idx_b, 1);
+        assert_eq!(idx_c, 2);
+
+        drop(pool);
+        let mut seen = Vec::new();
+        while let Some((i, _)) = stream.next().await {
+            seen.push(i);
+        }
+        seen.sort();
+        assert_eq!(seen, vec![0, 1, 2]);
     }
 
     #[tokio::test]
@@ -406,7 +510,10 @@ mod tests {
         let r3 = stream.next().await.expect("third result");
         assert!(stream.next().await.is_none(), "stream must end after drop");
 
-        let mut names: Vec<String> = [r1, r2, r3].into_iter().map(|r| r.unwrap().name).collect();
+        let mut names: Vec<String> = [r1, r2, r3]
+            .into_iter()
+            .map(|(_, r)| r.unwrap().name)
+            .collect();
         names.sort();
         assert_eq!(names, vec!["a", "b", "c"]);
     }
@@ -417,9 +524,9 @@ mod tests {
         let clone = pool.clone();
         pool.submit(agent_with_response("a", "done"));
         drop(pool);
-        assert!(stream.next().await.unwrap().is_ok());
+        assert!(stream.next().await.unwrap().1.is_ok());
         clone.submit(agent_with_response("b", "done"));
-        assert!(stream.next().await.unwrap().is_ok());
+        assert!(stream.next().await.unwrap().1.is_ok());
         drop(clone);
         assert!(stream.next().await.is_none());
     }
@@ -432,8 +539,24 @@ mod tests {
         drop(pool);
 
         let mut seen = 0;
-        while let Some(r) = stream.next().await {
+        while let Some((_, r)) = stream.next().await {
             r.unwrap();
+            seen += 1;
+        }
+        assert_eq!(seen, 2);
+    }
+
+    #[tokio::test]
+    async fn drain_lets_in_flight_agents_finish_unlike_cancel() {
+        let (pool, mut stream) = Batch::new().concurrency(2).spawn();
+        pool.submit(agent_with_delay("a", 30, "done"));
+        pool.submit(agent_with_delay("b", 30, "done"));
+        pool.drain();
+
+        let mut seen = 0;
+        while let Some((_, r)) = stream.next().await {
+            let out = r.unwrap();
+            assert_eq!(out.status, crate::agent::AgentStatus::Completed);
             seen += 1;
         }
         assert_eq!(seen, 2);
@@ -447,7 +570,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
         pool.cancel();
 
-        let result = stream.next().await.expect("result after cancel");
+        let (_, result) = stream.next().await.expect("result after cancel");
         let out = result.unwrap();
         assert_eq!(out.status, crate::agent::AgentStatus::Cancelled);
         assert!(pool.is_cancelled());

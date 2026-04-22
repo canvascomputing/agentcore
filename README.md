@@ -53,6 +53,7 @@ Example applications built with this project:
 
 - [Terminal REPL](crates/use-cases/src/terminal_repl/): interactive terminal chat with less than 100 lines of code
 - [Project Scanner](crates/use-cases/src/project_scanner/): scan and analyze local files
+- [Divide and Conquer](crates/use-cases/src/divide_and_conquer/): partition a math problem across an agent pool
 - [Deep Research](crates/use-cases/src/deep_research/): multi-agent research with web search (requires `BRAVE_API_KEY`)
 - [Model Pricing Tracker](crates/use-cases/src/model_pricing_tracker/): check model prices
 
@@ -384,7 +385,7 @@ Run many agents in parallel with `Batch`.
 
 #### Static Batch
 
-Wait for the execution of all agents in a fixed sized batch:
+Wait for the execution of all agents in a fixed sized pool. Results arrive in submission order:
 
 ```rust
 use agentwerk::{Agent, Batch, ReadFileTool};
@@ -394,10 +395,10 @@ let template = Agent::new()
     .model("claude-haiku-4-5-20251001")
     .tool(ReadFileTool);
 
-let agents = ["document A", "document B"].iter().map(|doc| {
+let docs = ["document A", "document B"];
+let agents = docs.iter().map(|doc| {
     template
         .clone()
-        .name(format!("summarize-{doc}"))
         .instruction_prompt(format!("Summarize {doc}"))
 });
 
@@ -406,36 +407,44 @@ let results = Batch::new()
     .agents(agents)
     .run()
     .await;
+
+for (doc, result) in docs.iter().zip(results.iter()) {
+    println!("{doc}: {}", result.as_ref().unwrap().response_raw);
+}
 ```
 
 #### Dynamic Number of Agents
 
-Start a dynamic pool of agents, which might grow over time. Results arrive in the completion order:
+Start a dynamic pool of agents, which might grow over time. Results stream back in completion order:
 
 ```rust
 let (pool, mut results) = Batch::new()
     .concurrency(10)
     .spawn();
 
-for doc in ["document A", "document B"] {
+let docs = ["document A", "document B"];
+for doc in &docs {
     pool.submit(
         template
             .clone()
-            .name(format!("summarize-{doc}"))
             .instruction_prompt(format!("Summarize {doc}")),
     );
 }
+pool.drain();
 
-while let Some(result) = results.next().await {
+while let Some((i, result)) = results.next().await {
     let out = result?;
-    println!("{}: {}", out.name, out.response_raw);
+    println!("{}: {}", docs[i], out.response_raw);
 }
 ```
+
+`BatchHandle::submit` returns the index it assigned, so dynamic callers can keep a parallel map of index → context.
 
 | Method | Description |
 |--------|-------------|
 | `.submit(agent)` | Enqueue another agent |
-| `.cancel()` | Stop in-flight agents and close the pool |
+| `.drain()` | Stop accepting new work; let in-flight agents finish |
+| `.cancel()` | Interrupt in-flight agents and close the pool |
 | `.is_cancelled()` | Check if the pool was cancelled |
 | `.clone()` | Get another handle to the same pool |
 
