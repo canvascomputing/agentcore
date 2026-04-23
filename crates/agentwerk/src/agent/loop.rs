@@ -13,10 +13,13 @@ use serde_json::Value;
 use crate::error::{Error, Result};
 use crate::persistence::session::{SessionStore, TranscriptEntry, TranscriptEntryType};
 use crate::provider::retry::compute_delay;
+
+use super::error::AgentError;
+use super::output::OutputError;
 use crate::provider::types::{
     CompletionResponse, ContentBlock, Message, ResponseStatus, StreamEvent, TokenUsage,
 };
-use crate::provider::{CompletionRequest, Provider, ProviderError};
+use crate::provider::{CompletionRequest, Provider, ProviderError, RequestErrorKind};
 use crate::tools::{ToolCall, ToolContext, ToolRegistry, ToolResult};
 use crate::util::{cancellable_sleep, format_current_date, now_millis, wait_for_cancel};
 
@@ -233,7 +236,7 @@ pub(crate) fn run_loop(
                     .max_schema_retries
                     .filter(|&limit| state.schema_retries > limit);
                 if let Some(limit) = retry_limit_exceeded {
-                    return Err(Error::SchemaRetryExhausted { retries: limit });
+                    return Err(OutputError::SchemaRetryExhausted { retries: limit }.into());
                 }
 
                 let retry_prompt = OutputSchema::retry_message(detail);
@@ -358,7 +361,7 @@ async fn call_provider(
 
     tokio::select! {
         biased;
-        _ = wait_for_cancel(&runtime.cancel_signal) => Err(Error::Cancelled),
+        _ = wait_for_cancel(&runtime.cancel_signal) => Err(AgentError::Cancelled.into()),
         result = runtime.provider.complete_streaming(request, on_event) => {
             result.map_err(Error::from)
         }
@@ -379,7 +382,7 @@ async fn call_provider_with_retry(
     for attempt in 0..=spec.max_request_retries {
         match call_provider(runtime, spec, state).await {
             Ok(response) => return Ok(response),
-            Err(Error::Provider(ProviderError::ContextWindowExceeded { provider_message }))
+            Err(Error::Provider(ProviderError::ContextWindowExceeded { message }))
                 if spec.model().context_window_size.is_some() =>
             {
                 compact::trigger_reactive(runtime, spec, state, turn).await?;
@@ -387,29 +390,30 @@ async fn call_provider_with_retry(
                 // implemented this branch will retry the turn instead of
                 // surfacing the error.
                 return Err(Error::Provider(ProviderError::ContextWindowExceeded {
-                    provider_message,
+                    message,
                 }));
             }
             Err(e) if e.is_retryable() && attempt < spec.max_request_retries => {
-                let delay_ms = compute_delay(spec.request_retry_delay, attempt, e.retry_after_ms());
-                cancellable_sleep(Duration::from_millis(delay_ms), &runtime.cancel_signal).await?;
+                let delay =
+                    compute_delay(spec.request_retry_delay, attempt, e.request_retry_delay());
+                cancellable_sleep(delay, &runtime.cancel_signal).await?;
                 emit_request_retried(
                     runtime,
                     spec,
                     attempt + 1,
                     spec.max_request_retries,
-                    format!("{e}"),
+                    &e,
                 );
                 last_err = Some(e);
             }
             Err(e) => {
-                emit_request_error(runtime, spec, format!("{e}"));
+                emit_request_failed(runtime, spec, &e);
                 return Err(e);
             }
         }
     }
-    let e = last_err.unwrap_or_else(|| Error::Other("retry loop ended unexpectedly".into()));
-    emit_request_error(runtime, spec, format!("{e}"));
+    let e = last_err.expect("retry loop must record at least one error before exiting");
+    emit_request_failed(runtime, spec, &e);
     Err(e)
 }
 
@@ -487,10 +491,10 @@ async fn execute_tools(
                     call_id: tool_use_id.clone(),
                     output,
                 },
-                ToolResult::Failure(error) => EventKind::ToolCallError {
+                ToolResult::Error(message) => EventKind::ToolCallFailed {
                     tool_name,
                     call_id: tool_use_id.clone(),
-                    error,
+                    message,
                 },
             };
             emit(runtime, spec, event);
@@ -597,7 +601,7 @@ fn emit_request_retried(
     spec: &AgentSpec,
     attempt: u32,
     max_attempts: u32,
-    error: String,
+    error: &Error,
 ) {
     emit(
         runtime,
@@ -605,13 +609,28 @@ fn emit_request_retried(
         EventKind::RequestRetried {
             attempt,
             max_attempts,
-            error,
+            kind: request_error_kind(error),
+            message: format!("{error}"),
         },
     );
 }
 
-fn emit_request_error(runtime: &LoopRuntime, spec: &AgentSpec, error: String) {
-    emit(runtime, spec, EventKind::RequestError { error });
+fn emit_request_failed(runtime: &LoopRuntime, spec: &AgentSpec, error: &Error) {
+    emit(
+        runtime,
+        spec,
+        EventKind::RequestFailed {
+            kind: request_error_kind(error),
+            message: format!("{error}"),
+        },
+    );
+}
+
+fn request_error_kind(error: &Error) -> RequestErrorKind {
+    match error {
+        Error::Provider(pe) => pe.kind(),
+        _ => RequestErrorKind::StatusUnclassified,
+    }
 }
 
 fn emit_output_truncated(runtime: &LoopRuntime, spec: &AgentSpec, turn: u32) {
@@ -769,14 +788,14 @@ mod tests {
         let saw_error = events.iter().any(|e| {
             matches!(
                 &e.kind,
-                EventKind::ToolCallError { tool_name, error, .. }
-                    if tool_name == "boom" && error == "disk full"
+                EventKind::ToolCallFailed { tool_name, message, .. }
+                    if tool_name == "boom" && message == "disk full"
             )
         });
         let saw_end = events
             .iter()
             .any(|e| matches!(e.kind, EventKind::ToolCallFinished { .. }));
-        assert!(saw_error, "a failing tool must emit ToolCallError");
+        assert!(saw_error, "a failing tool must emit ToolCallFailed");
         assert!(!saw_end, "a failing tool must not also emit ToolCallEnd");
     }
 
@@ -997,7 +1016,10 @@ mod tests {
 
         let harness = TestHarness::new(provider);
         let err = harness.run_agent(&agent, "go").await.unwrap_err();
-        assert!(matches!(err, Error::SchemaRetryExhausted { retries: 3 }));
+        assert!(matches!(
+            err,
+            Error::Output(OutputError::SchemaRetryExhausted { retries: 3 })
+        ));
     }
 
     #[tokio::test]
@@ -1026,6 +1048,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_provider_fails_run() {
+        use crate::config::ConfigError;
         let agent = Agent::new()
             .name("test")
             .model_name("mock")
@@ -1033,8 +1056,8 @@ mod tests {
             .instruction_prompt("do");
         let err = agent.run().await.unwrap_err();
         match err {
-            Error::Other(msg) => assert!(msg.contains("provider"), "got: {msg}"),
-            other => panic!("expected Other, got {other:?}"),
+            Error::Config(ConfigError::ProviderNotConfigured) => {}
+            other => panic!("expected Config(ProviderNotConfigured), got {other:?}"),
         }
     }
 
@@ -1610,7 +1633,7 @@ mod retry_and_events_tests {
         ProviderError::RateLimited {
             message: "rate limited".into(),
             status: 429,
-            retry_after_ms: None,
+            request_retry_delay: None,
         }
     }
 
@@ -1621,8 +1644,9 @@ mod retry_and_events_tests {
                 EventKind::RequestRetried {
                     attempt,
                     max_attempts,
-                    error,
-                } => Some((*attempt, *max_attempts, error.clone())),
+                    message,
+                    ..
+                } => Some((*attempt, *max_attempts, message.clone())),
                 _ => None,
             })
             .collect()
@@ -1632,7 +1656,7 @@ mod retry_and_events_tests {
         events
             .iter()
             .filter_map(|e| match &e.kind {
-                EventKind::RequestError { error } => Some(error.clone()),
+                EventKind::RequestFailed { message, .. } => Some(message.clone()),
                 _ => None,
             })
             .collect()
@@ -1650,7 +1674,7 @@ mod retry_and_events_tests {
             .model_name("mock")
             .identity_prompt("")
             .max_request_retries(3)
-            .request_retry_delay(10);
+            .request_retry_delay(Duration::from_millis(10));
 
         let harness = TestHarness::new(provider);
         let output = harness.run_agent(&agent, "go").await.unwrap();
@@ -1661,14 +1685,14 @@ mod retry_and_events_tests {
     #[tokio::test]
     async fn no_retry_on_auth_error() {
         let provider = MockProvider::with_results(vec![Err(ProviderError::AuthenticationFailed {
-            provider_message: "unauthorized".into(),
+            message: "unauthorized".into(),
         })]);
         let agent = Agent::new()
             .name("test")
             .model_name("mock")
             .identity_prompt("")
             .max_request_retries(3)
-            .request_retry_delay(10);
+            .request_retry_delay(Duration::from_millis(10));
 
         let harness = TestHarness::new(provider);
         let err = harness.run_agent(&agent, "go").await.unwrap_err();
@@ -1724,11 +1748,11 @@ mod retry_and_events_tests {
             EventKind::RequestStarted { .. } => "RequestStarted",
             EventKind::RequestFinished { .. } => "RequestFinished",
             EventKind::RequestRetried { .. } => "RequestRetried",
-            EventKind::RequestError { .. } => "RequestError",
+            EventKind::RequestFailed { .. } => "RequestFailed",
             EventKind::TextChunkReceived { .. } => "TextChunkReceived",
             EventKind::ToolCallStarted { .. } => "ToolCallStarted",
             EventKind::ToolCallFinished { .. } => "ToolCallFinished",
-            EventKind::ToolCallError { .. } => "ToolCallError",
+            EventKind::ToolCallFailed { .. } => "ToolCallFailed",
             EventKind::TokensReported { .. } => "TokensReported",
             EventKind::OutputTruncated { .. } => "OutputTruncated",
             EventKind::ContextCompacted { .. } => "ContextCompacted",
@@ -1751,7 +1775,7 @@ mod retry_and_events_tests {
             .model_name("mock")
             .identity_prompt("")
             .max_request_retries(4)
-            .request_retry_delay(1);
+            .request_retry_delay(Duration::from_millis(1));
 
         let harness = TestHarness::new(provider);
         harness.run_agent(&agent, "go").await.unwrap();
@@ -1774,7 +1798,7 @@ mod retry_and_events_tests {
             .events()
             .all()
             .iter()
-            .filter(|e| matches!(e.kind, EventKind::RequestError { .. }))
+            .filter(|e| matches!(e.kind, EventKind::RequestFailed { .. }))
             .count();
         assert_eq!(failed_count, 0, "no terminal failure on eventual success");
     }
@@ -1782,14 +1806,14 @@ mod retry_and_events_tests {
     #[tokio::test]
     async fn terminal_error_emits_request_failed_once() {
         let provider = MockProvider::with_results(vec![Err(ProviderError::AuthenticationFailed {
-            provider_message: "unauthorized".into(),
+            message: "unauthorized".into(),
         })]);
         let agent = Agent::new()
             .name("test")
             .model_name("mock")
             .identity_prompt("")
             .max_request_retries(3)
-            .request_retry_delay(1);
+            .request_retry_delay(Duration::from_millis(1));
 
         let harness = TestHarness::new(provider);
         let err = harness.run_agent(&agent, "go").await.unwrap_err();
@@ -1802,7 +1826,7 @@ mod retry_and_events_tests {
         let failed: Vec<&str> = events
             .iter()
             .filter_map(|e| match &e.kind {
-                EventKind::RequestError { error } => Some(error.as_str()),
+                EventKind::RequestFailed { message, .. } => Some(message.as_str()),
                 _ => None,
             })
             .collect();
@@ -1825,7 +1849,7 @@ mod retry_and_events_tests {
             .model_name("mock")
             .identity_prompt("")
             .max_request_retries(2)
-            .request_retry_delay(1);
+            .request_retry_delay(Duration::from_millis(1));
 
         let harness = TestHarness::new(provider);
         harness.run_agent(&agent, "go").await.unwrap_err();
@@ -1865,7 +1889,7 @@ mod retry_and_events_tests {
                 .model_name("mock")
                 .identity_prompt("")
                 .max_request_retries(max_retries)
-                .request_retry_delay(1);
+                .request_retry_delay(Duration::from_millis(1));
 
             let harness = TestHarness::new(provider);
             harness.run_agent(&agent, "go").await.unwrap_err();
@@ -1894,7 +1918,7 @@ mod retry_and_events_tests {
             .model_name("mock")
             .identity_prompt("")
             .max_request_retries(0)
-            .request_retry_delay(1);
+            .request_retry_delay(Duration::from_millis(1));
 
         let harness = TestHarness::new(provider);
         harness.run_agent(&agent, "go").await.unwrap_err();
@@ -1908,7 +1932,7 @@ mod retry_and_events_tests {
     async fn request_retried_carries_provider_error_display() {
         let provider = MockProvider::with_results(vec![
             Err(ProviderError::ConnectionFailed {
-                reason: "dns lookup failed: no such host".into(),
+                message: "dns lookup failed: no such host".into(),
             }),
             Ok(text_response("ok")),
         ]);
@@ -1917,7 +1941,7 @@ mod retry_and_events_tests {
             .model_name("mock")
             .identity_prompt("")
             .max_request_retries(3)
-            .request_retry_delay(1);
+            .request_retry_delay(Duration::from_millis(1));
 
         let harness = TestHarness::new(provider);
         harness.run_agent(&agent, "go").await.unwrap();
@@ -1937,31 +1961,31 @@ mod retry_and_events_tests {
         let cases: Vec<(ProviderError, &'static str)> = vec![
             (
                 ProviderError::AuthenticationFailed {
-                    provider_message: "bad key 401".into(),
+                    message: "bad key 401".into(),
                 },
                 "bad key 401",
             ),
             (
                 ProviderError::PermissionDenied {
-                    provider_message: "no access 403".into(),
+                    message: "no access 403".into(),
                 },
                 "no access 403",
             ),
             (
                 ProviderError::ModelNotFound {
-                    provider_message: "unknown-model-xyz".into(),
+                    message: "unknown-model-xyz".into(),
                 },
                 "unknown-model-xyz",
             ),
             (
                 ProviderError::SafetyFilterTriggered {
-                    provider_message: "blocked by safety-filter-7".into(),
+                    message: "blocked by safety-filter-7".into(),
                 },
                 "safety-filter-7",
             ),
             (
-                ProviderError::InvalidResponse {
-                    reason: "malformed-json-token".into(),
+                ProviderError::ResponseMalformed {
+                    message: "malformed-json-token".into(),
                 },
                 "malformed-json-token",
             ),
@@ -1974,7 +1998,7 @@ mod retry_and_events_tests {
                 .model_name("mock")
                 .identity_prompt("")
                 .max_request_retries(3)
-                .request_retry_delay(1);
+                .request_retry_delay(Duration::from_millis(1));
 
             let harness = TestHarness::new(provider);
             harness.run_agent(&agent, "go").await.unwrap_err();
@@ -1984,7 +2008,7 @@ mod retry_and_events_tests {
             assert_eq!(failures.len(), 1, "{needle}");
             assert!(
                 failures[0].contains(needle),
-                "RequestError must carry error detail '{needle}', got: {}",
+                "RequestFailed must carry error detail '{needle}', got: {}",
                 failures[0]
             );
             assert!(retries_in(&events).is_empty(), "{needle}");
@@ -1992,17 +2016,17 @@ mod retry_and_events_tests {
     }
 
     #[tokio::test]
-    async fn context_window_exceeded_with_known_window_does_not_emit_request_error() {
+    async fn context_window_exceeded_with_known_window_does_not_emit_request_failed() {
         let provider =
             MockProvider::with_results(vec![Err(ProviderError::ContextWindowExceeded {
-                provider_message: "context overflow".into(),
+                message: "context overflow".into(),
             })]);
         let agent = Agent::new()
             .name("test")
             .model(Model::from_name("mock").context_window_size(100_000))
             .identity_prompt("")
             .max_request_retries(3)
-            .request_retry_delay(1);
+            .request_retry_delay(Duration::from_millis(1));
 
         let harness = TestHarness::new(provider);
         harness.run_agent(&agent, "go").await.unwrap_err();
@@ -2020,14 +2044,14 @@ mod retry_and_events_tests {
     async fn context_window_exceeded_with_unknown_window_emits_request_failed() {
         let provider =
             MockProvider::with_results(vec![Err(ProviderError::ContextWindowExceeded {
-                provider_message: "context overflow 413".into(),
+                message: "context overflow 413".into(),
             })]);
         let agent = Agent::new()
             .name("test")
             .model_name("mock")
             .identity_prompt("")
             .max_request_retries(3)
-            .request_retry_delay(1);
+            .request_retry_delay(Duration::from_millis(1));
 
         let harness = TestHarness::new(provider);
         harness.run_agent(&agent, "go").await.unwrap_err();
@@ -2044,7 +2068,7 @@ mod retry_and_events_tests {
             Err(ProviderError::RateLimited {
                 message: "rl".into(),
                 status: 429,
-                retry_after_ms: Some(1_000),
+                request_retry_delay: Some(Duration::from_millis(1_000)),
             }),
             Ok(text_response("ok")),
         ]);
@@ -2059,7 +2083,7 @@ mod retry_and_events_tests {
             .provider(Arc::new(provider))
             .identity_prompt("")
             .max_request_retries(3)
-            .request_retry_delay(1_000)
+            .request_retry_delay(Duration::from_millis(1_000))
             .event_handler(handler)
             .instruction_prompt("go");
 
@@ -2122,7 +2146,7 @@ mod retry_and_events_tests {
             .provider(Arc::new(provider))
             .identity_prompt("")
             .max_request_retries(3)
-            .request_retry_delay(2_000)
+            .request_retry_delay(Duration::from_millis(2_000))
             .event_handler(handler)
             .instruction_prompt("go");
 
@@ -2178,7 +2202,7 @@ mod retry_and_events_tests {
             .lock()
             .unwrap()
             .iter()
-            .filter(|e| matches!(e.kind, EventKind::RequestError { .. }))
+            .filter(|e| matches!(e.kind, EventKind::RequestFailed { .. }))
             .count();
         assert_eq!(failures, 1, "one terminal failure after retries exhaust");
     }
@@ -2199,7 +2223,7 @@ mod retry_and_events_tests {
             .provider(Arc::new(provider))
             .identity_prompt("")
             .max_request_retries(4)
-            .request_retry_delay(30_000)
+            .request_retry_delay(Duration::from_millis(30_000))
             .cancel_signal(cancel.clone())
             .instruction_prompt("go");
 
@@ -2230,7 +2254,7 @@ mod retry_and_events_tests {
             Err(rate_limit_error()),
             Err(rate_limit_error()),
             Err(ProviderError::AuthenticationFailed {
-                provider_message: "terminal".into(),
+                message: "terminal".into(),
             }),
         ]);
         let collected: Arc<StdMutex<Vec<Event>>> = Arc::new(StdMutex::new(Vec::new()));
@@ -2244,7 +2268,7 @@ mod retry_and_events_tests {
             .provider(Arc::new(provider))
             .identity_prompt("")
             .max_request_retries(3)
-            .request_retry_delay(1)
+            .request_retry_delay(Duration::from_millis(1))
             .event_handler(handler)
             .instruction_prompt("go");
 

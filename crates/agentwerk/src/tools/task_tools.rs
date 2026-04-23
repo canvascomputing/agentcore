@@ -74,7 +74,9 @@ impl Toolable for TaskTool {
                     let subject = input["subject"].as_str().unwrap_or("");
                     let description = input["description"].as_str().unwrap_or("");
                     let task = self.store.lock().unwrap().create(subject, description)?;
-                    Ok(ToolResult::success(serde_json::to_string_pretty(&task)?))
+                    Ok(ToolResult::success(
+                        serde_json::to_string_pretty(&task).unwrap(),
+                    ))
                 }
                 "update" => {
                     let id = input["id"].as_str().unwrap_or("");
@@ -93,16 +95,22 @@ impl Toolable for TaskTool {
                             ..Default::default()
                         },
                     )?;
-                    Ok(ToolResult::success(serde_json::to_string_pretty(&task)?))
+                    Ok(ToolResult::success(
+                        serde_json::to_string_pretty(&task).unwrap(),
+                    ))
                 }
                 "list" => {
                     let tasks = self.store.lock().unwrap().list()?;
-                    Ok(ToolResult::success(serde_json::to_string_pretty(&tasks)?))
+                    Ok(ToolResult::success(
+                        serde_json::to_string_pretty(&tasks).unwrap(),
+                    ))
                 }
                 "get" => {
                     let id = input["id"].as_str().unwrap_or("");
                     match self.store.lock().unwrap().get(id)? {
-                        Some(t) => Ok(ToolResult::success(serde_json::to_string_pretty(&t)?)),
+                        Some(t) => Ok(ToolResult::success(
+                            serde_json::to_string_pretty(&t).unwrap(),
+                        )),
                         None => Ok(ToolResult::error(format!("Task {id} not found"))),
                     }
                 }
@@ -115,7 +123,9 @@ impl Toolable for TaskTool {
                     let id = input["id"].as_str().unwrap_or("");
                     let agent_name = input["agent_name"].as_str().unwrap_or("");
                     let task = self.store.lock().unwrap().claim(id, agent_name)?;
-                    Ok(ToolResult::success(serde_json::to_string_pretty(&task)?))
+                    Ok(ToolResult::success(
+                        serde_json::to_string_pretty(&task).unwrap(),
+                    ))
                 }
                 "add_dependency" => {
                     let from = input["from"].as_str().unwrap_or("");
@@ -154,8 +164,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!result.is_err());
-        let parsed: Value = serde_json::from_str(&result.content()).unwrap();
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let parsed: Value = serde_json::from_str(content).unwrap();
         assert_eq!(parsed["id"], "1");
         assert_eq!(parsed["subject"], "Do stuff");
     }
@@ -180,7 +190,8 @@ mod tests {
             .call(serde_json::json!({"action": "list"}), &test_ctx())
             .await
             .unwrap();
-        let parsed: Vec<Value> = serde_json::from_str(&result.content()).unwrap();
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let parsed: Vec<Value> = serde_json::from_str(content).unwrap();
         assert_eq!(parsed.len(), 2);
     }
 
@@ -198,8 +209,8 @@ mod tests {
             .call(serde_json::json!({"action": "get", "id": "1"}), &test_ctx())
             .await
             .unwrap();
-        assert!(!result.is_err());
-        let parsed: Value = serde_json::from_str(&result.content()).unwrap();
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let parsed: Value = serde_json::from_str(content).unwrap();
         assert_eq!(parsed["subject"], "My task");
     }
 
@@ -220,14 +231,16 @@ mod tests {
             )
             .await
             .unwrap();
-        let parsed: Value = serde_json::from_str(&result.content()).unwrap();
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let parsed: Value = serde_json::from_str(content).unwrap();
         assert_eq!(parsed["status"], "InProgress");
 
         let result = tool
             .call(serde_json::json!({"action": "get", "id": "1"}), &test_ctx())
             .await
             .unwrap();
-        let parsed: Value = serde_json::from_str(&result.content()).unwrap();
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let parsed: Value = serde_json::from_str(content).unwrap();
         assert_eq!(parsed["status"], "InProgress");
     }
 
@@ -238,6 +251,6 @@ mod tests {
             .call(serde_json::json!({"action": "foobar"}), &test_ctx())
             .await
             .unwrap();
-        assert!(result.is_err());
+        assert!(matches!(result, ToolResult::Error(_)));
     }
 }

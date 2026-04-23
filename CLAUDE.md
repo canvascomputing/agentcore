@@ -34,7 +34,8 @@ All code must compile with zero warnings (`RUSTFLAGS="-D warnings"`).
 ```
 crates/agentwerk/src/
   lib.rs                  public re-exports
-  error.rs                Error, Result
+  error.rs                top-level Error, Result (categorical wrapper over domain sub-enums)
+  config.rs               ConfigError (env vars, builder misconfiguration, unreadable prompt files)
 
   provider/
     mod.rs                re-exports
@@ -46,6 +47,7 @@ crates/agentwerk/src/
     litellm.rs            LiteLlmProvider
     mistral.rs            MistralProvider
     environment.rs        from_env (provider auto-detection from env vars)
+    error.rs              ProviderError + RequestErrorKind (categorical discriminant for event observers)
     stream.rs             StreamParser, SseEvent (streaming response parser)
     retry.rs              compute_delay (associated consts live on Agent)
 
@@ -56,7 +58,8 @@ crates/agentwerk/src/
     loop.rs               LoopRuntime (environment), LoopState (initial), run_loop
     spawn.rs              AgentHandle, OutputFuture, impl Agent { spawn }
     event.rs              Event struct + EventKind enum (AgentStarted carries description for spawned children)
-    output.rs             Output, Status, Statistics, OutputSchema (validate, retry_message)
+    error.rs              AgentError (run-lifecycle failures: Cancelled, NotImplemented, PolledAfterCompletion)
+    output.rs             Output, Status, Statistics, OutputSchema (validate, retry_message), OutputError
     prompts.rs            DEFAULT_BEHAVIOR_PROMPT and structured-output constants
     batch.rs              Batch (builder: .run waits for all, .spawn returns BatchHandle + BatchOutputStream for dynamic pools)
     queue.rs              CommandQueue, QueuePriority, QueuedCommand (internal)
@@ -64,6 +67,7 @@ crates/agentwerk/src/
   tools/
     mod.rs                re-exports
     tool.rs               Toolable trait, Tool struct (ad-hoc, closure-handler), ToolRegistry (ToolRegistry::execute), ToolContext
+    error.rs              ToolError (ContextUnavailable, ArgumentsRejected — most tool failures flow through ToolResult::Error instead)
     read_file.rs          ReadFileTool
     write_file.rs         WriteFileTool
     edit_file.rs          EditFileTool
@@ -79,6 +83,7 @@ crates/agentwerk/src/
 
   persistence/ (internal)
     mod.rs                re-exports
+    error.rs              PersistenceError (TaskNotFound, TaskAlreadyCompleted, TaskBlocked, LockFailed, IoFailed)
     session.rs            SessionStore (JSONL transcripts)
     task.rs               TaskStore (file-based with locking)
 
@@ -116,7 +121,17 @@ Use cases are in `crates/use-cases/src/cli/`. Run with `make use_case name=<name
 - **Acronyms follow Rust API guidelines**: `LiteLlmProvider`, not `LiteLLMProvider`. Already consistent: `OpenAiProvider`.
 - **Two structs may not share a bare name in one module.** When that would happen, keep both qualified — don't pick one to prefix as a tiebreaker.
 
-**Variant naming in `EventKind`.** State-transition events use past-participle form (`AgentStarted`, `AgentFinished`, `ToolCallStarted`, `ToolCallFinished`, `RequestRetried`, `ContextCompacted`, `OutputTruncated`, `InputBudgetExhausted`). Terminal-failure variants use the `Error` suffix (`RequestError`, `ToolCallError`) — the variant names the outcome, and its `error: String` payload echoes the variant name. Don't mix `Error` / `Failed`.
+**Variant naming — tense uniformity.** Every failure-state variant across the crate uses passive-voice past-participle form: `<Subject><Verb-ed>`. Examples: `RequestFailed`, `ToolCallFailed`, `AuthenticationFailed`, `SchemaViolated`, `EnvVarNotSet`, `TaskNotFound`, `ContextWindowExceeded`, `StreamInterrupted`. No adjective-first forms (`Invalid<X>`, `Unexpected<X>`, `Missing<X>`). No noun-suffix forms (`<X>Error` — the `Error` suffix is reserved for the crate-level `Error` type and its domain sub-enums: `ProviderError`, `ToolError`, `AgentError`, `OutputError`, `PersistenceError`, `ConfigError`). State-transition events also use past-participle: `AgentStarted`, `AgentFinished`, `ToolCallStarted`, `ToolCallFinished`, `RequestRetried`, `ContextCompacted`, `OutputTruncated`, `InputBudgetExhausted`. Whether a failure is terminal for the run is documented on the variant, not encoded in the name (e.g. `RequestFailed` is run-terminal; `ToolCallFailed` is call-terminal and the run continues).
+
+**`Error` is categorical.** The top-level `Error` enum is a thin wrapper: `Provider(ProviderError)`, `Agent(AgentError)`, `Tool(ToolError)`, `Output(OutputError)`, `Persistence(PersistenceError)`, `Config(ConfigError)`. Each sub-enum lives beside the code that raises it and owns its own variants. No blanket `From<io::Error>` or `From<serde_json::Error>` — each domain either has its own From impl (e.g. `From<io::Error> for PersistenceError`) or calls `.map_err(...)` at the boundary, so every IO/JSON failure declares its domain. `Error::is_retryable()` and `Error::request_retry_delay()` delegate to `ProviderError`.
+
+**Payload field naming.** Human-readable strings on every variant are named `message: String` (never `error`). Underlying-error fields are named `source` (e.g. `FileReadFailed { path, source: io::Error }`). Typed metadata sits alongside with descriptive names (`status`, `retryable`, `request_retry_delay`, `tool_name`, `retries`, `after_ms`).
+
+**Variant shape.** Tuple variants wrap one semantic payload with no field disambiguation needed: `Provider(ProviderError)`, `NotImplemented(&'static str)`, `TaskNotFound(String)`, `EnvVarNotSet(&'static str)`, `IoFailed(io::Error)`. Struct variants carry multiple fields or where a field name adds meaning: `ToolError::ContextUnavailable { tool_name, message }`, `ConfigError::FileReadFailed { path, source }`.
+
+**`ToolResult` and similar two-arm result enums.** Use one word per variant across the whole type — variants `Success` / `Error`, constructors `success()` / `error()`, no `is_*` predicates or `content()` accessors (callers pattern-match `Success(s) | Error(s)`).
+
+**Time-typed fields, methods, and constants** use `std::time::Duration`. Public-API names never carry a `_ms` / `_MS` / `_seconds` unit suffix — the type is the unit. Internal helpers and on-the-wire JSON may still use raw integers when the protocol requires it (e.g. `timeout_ms` on a tool's input schema).
 
 ### Builder methods
 

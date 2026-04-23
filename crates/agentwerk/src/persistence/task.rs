@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 
-use crate::error::{Error, Result};
+use crate::persistence::error::{PersistenceError, PersistenceResult as Result};
 use crate::util::now_millis;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,7 +148,7 @@ impl TaskStore {
             let mut task = self.require_task(id)?;
 
             if task.status == TaskStatus::Completed {
-                return Err(Error::Other(format!("Task {id} already completed")));
+                return Err(PersistenceError::TaskAlreadyCompleted(id.into()));
             }
             self.check_not_blocked(id, &task.blocked_by)?;
 
@@ -204,7 +204,7 @@ impl TaskStore {
 
     fn require_task(&self, id: &str) -> Result<Task> {
         self.read_task(id)?
-            .ok_or_else(|| Error::Other(format!("Task {id} not found")))
+            .ok_or_else(|| PersistenceError::TaskNotFound(id.into()))
     }
 
     fn write_task(&self, task: &Task) -> Result<()> {
@@ -254,9 +254,10 @@ impl TaskStore {
                 continue;
             };
             if blocker.status != TaskStatus::Completed {
-                return Err(Error::Other(format!(
-                    "Task {task_id} blocked by unfinished task {blocker_id}"
-                )));
+                return Err(PersistenceError::TaskBlocked {
+                    task_id: task_id.into(),
+                    blocker_id: blocker_id.clone(),
+                });
             }
         }
         Ok(())
@@ -317,9 +318,9 @@ fn with_file_lock<T>(lock_path: &Path, f: impl FnOnce() -> Result<T>) -> Result<
         backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
     }
 
-    Err(Error::Other(format!(
-        "Failed to acquire lock after {MAX_LOCK_RETRIES} attempts"
-    )))
+    Err(PersistenceError::LockFailed {
+        attempts: MAX_LOCK_RETRIES,
+    })
 }
 
 #[cfg(unix)]
@@ -333,7 +334,7 @@ fn try_lock_exclusive(file: &File) -> Result<bool> {
     if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
         Ok(false)
     } else {
-        Err(Error::Io(err))
+        Err(PersistenceError::IoFailed(err))
     }
 }
 
@@ -344,7 +345,7 @@ fn unlock(file: &File) -> Result<()> {
     if ret == 0 {
         Ok(())
     } else {
-        Err(Error::Io(std::io::Error::last_os_error()))
+        Err(PersistenceError::IoFailed(std::io::Error::last_os_error()))
     }
 }
 

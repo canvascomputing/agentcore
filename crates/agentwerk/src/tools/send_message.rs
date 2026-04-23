@@ -7,8 +7,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::agent::queue::{CommandSource, QueuePriority, QueuedCommand};
-use crate::error::{Error, Result};
-
+use crate::error::Result;
+use crate::tools::error::ToolError;
 use crate::tools::tool::{ToolContext, ToolResult, Toolable};
 
 const NAME: &str = "send_message";
@@ -79,8 +79,10 @@ impl Toolable for SendMessageTool {
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
         Box::pin(async move {
-            let args: SendArgs = serde_json::from_value(input)
-                .map_err(|e| tool_err(format!("Invalid input: {e}")))?;
+            let args: SendArgs = match serde_json::from_value(input) {
+                Ok(a) => a,
+                Err(e) => return Ok(ToolResult::error(format!("Invalid input: {e}"))),
+            };
 
             let runtime = ctx
                 .runtime
@@ -114,8 +116,8 @@ impl Toolable for SendMessageTool {
     }
 }
 
-fn tool_err(message: impl Into<String>) -> Error {
-    Error::Tool {
+fn tool_err(message: impl Into<String>) -> ToolError {
+    ToolError::ContextUnavailable {
         tool_name: NAME.into(),
         message: message.into(),
     }
@@ -156,7 +158,7 @@ mod tests {
             "summary": "greeting"
         });
         let out = tool.call(input, &ctx).await.unwrap();
-        assert!(!out.is_err());
+        assert!(matches!(out, ToolResult::Success(_)));
 
         let cmd = queue
             .dequeue_if(Some("bob"), |_| true)
@@ -179,7 +181,7 @@ mod tests {
 
         let input = serde_json::json!({ "to": "alice", "message": "hi" });
         let out = tool.call(input, &ctx).await.unwrap();
-        assert!(out.is_err());
+        assert!(matches!(out, ToolResult::Error(_)));
     }
 
     #[tokio::test]

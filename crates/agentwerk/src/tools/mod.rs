@@ -2,6 +2,7 @@
 
 mod bash;
 mod edit_file;
+pub(crate) mod error;
 mod glob;
 mod grep;
 mod list_directory;
@@ -16,6 +17,7 @@ mod web_fetch;
 mod write_file;
 
 // Re-export tool infrastructure
+pub use error::ToolError;
 pub use tool::{Tool, ToolContext, ToolResult, Toolable};
 pub(crate) use tool::{ToolCall, ToolRegistry};
 

@@ -11,7 +11,7 @@ use crate::tools::tool::{ToolContext, ToolResult};
 /// Ctrl-C.
 pub(crate) async fn run_shell_command(
     command: &str,
-    timeout_ms: u64,
+    timeout: Duration,
     ctx: &ToolContext,
 ) -> ToolResult {
     let output_fut = tokio::process::Command::new("sh")
@@ -24,11 +24,11 @@ pub(crate) async fn run_shell_command(
     let result = tokio::select! {
         biased;
         _ = ctx.wait_for_cancel() => return ToolResult::error("Command cancelled"),
-        r = tokio::time::timeout(Duration::from_millis(timeout_ms), output_fut) => r,
+        r = tokio::time::timeout(timeout, output_fut) => r,
     };
 
     match result {
-        Err(_) => ToolResult::error(format!("Command timed out after {timeout_ms}ms")),
+        Err(_) => ToolResult::error(format!("Command timed out after {}ms", timeout.as_millis())),
         Ok(Err(e)) => ToolResult::error(format!("Failed to execute command: {e}")),
         Ok(Ok(output)) => {
             let mut content = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -87,11 +87,15 @@ mod tests {
         });
 
         let started = Instant::now();
-        let result = run_shell_command("sleep 30", 60_000, &ctx).await;
+        let result = run_shell_command("sleep 30", Duration::from_millis(60_000), &ctx).await;
         let elapsed = started.elapsed();
 
-        assert!(result.is_err(), "expected cancelled result");
-        assert!(result.content().contains("cancelled"));
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        assert!(
+            matches!(result, ToolResult::Error(_)),
+            "expected cancelled result"
+        );
+        assert!(content.contains("cancelled"));
         assert!(
             elapsed < Duration::from_millis(500),
             "cancel should return within 500ms, took {elapsed:?}",

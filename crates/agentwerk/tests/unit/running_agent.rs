@@ -64,7 +64,10 @@ async fn awaiting_the_future_twice_returns_an_error() {
     let _first = (&mut output).await.expect("first await succeeds");
     let second = output.await;
     assert!(
-        matches!(&second, Err(Error::Other(msg)) if msg.contains("polled after completion")),
+        matches!(
+            &second,
+            Err(Error::Agent(agentwerk::AgentError::PolledAfterCompletion))
+        ),
         "expected 'polled after completion' error, got {second:?}",
     );
 }

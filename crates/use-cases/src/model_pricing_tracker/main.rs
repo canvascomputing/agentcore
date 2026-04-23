@@ -123,10 +123,10 @@ fn log_event(event: &Event) {
                 tool_call_detail(tool_name, input)
             );
         }
-        EventKind::ToolCallError {
-            tool_name, error, ..
+        EventKind::ToolCallFailed {
+            tool_name, message, ..
         } => {
-            eprintln!("[error] {tool_name}: {error}");
+            eprintln!("[error] {tool_name}: {message}");
         }
         _ => {}
     }

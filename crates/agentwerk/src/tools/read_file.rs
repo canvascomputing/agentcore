@@ -146,20 +146,19 @@ mod tests {
 
         for case in cases {
             let result = tool.call(case.input, &ctx).await.unwrap();
+            let is_error = matches!(result, ToolResult::Error(_));
+            let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
             assert_eq!(
-                result.is_err(),
-                case.expect_error,
+                is_error, case.expect_error,
                 "case '{}': expected is_error={}, got is_error={}",
-                case.name,
-                case.expect_error,
-                result.is_err()
+                case.name, case.expect_error, is_error
             );
             assert!(
-                result.content().contains(case.expect_contains),
+                content.contains(case.expect_contains),
                 "case '{}': expected content to contain {:?}, got {:?}",
                 case.name,
                 case.expect_contains,
-                result.content()
+                content
             );
         }
     }

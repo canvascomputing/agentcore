@@ -102,10 +102,10 @@ async fn main() {
                     eprintln!("[discover] {tool_name}({detail})");
                 }
             }
-            EventKind::ToolCallError {
-                tool_name, error, ..
+            EventKind::ToolCallFailed {
+                tool_name, message, ..
             } => {
-                eprintln!("[discover] error in {tool_name}: {error}");
+                eprintln!("[discover] error in {tool_name}: {message}");
             }
             _ => {}
         }))
@@ -161,8 +161,8 @@ async fn main() {
             .instruction_prompt(format!("Read and summarize: {file}"))
             .working_directory(config.folder.clone())
             .event_handler(Arc::new(move |event| match &event.kind {
-                EventKind::ToolCallError { error, .. } => {
-                    eprintln!("[summarize] {file_name}: error: {error}");
+                EventKind::ToolCallFailed { message, .. } => {
+                    eprintln!("[summarize] {file_name}: error: {message}");
                 }
                 EventKind::AgentFinished { .. } => {
                     let done = progress.fetch_add(1, Ordering::Relaxed) + 1;

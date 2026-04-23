@@ -103,8 +103,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!result.is_err());
-        assert!(result.content().contains("File written: new.txt"));
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        assert!(content.contains("File written: new.txt"));
 
         let written = std::fs::read_to_string(dir.path().join("new.txt")).unwrap();
         assert_eq!(written, "hello world");
@@ -126,7 +126,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!result.is_err());
+        assert!(matches!(result, ToolResult::Success(_)));
         let written = std::fs::read_to_string(dir.path().join("existing.txt")).unwrap();
         assert_eq!(written, "new content");
     }
@@ -145,7 +145,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!result.is_err());
+        assert!(matches!(result, ToolResult::Success(_)));
         let written = std::fs::read_to_string(dir.path().join("a/b/c/deep.txt")).unwrap();
         assert_eq!(written, "nested");
     }

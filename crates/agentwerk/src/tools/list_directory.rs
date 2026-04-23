@@ -147,8 +147,8 @@ mod tests {
         let ctx = test_ctx(tmp.path());
         let result = tool.call(serde_json::json!({}), &ctx).await.unwrap();
 
-        assert!(!result.is_err());
-        let lines: Vec<&str> = result.content().lines().collect();
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 3);
         // Sorted alphabetically
         assert!(lines[0].starts_with("alpha.txt"));
@@ -173,8 +173,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!result.is_err());
-        let content = &result.content();
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
         assert!(content.contains("child/nested.txt") || content.contains("child\\nested.txt"));
         assert!(content.contains("root.txt"));
         // Should have at least 3 entries: root.txt, child, child/nested.txt

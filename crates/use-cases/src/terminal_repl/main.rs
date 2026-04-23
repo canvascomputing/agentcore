@@ -113,7 +113,6 @@ fn status_label(status: &Status) -> &'static str {
         Status::TurnLimitReached { .. } => "turn limit reached",
         Status::InputBudgetExhausted { .. } => "input budget exhausted",
         Status::OutputBudgetExhausted { .. } => "output budget exhausted",
-        Status::HaltRequested => "halted",
     }
 }
 
@@ -136,22 +135,23 @@ fn print_event(event: &Event, idle: &Arc<Notify>, style: &Style) {
                 eprintln!("\n{}· {tool_name}({arg}){}", style.dim, style.reset);
             }
         }
-        EventKind::ToolCallError {
-            tool_name, error, ..
-        } => eprintln!("\n{}✗ {tool_name}: {error}{}", style.red, style.reset),
+        EventKind::ToolCallFailed {
+            tool_name, message, ..
+        } => eprintln!("\n{}✗ {tool_name}: {message}{}", style.red, style.reset),
         EventKind::RequestRetried {
             attempt,
             max_attempts,
-            error,
+            message,
+            ..
         } => {
-            let short = error.split_once(':').map(|(h, _)| h).unwrap_or(error);
+            let short = message.split_once(':').map(|(h, _)| h).unwrap_or(message);
             eprintln!(
                 "\n{}↻ retry {attempt}/{max_attempts}: {short}{}",
                 style.yellow, style.reset,
             );
         }
-        EventKind::RequestError { error } => {
-            let short = error.split_once(':').map(|(h, _)| h).unwrap_or(error);
+        EventKind::RequestFailed { message, .. } => {
+            let short = message.split_once(':').map(|(h, _)| h).unwrap_or(message);
             eprintln!("\n{}✗ request failed: {short}{}", style.red, style.reset);
         }
         EventKind::AgentPaused | EventKind::AgentFinished { .. } => {

@@ -1,8 +1,8 @@
 //! Final payload of an agent run — response text, status, statistics, and optional structured-output validation.
 
-use serde_json::Value;
+use std::fmt;
 
-use crate::error::{Error, Result};
+use serde_json::Value;
 
 /// Why the agent loop exited.
 ///
@@ -20,8 +20,6 @@ pub enum Status {
     InputBudgetExhausted { usage: u64, limit: u64 },
     /// Configured `max_output_tokens` budget exceeded.
     OutputBudgetExhausted { usage: u64, limit: u64 },
-    /// A turn hook callback halted the agent.
-    HaltRequested,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -54,6 +52,35 @@ impl Output {
     }
 }
 
+/// Failures from structured-output schema validation.
+#[derive(Debug)]
+pub enum OutputError {
+    /// The model's terminal reply did not satisfy the configured JSON schema.
+    /// `path` is a dotted field path ("root" = the whole value); `message`
+    /// explains which rule failed.
+    SchemaViolated { path: String, message: String },
+    /// After the configured retry budget, the model still failed to produce a
+    /// schema-conforming reply.
+    SchemaRetryExhausted { retries: u32 },
+}
+
+impl fmt::Display for OutputError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OutputError::SchemaViolated { path, message } => {
+                write!(f, "Schema violated at {path}: {message}")
+            }
+            OutputError::SchemaRetryExhausted { retries } => {
+                write!(f, "Schema retry exhausted after {retries} attempts")
+            }
+        }
+    }
+}
+
+impl std::error::Error for OutputError {}
+
+pub(crate) type OutputResult<T> = std::result::Result<T, OutputError>;
+
 /// A validated JSON Schema for structured output.
 #[derive(Debug, Clone)]
 pub(crate) struct OutputSchema {
@@ -61,15 +88,15 @@ pub(crate) struct OutputSchema {
 }
 
 impl OutputSchema {
-    pub(crate) fn new(schema: Value) -> Result<Self> {
+    pub(crate) fn new(schema: Value) -> OutputResult<Self> {
         if schema.get("type").and_then(|t| t.as_str()) != Some("object") {
-            return Err(Error::SchemaValidation {
+            return Err(OutputError::SchemaViolated {
                 path: String::new(),
                 message: "output schema must have \"type\": \"object\"".into(),
             });
         }
         if schema.get("properties").is_none() {
-            return Err(Error::SchemaValidation {
+            return Err(OutputError::SchemaViolated {
                 path: String::new(),
                 message: "output schema must have \"properties\"".into(),
             });
@@ -113,7 +140,7 @@ fn strip_code_fences(s: &str) -> &str {
 
 /// Recursive walker: validate a JSON value against a schema. Internal to
 /// this module — `OutputSchema::validate` is the only external entry point.
-fn validate_value(value: &Value, schema: &Value) -> Result<()> {
+fn validate_value(value: &Value, schema: &Value) -> OutputResult<()> {
     let schema_type = schema
         .get("type")
         .and_then(|t| t.as_str())
@@ -130,16 +157,16 @@ fn validate_value(value: &Value, schema: &Value) -> Result<()> {
     }
 }
 
-fn type_error(message: &str) -> Error {
-    Error::SchemaValidation {
+fn type_error(message: &str) -> OutputError {
+    OutputError::SchemaViolated {
         path: String::new(),
         message: message.into(),
     }
 }
 
-fn prepend_path(prefix: &str, error: Error) -> Error {
+fn prepend_path(prefix: &str, error: OutputError) -> OutputError {
     match error {
-        Error::SchemaValidation { path, message } => Error::SchemaValidation {
+        OutputError::SchemaViolated { path, message } => OutputError::SchemaViolated {
             path: if path.is_empty() {
                 prefix.to_string()
             } else {
@@ -151,7 +178,7 @@ fn prepend_path(prefix: &str, error: Error) -> Error {
     }
 }
 
-fn validate_object(value: &Value, schema: &Value) -> Result<()> {
+fn validate_object(value: &Value, schema: &Value) -> OutputResult<()> {
     let obj = value
         .as_object()
         .ok_or_else(|| type_error("expected object"))?;
@@ -159,7 +186,7 @@ fn validate_object(value: &Value, schema: &Value) -> Result<()> {
     if let Some(required) = schema.get("required").and_then(|r| r.as_array()) {
         for key in required.iter().filter_map(|k| k.as_str()) {
             if !obj.contains_key(key) {
-                return Err(Error::SchemaValidation {
+                return Err(OutputError::SchemaViolated {
                     path: key.into(),
                     message: "missing required field".into(),
                 });
@@ -177,7 +204,7 @@ fn validate_object(value: &Value, schema: &Value) -> Result<()> {
     Ok(())
 }
 
-fn validate_array(value: &Value, schema: &Value) -> Result<()> {
+fn validate_array(value: &Value, schema: &Value) -> OutputResult<()> {
     let arr = value
         .as_array()
         .ok_or_else(|| type_error("expected array"))?;

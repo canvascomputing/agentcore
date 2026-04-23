@@ -219,7 +219,7 @@ async fn proactive_compact_suppressed_when_model_has_no_window() {
 async fn reactive_compact_fires_on_context_window_exceeded_error() {
     let provider = Arc::new(MockProvider::with_results(vec![Err(
         ProviderError::ContextWindowExceeded {
-            provider_message: "prompt is too long: 205000 > 200000".into(),
+            message: "prompt is too long: 205000 > 200000".into(),
         },
     )]));
 
@@ -399,7 +399,7 @@ async fn explicit_context_window_size_bypasses_registry() {
 async fn reactive_compact_suppressed_when_model_has_no_window() {
     let provider = Arc::new(MockProvider::with_results(vec![Err(
         ProviderError::ContextWindowExceeded {
-            provider_message: "prompt is too long".into(),
+            message: "prompt is too long".into(),
         },
     )]));
 

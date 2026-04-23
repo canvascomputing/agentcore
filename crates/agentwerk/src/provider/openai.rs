@@ -166,8 +166,8 @@ impl OpenAiProvider {
         let resp = self.send_raw(url, body).await?;
         resp.json()
             .await
-            .map_err(|e| ProviderError::InvalidResponse {
-                reason: e.to_string(),
+            .map_err(|e| ProviderError::ResponseMalformed {
+                message: e.to_string(),
             })
     }
 
@@ -181,7 +181,7 @@ impl OpenAiProvider {
             .send()
             .await
             .map_err(|e| ProviderError::ConnectionFailed {
-                reason: e.to_string(),
+                message: e.to_string(),
             })?;
 
         super::map_http_errors(resp, classify_error).await
@@ -195,13 +195,13 @@ impl OpenAiProvider {
 fn classify_error(status: u16, body: &str) -> Option<ProviderError> {
     match status {
         401 => Some(ProviderError::AuthenticationFailed {
-            provider_message: body.into(),
+            message: body.into(),
         }),
         403 => Some(ProviderError::PermissionDenied {
-            provider_message: body.into(),
+            message: body.into(),
         }),
         404 => Some(ProviderError::ModelNotFound {
-            provider_message: body.into(),
+            message: body.into(),
         }),
         400 => classify_400(body),
         _ => None,
@@ -218,17 +218,11 @@ fn classify_400(body: &str) -> Option<ProviderError> {
         || message.contains("maximum context length")
         || message.contains("context_length_exceeded");
     if is_context_window {
-        return Some(ProviderError::ContextWindowExceeded {
-            provider_message: message,
-        });
+        return Some(ProviderError::ContextWindowExceeded { message });
     }
     match code {
-        "model_not_found" => Some(ProviderError::ModelNotFound {
-            provider_message: message,
-        }),
-        "content_filter" => Some(ProviderError::SafetyFilterTriggered {
-            provider_message: message,
-        }),
+        "model_not_found" => Some(ProviderError::ModelNotFound { message }),
+        "content_filter" => Some(ProviderError::SafetyFilterTriggered { message }),
         _ => None,
     }
 }
@@ -246,7 +240,7 @@ async fn stream_response(
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| ProviderError::StreamInterrupted {
-            reason: e.to_string(),
+            message: e.to_string(),
         })?;
         for event in parser.push(&chunk) {
             match event {
@@ -867,13 +861,12 @@ mod tests {
             "context_length_exceeded",
             "maximum context length is 8192 tokens; requested 12000",
         );
-        let Some(ProviderError::ContextWindowExceeded { provider_message }) =
-            classify_error(400, &body)
+        let Some(ProviderError::ContextWindowExceeded { message }) = classify_error(400, &body)
         else {
             panic!("expected ContextWindowExceeded");
         };
         assert_eq!(
-            provider_message,
+            message,
             "maximum context length is 8192 tokens; requested 12000"
         );
     }

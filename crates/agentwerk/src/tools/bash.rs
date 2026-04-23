@@ -2,6 +2,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -19,10 +20,10 @@ pub struct BashTool {
 
 impl BashTool {
     /// Default per-command timeout when the model omits `timeout_ms`.
-    pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+    pub const DEFAULT_TIMEOUT: Duration = Duration::from_millis(120_000);
 
     /// Maximum per-command timeout the model is allowed to request.
-    pub const MAX_TIMEOUT_MS: u64 = 600_000;
+    pub const MAX_TIMEOUT: Duration = Duration::from_millis(600_000);
 
     /// Create a new `BashTool` with the given `name` that only permits
     /// commands matching `pattern`.
@@ -35,8 +36,8 @@ impl BashTool {
              Only commands that match this pattern are allowed. Other commands will be rejected.\n\n\
              The command is executed via `sh -c` in the working directory.\n\
              You may specify an optional timeout in milliseconds (default: {default}, max: {max}).",
-            default = Self::DEFAULT_TIMEOUT_MS,
-            max = Self::MAX_TIMEOUT_MS,
+            default = Self::DEFAULT_TIMEOUT.as_millis(),
+            max = Self::MAX_TIMEOUT.as_millis(),
         );
 
         Self {
@@ -79,7 +80,7 @@ impl Toolable for BashTool {
                 },
                 "timeout_ms": {
                     "type": "integer",
-                    "description": format!("Optional timeout in milliseconds (default: {})", Self::DEFAULT_TIMEOUT_MS)
+                    "description": format!("Optional timeout in milliseconds (default: {})", Self::DEFAULT_TIMEOUT.as_millis())
                 }
             },
             "required": ["command"]
@@ -108,12 +109,13 @@ impl Toolable for BashTool {
                 )));
             }
 
-            let timeout_ms = input
+            let timeout = input
                 .get("timeout_ms")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(Self::DEFAULT_TIMEOUT_MS);
+                .map(Duration::from_millis)
+                .unwrap_or(Self::DEFAULT_TIMEOUT);
 
-            Ok(run_shell_command(command, timeout_ms, ctx).await)
+            Ok(run_shell_command(command, timeout, ctx).await)
         })
     }
 }
@@ -146,8 +148,8 @@ When issuing multiple commands:
 - Do not sleep between commands that can run immediately.
 - Do not retry failing commands in a sleep loop — diagnose the root cause.
 - Do not use interactive flags (-i) as they require input which is not supported.",
-            default = Self::DEFAULT_TIMEOUT_MS,
-            max = Self::MAX_TIMEOUT_MS,
+            default = Self::DEFAULT_TIMEOUT.as_millis(),
+            max = Self::MAX_TIMEOUT.as_millis(),
         ))
     }
 }
@@ -195,8 +197,9 @@ mod tests {
         let ctx = test_tool_context();
         let input = serde_json::json!({ "command": "echo hello" });
         let result = tool.call(input, &ctx).await.unwrap();
-        assert!(result.content().contains("hello"));
-        assert!(!result.is_err());
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        assert!(content.contains("hello"));
+        assert!(matches!(result, ToolResult::Success(_)));
     }
 
     #[tokio::test]
@@ -205,8 +208,9 @@ mod tests {
         let ctx = test_tool_context();
         let input = serde_json::json!({ "command": "sleep 10", "timeout_ms": 100 });
         let result = tool.call(input, &ctx).await.unwrap();
-        assert!(result.is_err());
-        assert!(result.content().contains("timed out"));
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        assert!(matches!(result, ToolResult::Error(_)));
+        assert!(content.contains("timed out"));
     }
 
     #[tokio::test]
@@ -215,7 +219,7 @@ mod tests {
         let ctx = test_tool_context();
         let input = serde_json::json!({ "command": "nonexistent_command_xyz" });
         let result = tool.call(input, &ctx).await.unwrap();
-        assert!(result.is_err());
+        assert!(matches!(result, ToolResult::Error(_)));
     }
 
     #[tokio::test]
@@ -224,8 +228,9 @@ mod tests {
         let ctx = test_tool_context();
         let input = serde_json::json!({ "command": "rm -rf /" });
         let result = tool.call(input, &ctx).await.unwrap();
-        assert!(result.is_err());
-        assert!(result.content().contains("does not match"));
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        assert!(matches!(result, ToolResult::Error(_)));
+        assert!(content.contains("does not match"));
     }
 
     #[tokio::test]
@@ -234,8 +239,9 @@ mod tests {
         let ctx = test_tool_context();
         let input = serde_json::json!({ "command": "echo hello" });
         let result = tool.call(input, &ctx).await.unwrap();
-        assert!(!result.is_err());
-        assert!(result.content().contains("hello"));
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        assert!(matches!(result, ToolResult::Success(_)));
+        assert!(content.contains("hello"));
     }
 
     #[tokio::test]
@@ -244,6 +250,6 @@ mod tests {
         let ctx = test_tool_context();
         let input = serde_json::json!({ "command": "echo hello" });
         let result = tool.call(input, &ctx).await.unwrap();
-        assert!(result.is_err());
+        assert!(matches!(result, ToolResult::Error(_)));
     }
 }

@@ -5,7 +5,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use crate::error::Result;
+use crate::persistence::error::PersistenceResult as Result;
 use crate::provider::types::{Message, TokenUsage};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

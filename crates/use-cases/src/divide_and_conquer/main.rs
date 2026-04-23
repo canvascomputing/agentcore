@@ -313,17 +313,17 @@ fn log_worker_event(
                 reset = style.reset,
             );
         }
-        EventKind::ToolCallError {
-            tool_name, error, ..
+        EventKind::ToolCallFailed {
+            tool_name, message, ..
         } => eprintln!(
             "{red}│    {agent} ✗ {tool_name}: {}{reset}",
-            truncate(error, 120),
+            truncate(message, 120),
             red = style.red,
             reset = style.reset,
         ),
-        EventKind::RequestError { error } => eprintln!(
+        EventKind::RequestFailed { message, .. } => eprintln!(
             "{red}│    {agent} ✗ request failed: {}{reset}",
-            truncate(error, 120),
+            truncate(message, 120),
             red = style.red,
             reset = style.reset,
         ),

@@ -148,7 +148,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!result.is_err(), "unexpected error: {}", result.content());
+        let (ToolResult::Success(out) | ToolResult::Error(out)) = &result;
+        assert!(
+            matches!(result, ToolResult::Success(_)),
+            "unexpected error: {out}"
+        );
         let content = std::fs::read_to_string(dir.path().join("f.txt")).unwrap();
         assert_eq!(content, "hello rust");
     }
@@ -173,8 +177,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.is_err());
-        assert!(result.content().contains("2"));
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        assert!(matches!(result, ToolResult::Error(_)));
+        assert!(content.contains("2"));
     }
 
     #[tokio::test]
@@ -198,7 +203,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!result.is_err(), "unexpected error: {}", result.content());
+        let (ToolResult::Success(out) | ToolResult::Error(out)) = &result;
+        assert!(
+            matches!(result, ToolResult::Success(_)),
+            "unexpected error: {out}"
+        );
         let content = std::fs::read_to_string(dir.path().join("f.txt")).unwrap();
         assert_eq!(content, "ccc bbb ccc");
     }
@@ -223,7 +232,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.is_err());
-        assert!(result.content().contains("not found"));
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        assert!(matches!(result, ToolResult::Error(_)));
+        assert!(content.contains("not found"));
     }
 }

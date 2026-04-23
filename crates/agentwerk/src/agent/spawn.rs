@@ -9,9 +9,11 @@ use std::task::{Context, Poll};
 use tokio::task::JoinHandle;
 
 use crate::agent::agent::Agent;
+use crate::agent::error::AgentError;
 use crate::agent::output::Output;
 use crate::agent::queue::{CommandQueue, CommandSource, QueuePriority, QueuedCommand};
-use crate::error::{Error, Result};
+use crate::config::ConfigError;
+use crate::error::Result;
 
 /// Shared atomic state between every [`AgentHandle`] clone, the
 /// [`OutputFuture`], and the running loop.
@@ -112,9 +114,7 @@ impl Future for OutputFuture {
         let join = match guard.as_mut() {
             Some(j) => j,
             None => {
-                return Poll::Ready(Err(Error::Other(
-                    "OutputFuture polled after completion".into(),
-                )))
+                return Poll::Ready(Err(AgentError::PolledAfterCompletion.into()))
             }
         };
         let pinned = Pin::new(join);
@@ -126,7 +126,9 @@ impl Future for OutputFuture {
             }
             Poll::Ready(Err(e)) => {
                 *guard = None;
-                Poll::Ready(Err(Error::Other(format!("agent task failed: {e}"))))
+                Poll::Ready(Err(
+                    ConfigError::Invalid(format!("agent task failed: {e}")).into(),
+                ))
             }
         }
     }
@@ -175,6 +177,7 @@ mod tests {
     use std::time::Duration;
 
     use crate::agent::{Agent, Event, EventKind, Status};
+    use crate::error::Error;
     use crate::provider::types::{CompletionResponse, ContentBlock, Message};
     use crate::testutil::{text_response, MockProvider};
     use crate::CompletionRequest;
@@ -369,12 +372,15 @@ mod tests {
     #[tokio::test]
     async fn awaiting_future_twice_returns_error() {
         // OutputFuture consumes its inner JoinHandle on completion;
-        // polling again surfaces an Error::Other.
+        // polling again surfaces `AgentError::PolledAfterCompletion`.
         let (handle, mut output) = one_shot_agent("done");
         handle.cancel();
         let _first = (&mut output).await;
         let second = output.await;
-        assert!(matches!(second, Err(Error::Other(_))));
+        assert!(matches!(
+            second,
+            Err(Error::Agent(AgentError::PolledAfterCompletion))
+        ));
     }
 
     fn one_shot_agent(text: &str) -> (AgentHandle, OutputFuture) {

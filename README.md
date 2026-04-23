@@ -286,8 +286,8 @@ let handler = Arc::new(|event: Event| match &event.kind {
     EventKind::ToolCallStarted { tool_name, .. } => {
         eprintln!("[{}] → {tool_name}", event.agent_name);
     }
-    EventKind::ToolCallError { tool_name, error, .. } => {
-        eprintln!("[{}] ✗ {tool_name}: {error}", event.agent_name);
+    EventKind::ToolCallFailed { tool_name, message, .. } => {
+        eprintln!("[{}] ✗ {tool_name}: {message}", event.agent_name);
     }
     EventKind::AgentFinished { turns, status } => {
         eprintln!("[{}] done in {turns} turns ({status:?})", event.agent_name);
@@ -309,8 +309,8 @@ let handler = Arc::new(|event: Event| match &event.kind {
 | | `AgentResumed` | Keep-alive agent resumed after being paused |
 | **Provider** | `RequestStarted` | Provider request began |
 | | `RequestFinished` | Provider request finished |
-| | `RequestRetried` | Transient provider error triggered a retry |
-| | `RequestError` | Provider request failed after exhausting retries |
+| | `RequestRetried` | Transient provider error triggered a retry (carries typed `kind: RequestErrorKind`) |
+| | `RequestFailed` | Provider request failed after exhausting retries (carries typed `kind: RequestErrorKind`) |
 | | `TextChunkReceived` | Streamed text token arrived |
 | | `TokensReported` | Provider reported token counts for the last request |
 | **Context** | `OutputTruncated` | Response was cut off at the configured length cap |
@@ -319,7 +319,7 @@ let handler = Arc::new(|event: Event| match &event.kind {
 | | `OutputBudgetExhausted` | Cumulative output tokens crossed `max_output_tokens` |
 | **Tool** | `ToolCallStarted` | Tool invocation began |
 | | `ToolCallFinished` | Tool invocation succeeded |
-| | `ToolCallError` | Tool invocation failed |
+| | `ToolCallFailed` | Tool invocation failed (the model sees the error and continues; the run does not terminate) |
 
 ### Guardrails
 
@@ -333,7 +333,7 @@ For protecting your budget or data, you can define clear execution rules for typ
 | `.max_output_tokens(50_000)` | no limit | Cap cumulative output tokens across the whole run |
 | `.max_schema_retries(3)` | 10 | Retry structured output compliance |
 | `.max_request_retries(5)` | 10 | Retry on API errors (429, 529, 5xx) |
-| `.request_retry_delay(2000)` | 500 | Base delay in milliseconds for exponential backoff between request retries |
+| `.request_retry_delay(Duration::from_millis(2000))` | 500ms | Base delay for exponential backoff between request retries |
 
 ### Output
 

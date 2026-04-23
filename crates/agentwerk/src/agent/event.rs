@@ -5,7 +5,24 @@ use std::sync::Arc;
 use crate::agent::compact::CompactReason;
 use crate::agent::output::Status;
 use crate::provider::types::TokenUsage;
+use crate::provider::RequestErrorKind;
 
+/// Observation emitted during an agent run.
+///
+/// Events are an out-of-band observation channel, distinct from the
+/// `Result<Output, Error>` returned by `.run()`. Observers (loggers, UIs,
+/// tracers) receive the event stream; the caller of `.run()` receives the
+/// final result. The stream ending is not a success signal — check the result.
+///
+/// Terminal-path invariants (verified in the loop):
+/// - `AgentFinished` fires only on `Ok` return paths: successful completion
+///   and configured-limit exits (`Status::TurnLimitReached`,
+///   `InputBudgetExhausted`, `OutputBudgetExhausted`, `Cancelled`).
+/// - `Err(...)` return paths do **not** emit `AgentFinished`. The last event
+///   on an error path is `RequestFailed`.
+/// - `ToolCallFailed` is never terminal for the run — more events follow as
+///   the agent continues. The tool's error string goes back to the model as
+///   a tool-result message.
 #[derive(Debug, Clone)]
 pub struct Event {
     pub agent_name: String,
@@ -45,10 +62,10 @@ impl Event {
                 } => {
                     eprintln!("[{agent}] → {tool_name}({})", compact_input(input));
                 }
-                EventKind::ToolCallError {
-                    tool_name, error, ..
+                EventKind::ToolCallFailed {
+                    tool_name, message, ..
                 } => {
-                    eprintln!("[{agent}] ✗ {tool_name}: {error}");
+                    eprintln!("[{agent}] ✗ {tool_name}: {message}");
                 }
                 EventKind::ContextCompacted {
                     turn,
@@ -72,12 +89,13 @@ impl Event {
                 EventKind::RequestRetried {
                     attempt,
                     max_attempts,
-                    error,
+                    message,
+                    ..
                 } => {
-                    eprintln!("[{agent}] ↻ retry {attempt}/{max_attempts} ({error})");
+                    eprintln!("[{agent}] ↻ retry {attempt}/{max_attempts} ({message})");
                 }
-                EventKind::RequestError { error } => {
-                    eprintln!("[{agent}] ✗ request failed: {error}");
+                EventKind::RequestFailed { message, .. } => {
+                    eprintln!("[{agent}] ✗ request failed: {message}");
                 }
                 _ => {}
             }
@@ -110,10 +128,10 @@ pub enum EventKind {
         call_id: String,
         output: String,
     },
-    ToolCallError {
+    ToolCallFailed {
         tool_name: String,
         call_id: String,
-        error: String,
+        message: String,
     },
     TokensReported {
         model: String,
@@ -131,10 +149,12 @@ pub enum EventKind {
     RequestRetried {
         attempt: u32,
         max_attempts: u32,
-        error: String,
+        kind: RequestErrorKind,
+        message: String,
     },
-    RequestError {
-        error: String,
+    RequestFailed {
+        kind: RequestErrorKind,
+        message: String,
     },
     OutputTruncated {
         turn: u32,
@@ -200,10 +220,10 @@ mod tests {
                 call_id: "c1".into(),
                 output: "ok".into(),
             },
-            EventKind::ToolCallError {
+            EventKind::ToolCallFailed {
                 tool_name: "glob".into(),
                 call_id: "c1".into(),
-                error: "boom".into(),
+                message: "boom".into(),
             },
             EventKind::TokensReported {
                 model: "m".into(),
@@ -217,10 +237,12 @@ mod tests {
             EventKind::RequestRetried {
                 attempt: 1,
                 max_attempts: 5,
-                error: "rate limited".into(),
+                kind: RequestErrorKind::RateLimited,
+                message: "rate limited".into(),
             },
-            EventKind::RequestError {
-                error: "auth failed".into(),
+            EventKind::RequestFailed {
+                kind: RequestErrorKind::AuthenticationFailed,
+                message: "auth failed".into(),
             },
             EventKind::OutputTruncated { turn: 2 },
             EventKind::ContextCompacted {
@@ -251,13 +273,13 @@ mod tests {
                 | EventKind::TurnFinished { .. }
                 | EventKind::ToolCallStarted { .. }
                 | EventKind::ToolCallFinished { .. }
-                | EventKind::ToolCallError { .. }
+                | EventKind::ToolCallFailed { .. }
                 | EventKind::TokensReported { .. }
                 | EventKind::TextChunkReceived { .. }
                 | EventKind::RequestStarted { .. }
                 | EventKind::RequestFinished { .. }
                 | EventKind::RequestRetried { .. }
-                | EventKind::RequestError { .. }
+                | EventKind::RequestFailed { .. }
                 | EventKind::OutputTruncated { .. }
                 | EventKind::ContextCompacted { .. }
                 | EventKind::InputBudgetExhausted { .. }

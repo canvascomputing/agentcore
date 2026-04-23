@@ -7,10 +7,10 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::agent::Agent;
-use crate::error::{Error, Result};
-use crate::util::generate_agent_name;
-
+use crate::error::Result;
+use crate::tools::error::ToolError;
 use crate::tools::tool::{ToolContext, ToolResult, Toolable};
+use crate::util::generate_agent_name;
 
 /// Default identity for ad-hoc sub-agents (when the LLM doesn't supply one).
 const DEFAULT_IDENTITY: &str = "You are a focused helper agent. Answer concisely.";
@@ -137,16 +137,15 @@ impl Toolable for SpawnAgentTool {
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
         Box::pin(async move {
-            let args: SpawnArgs =
-                serde_json::from_value(input.clone()).map_err(|e| Error::Tool {
-                    tool_name: "spawn_agent".into(),
-                    message: format!("Invalid input: {e}"),
-                })?;
+            let args: SpawnArgs = match serde_json::from_value(input.clone()) {
+                Ok(a) => a,
+                Err(e) => return Ok(ToolResult::error(format!("Invalid input: {e}"))),
+            };
 
             let runtime = ctx
                 .runtime
                 .as_ref()
-                .ok_or_else(|| Error::Tool {
+                .ok_or_else(|| ToolError::ContextUnavailable {
                     tool_name: "spawn_agent".into(),
                     message: "LoopRuntime not available in ToolContext".into(),
                 })?
@@ -154,7 +153,7 @@ impl Toolable for SpawnAgentTool {
             let caller = ctx
                 .caller_spec
                 .as_ref()
-                .ok_or_else(|| Error::Tool {
+                .ok_or_else(|| ToolError::ContextUnavailable {
                     tool_name: "spawn_agent".into(),
                     message: "caller LoopSpec not available in ToolContext".into(),
                 })?
@@ -165,15 +164,15 @@ impl Toolable for SpawnAgentTool {
             // overrides step below applies every LLM-supplied tuning knob to
             // this base, regardless of path.
             let base = match &args.agent {
-                Some(name) => caller
+                Some(name) => match caller
                     .sub_agents
                     .iter()
-                    .find(|a: &&Agent| a.name_ref() == name.as_str())
+                    .find(|a: &&Agent| a.get_name() == name.as_str())
                     .cloned()
-                    .ok_or_else(|| Error::Tool {
-                        tool_name: "spawn_agent".into(),
-                        message: format!("No sub-agent named '{name}'"),
-                    })?,
+                {
+                    Some(a) => a,
+                    None => return Ok(ToolResult::error(format!("No sub-agent named '{name}'"))),
+                },
                 None => Agent::new()
                     .name(&args.description)
                     .identity_prompt(DEFAULT_IDENTITY)

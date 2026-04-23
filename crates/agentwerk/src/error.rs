@@ -1,34 +1,49 @@
 //! Single error type every fallible API returns, so callers match one `Result` surface instead of a union of provider-, tool-, IO-, and validation-specific errors.
 
 use std::fmt;
+use std::time::Duration;
 
+use crate::agent::error::AgentError;
+use crate::agent::output::OutputError;
+use crate::config::ConfigError;
+use crate::persistence::error::PersistenceError;
 use crate::provider::ProviderError;
+use crate::tools::ToolError;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Categorical top-level error. Each variant wraps a domain-specific sub-enum
+/// that lives beside the code raising it.
 #[derive(Debug)]
 pub enum Error {
+    /// LLM provider call failures (pre-response HTTP / transport / parse).
     Provider(ProviderError),
-    Tool { tool_name: String, message: String },
-    Io(std::io::Error),
-    Json(serde_json::Error),
-    Cancelled,
-    MaxTurnsExceeded(u32),
-    ContextOverflow { token_count: u64, limit: u64 },
-    SchemaValidation { path: String, message: String },
-    SchemaRetryExhausted { retries: u32 },
-    NotImplemented(&'static str),
-    Other(String),
+    /// Run-lifecycle failures: cancellation, internal stubs, lifecycle misuse.
+    Agent(AgentError),
+    /// Tool-system failures raised as `Err` (distinct from in-band
+    /// `ToolResult::Error` strings that most tool failures use).
+    Tool(ToolError),
+    /// Structured-output schema validation failures.
+    Output(OutputError),
+    /// Task store / session store failures.
+    Persistence(PersistenceError),
+    /// Configuration failures: env vars, builder misconfiguration, unreadable
+    /// prompt files.
+    Config(ConfigError),
 }
 
 impl Error {
+    /// Whether the error should be retried with backoff. Delegates to
+    /// [`ProviderError::is_retryable`]; all other categories are terminal.
     pub fn is_retryable(&self) -> bool {
         matches!(self, Error::Provider(p) if p.is_retryable())
     }
 
-    pub fn retry_after_ms(&self) -> Option<u64> {
+    /// Server-suggested retry delay (e.g. `Retry-After`), if present.
+    /// Delegates to [`ProviderError::request_retry_delay`].
+    pub fn request_retry_delay(&self) -> Option<Duration> {
         match self {
-            Error::Provider(p) => p.retry_after_ms(),
+            Error::Provider(p) => p.request_retry_delay(),
             _ => None,
         }
     }
@@ -38,29 +53,11 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Provider(err) => write!(f, "{err}"),
-            Error::Tool { tool_name, message } => {
-                write!(f, "Tool error ({tool_name}): {message}")
-            }
-            Error::Io(err) => write!(f, "IO error: {err}"),
-            Error::Json(err) => write!(f, "JSON error: {err}"),
-            Error::Cancelled => write!(f, "Operation cancelled"),
-            Error::MaxTurnsExceeded(n) => write!(f, "Maximum turns exceeded: {n}"),
-            Error::ContextOverflow { token_count, limit } => {
-                write!(
-                    f,
-                    "Context overflow: {token_count} tokens exceeds limit of {limit}"
-                )
-            }
-            Error::SchemaValidation { path, message } => {
-                write!(f, "Schema validation error at {path}: {message}")
-            }
-            Error::SchemaRetryExhausted { retries } => {
-                write!(f, "Schema retry exhausted after {retries} attempts")
-            }
-            Error::NotImplemented(what) => {
-                write!(f, "Not implemented: {what}")
-            }
-            Error::Other(msg) => write!(f, "{msg}"),
+            Error::Agent(err) => write!(f, "{err}"),
+            Error::Tool(err) => write!(f, "{err}"),
+            Error::Output(err) => write!(f, "{err}"),
+            Error::Persistence(err) => write!(f, "{err}"),
+            Error::Config(err) => write!(f, "{err}"),
         }
     }
 }
@@ -69,9 +66,11 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::Provider(err) => Some(err),
-            Error::Io(err) => Some(err),
-            Error::Json(err) => Some(err),
-            _ => None,
+            Error::Agent(err) => Some(err),
+            Error::Tool(err) => Some(err),
+            Error::Output(err) => Some(err),
+            Error::Persistence(err) => Some(err),
+            Error::Config(err) => Some(err),
         }
     }
 }
@@ -82,15 +81,33 @@ impl From<ProviderError> for Error {
     }
 }
 
-impl From<std::io::Error> for Error {
-    fn from(err: std::io::Error) -> Self {
-        Error::Io(err)
+impl From<AgentError> for Error {
+    fn from(err: AgentError) -> Self {
+        Error::Agent(err)
     }
 }
 
-impl From<serde_json::Error> for Error {
-    fn from(err: serde_json::Error) -> Self {
-        Error::Json(err)
+impl From<ToolError> for Error {
+    fn from(err: ToolError) -> Self {
+        Error::Tool(err)
+    }
+}
+
+impl From<OutputError> for Error {
+    fn from(err: OutputError) -> Self {
+        Error::Output(err)
+    }
+}
+
+impl From<PersistenceError> for Error {
+    fn from(err: PersistenceError) -> Self {
+        Error::Persistence(err)
+    }
+}
+
+impl From<ConfigError> for Error {
+    fn from(err: ConfigError) -> Self {
+        Error::Config(err)
     }
 }
 
@@ -103,7 +120,7 @@ mod tests {
         let err = Error::Provider(ProviderError::RateLimited {
             message: "rate limited".into(),
             status: 429,
-            retry_after_ms: None,
+            request_retry_delay: None,
         });
         let display = format!("{err}");
         assert!(display.contains("429"));
@@ -115,28 +132,31 @@ mod tests {
         let retryable = Error::Provider(ProviderError::RateLimited {
             message: String::new(),
             status: 429,
-            retry_after_ms: Some(500),
+            request_retry_delay: Some(Duration::from_millis(500)),
         });
         let terminal = Error::Provider(ProviderError::AuthenticationFailed {
-            provider_message: String::new(),
+            message: String::new(),
         });
         assert!(retryable.is_retryable());
-        assert_eq!(retryable.retry_after_ms(), Some(500));
+        assert_eq!(
+            retryable.request_retry_delay(),
+            Some(Duration::from_millis(500))
+        );
         assert!(!terminal.is_retryable());
-        assert_eq!(terminal.retry_after_ms(), None);
+        assert_eq!(terminal.request_retry_delay(), None);
     }
 
     #[test]
     fn non_provider_errors_are_not_retryable() {
-        let err = Error::Cancelled;
+        let err = Error::Agent(AgentError::Cancelled);
         assert!(!err.is_retryable());
-        assert_eq!(err.retry_after_ms(), None);
+        assert_eq!(err.request_retry_delay(), None);
     }
 
     #[test]
     fn from_provider_error() {
         let err: Error = ProviderError::ConnectionFailed {
-            reason: "dns".into(),
+            message: "dns".into(),
         }
         .into();
         assert!(matches!(
@@ -146,18 +166,49 @@ mod tests {
     }
 
     #[test]
-    fn from_io_error() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
-        let err: Error = io_err.into();
-        assert!(matches!(err, Error::Io(_)));
-        assert!(format!("{err}").contains("file not found"));
+    fn from_agent_error() {
+        let err: Error = AgentError::Cancelled.into();
+        assert!(matches!(err, Error::Agent(AgentError::Cancelled)));
     }
 
     #[test]
-    fn from_json_error() {
-        let json_err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
-        let err: Error = json_err.into();
-        assert!(matches!(err, Error::Json(_)));
+    fn from_tool_error() {
+        let err: Error = ToolError::ContextUnavailable {
+            tool_name: "send_message".into(),
+            message: "no runtime".into(),
+        }
+        .into();
+        assert!(matches!(
+            err,
+            Error::Tool(ToolError::ContextUnavailable { .. })
+        ));
+    }
+
+    #[test]
+    fn from_output_error() {
+        let err: Error = OutputError::SchemaRetryExhausted { retries: 3 }.into();
+        assert!(matches!(
+            err,
+            Error::Output(OutputError::SchemaRetryExhausted { retries: 3 })
+        ));
+    }
+
+    #[test]
+    fn from_persistence_error() {
+        let err: Error = PersistenceError::TaskNotFound("t1".into()).into();
+        assert!(matches!(
+            err,
+            Error::Persistence(PersistenceError::TaskNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn from_config_error() {
+        let err: Error = ConfigError::ProviderNotConfigured.into();
+        assert!(matches!(
+            err,
+            Error::Config(ConfigError::ProviderNotConfigured)
+        ));
     }
 
     #[test]
@@ -166,27 +217,42 @@ mod tests {
             Error::Provider(ProviderError::RateLimited {
                 message: "slow".into(),
                 status: 429,
-                retry_after_ms: None,
+                request_retry_delay: None,
             }),
-            Error::Tool {
-                tool_name: "tool".into(),
-                message: "err".into(),
-            },
-            Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "io")),
-            Error::Json(serde_json::from_str::<()>("bad").unwrap_err()),
-            Error::Cancelled,
-            Error::MaxTurnsExceeded(10),
-            Error::ContextOverflow {
-                token_count: 200_000,
-                limit: 100_000,
-            },
-            Error::SchemaValidation {
+            Error::Agent(AgentError::Cancelled),
+            Error::Agent(AgentError::NotImplemented("something")),
+            Error::Agent(AgentError::PolledAfterCompletion),
+            Error::Tool(ToolError::ContextUnavailable {
+                tool_name: "t".into(),
+                message: "m".into(),
+            }),
+            Error::Tool(ToolError::ArgumentsRejected {
+                tool_name: "t".into(),
+                message: "m".into(),
+            }),
+            Error::Output(OutputError::SchemaViolated {
                 path: "/a".into(),
                 message: "bad".into(),
-            },
-            Error::SchemaRetryExhausted { retries: 3 },
-            Error::NotImplemented("context compaction"),
-            Error::Other("other".into()),
+            }),
+            Error::Output(OutputError::SchemaRetryExhausted { retries: 3 }),
+            Error::Persistence(PersistenceError::TaskNotFound("t1".into())),
+            Error::Persistence(PersistenceError::TaskAlreadyCompleted("t1".into())),
+            Error::Persistence(PersistenceError::TaskBlocked {
+                task_id: "t1".into(),
+                blocker_id: "t0".into(),
+            }),
+            Error::Persistence(PersistenceError::LockFailed { attempts: 30 }),
+            Error::Persistence(PersistenceError::IoFailed(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "io",
+            ))),
+            Error::Config(ConfigError::EnvVarNotSet("FOO")),
+            Error::Config(ConfigError::ProviderNotConfigured),
+            Error::Config(ConfigError::FileReadFailed {
+                path: "/tmp/x".into(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "x"),
+            }),
+            Error::Config(ConfigError::Invalid("bad".into())),
         ];
         for variant in &variants {
             let display = format!("{variant}");

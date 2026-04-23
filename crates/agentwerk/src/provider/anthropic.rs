@@ -107,7 +107,7 @@ impl AnthropicProvider {
             .send()
             .await
             .map_err(|e| ProviderError::ConnectionFailed {
-                reason: e.to_string(),
+                message: e.to_string(),
             })?;
 
         super::map_http_errors(resp, classify_error).await
@@ -117,18 +117,18 @@ impl AnthropicProvider {
 /// Map Anthropic-specific error signatures to typed [`ProviderError`]
 /// variants. Any status/body combination the match doesn't recognise
 /// returns `None`, causing `map_http_errors` to fall through to
-/// [`ProviderError::UnexpectedStatus`] (or [`ProviderError::RateLimited`]
+/// [`ProviderError::StatusUnclassified`] (or [`ProviderError::RateLimited`]
 /// for 429/529).
 fn classify_error(status: u16, body: &str) -> Option<ProviderError> {
     match status {
         401 => Some(ProviderError::AuthenticationFailed {
-            provider_message: body.into(),
+            message: body.into(),
         }),
         403 => Some(ProviderError::PermissionDenied {
-            provider_message: body.into(),
+            message: body.into(),
         }),
         404 => Some(ProviderError::ModelNotFound {
-            provider_message: body.into(),
+            message: body.into(),
         }),
         400 => classify_400(body),
         _ => None,
@@ -142,13 +142,9 @@ fn classify_400(body: &str) -> Option<ProviderError> {
     let message = err["message"].as_str().unwrap_or("").to_string();
     match type_ {
         "invalid_request_error" if message.contains("prompt is too long") => {
-            Some(ProviderError::ContextWindowExceeded {
-                provider_message: message,
-            })
+            Some(ProviderError::ContextWindowExceeded { message })
         }
-        "not_found_error" => Some(ProviderError::ModelNotFound {
-            provider_message: message,
-        }),
+        "not_found_error" => Some(ProviderError::ModelNotFound { message }),
         _ => None,
     }
 }
@@ -191,8 +187,8 @@ impl Provider for AnthropicProvider {
             let json: Value = resp
                 .json()
                 .await
-                .map_err(|e| ProviderError::InvalidResponse {
-                    reason: e.to_string(),
+                .map_err(|e| ProviderError::ResponseMalformed {
+                    message: e.to_string(),
                 })?;
             Ok(self.parse_response(json))
         })
@@ -226,7 +222,7 @@ async fn stream_response(
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| ProviderError::StreamInterrupted {
-            reason: e.to_string(),
+            message: e.to_string(),
         })?;
         for event in parser.push(&chunk) {
             match event {
@@ -675,12 +671,12 @@ mod tests {
 
     #[test]
     fn preserves_provider_message() {
-        let Some(ProviderError::AuthenticationFailed { provider_message }) =
+        let Some(ProviderError::AuthenticationFailed { message }) =
             classify_error(401, "your api key is revoked")
         else {
             panic!("expected AuthenticationFailed");
         };
-        assert_eq!(provider_message, "your api key is revoked");
+        assert_eq!(message, "your api key is revoked");
     }
 
     #[test]

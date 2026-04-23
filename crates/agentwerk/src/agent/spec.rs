@@ -1,6 +1,7 @@
 //! The immutable template an `Agent` hands to the loop. Shared behind an `Arc` so cloning an agent does not duplicate its tool registry or sub-agent tree.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -33,7 +34,7 @@ pub(crate) struct AgentSpec {
     pub max_turns: Option<u32>,
     pub max_schema_retries: Option<u32>,
     pub max_request_retries: u32,
-    pub request_retry_delay: u64,
+    pub request_retry_delay: Duration,
     pub keep_alive: bool,
 }
 
@@ -54,7 +55,7 @@ impl Default for AgentSpec {
             max_turns: None,
             max_schema_retries: Some(10),
             max_request_retries: AgentSpec::DEFAULT_MAX_REQUEST_RETRIES,
-            request_retry_delay: AgentSpec::DEFAULT_BACKOFF_MS,
+            request_retry_delay: AgentSpec::DEFAULT_REQUEST_RETRY_DELAY,
             keep_alive: false,
         }
     }
@@ -65,9 +66,9 @@ impl AgentSpec {
     /// `Agent::DEFAULT_MAX_REQUEST_RETRIES` for the public API surface.
     pub const DEFAULT_MAX_REQUEST_RETRIES: u32 = 10;
 
-    /// Default base delay (ms) for the exponential-backoff retry policy.
-    /// Re-exported as `Agent::DEFAULT_BACKOFF_MS`.
-    pub const DEFAULT_BACKOFF_MS: u64 = 500;
+    /// Default base delay for the exponential-backoff retry policy.
+    /// Re-exported as `Agent::DEFAULT_REQUEST_RETRY_DELAY`.
+    pub const DEFAULT_REQUEST_RETRY_DELAY: Duration = Duration::from_millis(500);
 
     /// Read the resolved model. Panics if called on an unresolved spec — only
     /// `Agent::compile` is supposed to observe a spec whose model is `None`.

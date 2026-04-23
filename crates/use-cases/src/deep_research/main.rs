@@ -11,7 +11,7 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use agentwerk::{Agent, Error, Event, EventKind, Tool, ToolResult};
+use agentwerk::{Agent, ConfigError, Event, EventKind, Tool, ToolResult};
 
 #[tokio::main]
 async fn main() {
@@ -155,12 +155,12 @@ async fn brave_search(api_key: &str, input: &serde_json::Value) -> agentwerk::Re
         .header("Accept", "application/json")
         .send()
         .await
-        .map_err(|e| Error::Other(format!("Brave search failed: {e}")))?;
+        .map_err(|e| ConfigError::Invalid(format!("Brave search failed: {e}")))?;
 
     let json: serde_json::Value = response
         .json()
         .await
-        .map_err(|e| Error::Other(format!("Failed to parse response: {e}")))?;
+        .map_err(|e| ConfigError::Invalid(format!("Failed to parse response: {e}")))?;
 
     let Some(results) = json["web"]["results"].as_array() else {
         return Ok(ToolResult::success("No results found."));
@@ -208,10 +208,10 @@ fn log_event(event: &Event) {
             let detail = tool_call_summary(tool_name, input);
             eprintln!("[{}] {tool_name}: {detail}", event.agent_name);
         }
-        EventKind::ToolCallError {
-            tool_name, error, ..
+        EventKind::ToolCallFailed {
+            tool_name, message, ..
         } => {
-            eprintln!("[error] {tool_name}: {error}");
+            eprintln!("[error] {tool_name}: {message}");
         }
         _ => {}
     }

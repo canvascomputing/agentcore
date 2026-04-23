@@ -134,7 +134,7 @@ Your last reply did not match the required output schema. You MUST reply with a 
 single JSON value conforming to the schema, with no surrounding text and no code \
 fences.
 
-Validator said: Schema validation error at summary: missing required field
+Validator said: Schema violated at summary: missing required field
 ";
 
 const S2_AFTER_VALID_REPLY: &str = "\
@@ -165,7 +165,7 @@ Your last reply did not match the required output schema. You MUST reply with a 
 single JSON value conforming to the schema, with no surrounding text and no code \
 fences.
 
-Validator said: Schema validation error at summary: missing required field
+Validator said: Schema violated at summary: missing required field
 
 === messages[4] assistant ===
 {\"category\":\"security\",\"priority\":\"high\",\"summary\":\"Two SQL-injection paths in the auth flow.\",\"findings\":[{\"file\":\"src/auth.rs\",\"line\":47,\"severity\":\"critical\"},{\"file\":\"src/db.rs\",\"line\":112,\"severity\":\"high\"}]}
@@ -438,7 +438,10 @@ async fn retry_exhaustion_returns_schema_retry_exhausted() {
     let harness = TestHarness::new(provider);
     let err = harness.run_agent(&agent, "go").await.unwrap_err();
 
-    assert!(matches!(err, Error::SchemaRetryExhausted { retries: 2 }));
+    assert!(matches!(
+        err,
+        Error::Output(agentwerk::OutputError::SchemaRetryExhausted { retries: 2 })
+    ));
 }
 
 #[tokio::test]

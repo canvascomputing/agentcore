@@ -78,8 +78,8 @@ impl Provider for MockProvider {
 
         Box::pin(async move {
             self.results.lock().unwrap().pop_front().unwrap_or_else(|| {
-                Err(ProviderError::InvalidResponse {
-                    reason: "no more mock responses".into(),
+                Err(ProviderError::ResponseMalformed {
+                    message: "no more mock responses".into(),
                 })
             })
         })

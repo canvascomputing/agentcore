@@ -14,7 +14,7 @@ pub mod types;
 
 pub use anthropic::AnthropicProvider;
 pub use environment::{from_env, model_from_env};
-pub use error::{ProviderError, ProviderResult};
+pub use error::{ProviderError, ProviderResult, RequestErrorKind};
 pub use litellm::LiteLlmProvider;
 pub use mistral::MistralProvider;
 pub use model::{Model, ModelLookup};
@@ -22,9 +22,14 @@ pub use openai::OpenAiProvider;
 pub use r#trait::{CompletionRequest, Provider, ToolChoice};
 pub use types::{ContentBlock, Message, TokenUsage};
 
-pub(crate) fn retry_after_ms_from_headers(resp: &reqwest::Response) -> Option<u64> {
+pub(crate) fn request_retry_delay_from_headers(
+    resp: &reqwest::Response,
+) -> Option<std::time::Duration> {
     let value = resp.headers().get("retry-after")?.to_str().ok()?;
-    value.parse::<u64>().ok().map(|secs| secs * 1000)
+    value
+        .parse::<u64>()
+        .ok()
+        .map(std::time::Duration::from_secs)
 }
 
 /// HTTP error handler shared by every provider. Non-2xx responses are passed
@@ -32,8 +37,8 @@ pub(crate) fn retry_after_ms_from_headers(resp: &reqwest::Response) -> Option<u6
 /// `(status, body)` signatures to typed [`ProviderError`] variants. Anything
 /// `classify` returns `None` for falls through: 429/529 become
 /// [`ProviderError::RateLimited`], 5xx become retryable
-/// [`ProviderError::UnexpectedStatus`], and other non-2xx codes become
-/// terminal [`ProviderError::UnexpectedStatus`].
+/// [`ProviderError::StatusUnclassified`], and other non-2xx codes become
+/// terminal [`ProviderError::StatusUnclassified`].
 pub(crate) async fn map_http_errors<F>(
     resp: reqwest::Response,
     classify: F,
@@ -45,26 +50,30 @@ where
     if status < 400 {
         return Ok(resp);
     }
-    let retry_after_ms = retry_after_ms_from_headers(&resp);
+    let request_retry_delay = request_retry_delay_from_headers(&resp);
     let body = resp.text().await.unwrap_or_default();
     if let Some(e) = classify(status, &body) {
         return Err(e);
     }
-    Err(fallback_http_error(status, body, retry_after_ms))
+    Err(fallback_http_error(status, body, request_retry_delay))
 }
 
-fn fallback_http_error(status: u16, body: String, retry_after_ms: Option<u64>) -> ProviderError {
+fn fallback_http_error(
+    status: u16,
+    body: String,
+    request_retry_delay: Option<std::time::Duration>,
+) -> ProviderError {
     match status {
         429 | 529 => ProviderError::RateLimited {
             message: body,
             status,
-            retry_after_ms,
+            request_retry_delay,
         },
-        _ => ProviderError::UnexpectedStatus {
+        _ => ProviderError::StatusUnclassified {
             status,
             message: body,
             retryable: matches!(status, 500 | 502 | 503 | 504),
-            retry_after_ms,
+            request_retry_delay,
         },
     }
 }

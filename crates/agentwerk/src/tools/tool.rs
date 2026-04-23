@@ -100,11 +100,11 @@ pub struct ToolCall {
     pub input: Value,
 }
 
-/// Outcome of a tool execution — a success payload or a failure message.
+/// Outcome of a tool execution — a success payload or an error message.
 #[derive(Debug, Clone)]
 pub enum ToolResult {
     Success(String),
-    Failure(String),
+    Error(String),
 }
 
 impl ToolResult {
@@ -113,21 +113,7 @@ impl ToolResult {
     }
 
     pub fn error(content: impl Into<String>) -> Self {
-        Self::Failure(content.into())
-    }
-
-    pub fn is_ok(&self) -> bool {
-        matches!(self, Self::Success(_))
-    }
-
-    pub fn is_err(&self) -> bool {
-        matches!(self, Self::Failure(_))
-    }
-
-    pub fn content(&self) -> &str {
-        match self {
-            Self::Success(s) | Self::Failure(s) => s,
-        }
+        Self::Error(content.into())
     }
 }
 
@@ -448,7 +434,7 @@ impl Toolable for Tool {
 fn content_block_for(tool_use_id: &str, result: &ToolResult) -> ContentBlock {
     let (content, is_error) = match result {
         ToolResult::Success(s) => (s.clone(), false),
-        ToolResult::Failure(s) => (s.clone(), true),
+        ToolResult::Error(s) => (s.clone(), true),
     };
     ContentBlock::ToolResult {
         tool_use_id: tool_use_id.to_string(),

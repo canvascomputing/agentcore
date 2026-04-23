@@ -121,8 +121,8 @@ mod tests {
         let tool = ToolSearchTool;
         let input = serde_json::json!({ "query": "read_file" });
         let result = tool.call(input, &ctx).await.unwrap();
-        assert!(!result.is_err());
-        assert!(result.content().contains("read_file"));
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        assert!(content.contains("read_file"));
     }
 
     #[tokio::test]
@@ -132,9 +132,9 @@ mod tests {
         let tool = ToolSearchTool;
         let input = serde_json::json!({ "query": "file" });
         let result = tool.call(input, &ctx).await.unwrap();
-        assert!(!result.is_err());
-        assert!(result.content().contains("read_file"));
-        assert!(result.content().contains("write_file"));
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        assert!(content.contains("read_file"));
+        assert!(content.contains("write_file"));
     }
 
     #[tokio::test]
@@ -144,8 +144,8 @@ mod tests {
         let tool = ToolSearchTool;
         let input = serde_json::json!({ "query": "nonexistent_xyz" });
         let result = tool.call(input, &ctx).await.unwrap();
-        assert!(!result.is_err());
-        assert!(result.content().contains("No tools found"));
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        assert!(content.contains("No tools found"));
     }
 
     #[tokio::test]
@@ -155,8 +155,9 @@ mod tests {
         let tool = ToolSearchTool;
         let input = serde_json::json!({ "query": "read_file" });
         let result = tool.call(input, &ctx).await.unwrap();
-        assert!(result.content().contains("```json"));
-        assert!(result.content().contains("\"type\""));
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        assert!(content.contains("```json"));
+        assert!(content.contains("\"type\""));
     }
 
     #[tokio::test]
@@ -166,8 +167,9 @@ mod tests {
         let tool = ToolSearchTool;
         let input = serde_json::json!({});
         let result = tool.call(input, &ctx).await.unwrap();
-        assert!(result.is_err());
-        assert!(result.content().contains("Missing required field: query"));
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        assert!(matches!(result, ToolResult::Error(_)));
+        assert!(content.contains("Missing required field: query"));
     }
 
     #[tokio::test]
@@ -178,8 +180,9 @@ mod tests {
         let tool = ToolSearchTool;
         let input = serde_json::json!({ "query": "anything" });
         let result = tool.call(input, &ctx).await.unwrap();
-        assert!(result.is_err());
-        assert!(result.content().contains("No tool registry available"));
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        assert!(matches!(result, ToolResult::Error(_)));
+        assert!(content.contains("No tool registry available"));
     }
 
     #[tokio::test]

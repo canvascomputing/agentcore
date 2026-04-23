@@ -1,45 +1,46 @@
 //! Errors a provider raises before producing a `CompletionResponse`. Anything that maps to a valid response-with-status belongs on `ResponseStatus`, not here.
 
 use std::fmt;
+use std::time::Duration;
 
 /// Failure produced by a provider call.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ProviderError {
     /// HTTP 401: invalid, revoked, or missing credentials.
-    AuthenticationFailed { provider_message: String },
+    AuthenticationFailed { message: String },
     /// HTTP 403: authenticated but not allowed to use the resource.
-    PermissionDenied { provider_message: String },
+    PermissionDenied { message: String },
     /// HTTP 400/404: unknown model id.
-    ModelNotFound { provider_message: String },
+    ModelNotFound { message: String },
     /// HTTP 400 pre-flight: request tokens exceed the model's context window.
-    ContextWindowExceeded { provider_message: String },
+    ContextWindowExceeded { message: String },
     /// Provider-side safety filter blocked the request input.
-    SafetyFilterTriggered { provider_message: String },
-    /// HTTP 429 / 529: retry with backoff, honouring `retry_after_ms` if set.
+    SafetyFilterTriggered { message: String },
+    /// HTTP 429 / 529: retry with backoff, honouring `request_retry_delay` if set.
     RateLimited {
         message: String,
         status: u16,
-        retry_after_ms: Option<u64>,
+        request_retry_delay: Option<Duration>,
     },
     /// HTTP error with no more specific classification (unclassified 4xx,
     /// generic 5xx). `retryable` is true for standard transient server
     /// errors (500/502/503/504).
-    UnexpectedStatus {
+    StatusUnclassified {
         status: u16,
         message: String,
         retryable: bool,
-        retry_after_ms: Option<u64>,
+        request_retry_delay: Option<Duration>,
     },
     /// Network / TLS / connection failure before any HTTP response.
-    ConnectionFailed { reason: String },
+    ConnectionFailed { message: String },
     /// The stream was cut off mid-body after headers arrived. Distinct from
-    /// `ConnectionFailed` (pre-response) and `InvalidResponse` (structurally
+    /// `ConnectionFailed` (pre-response) and `ResponseMalformed` (structurally
     /// broken payload): the transport broke while chunks were still in flight.
-    StreamInterrupted { reason: String },
+    StreamInterrupted { message: String },
     /// The response arrived but its body couldn't be parsed — malformed
     /// JSON, unexpected shape, or a broken SSE frame.
-    InvalidResponse { reason: String },
+    ResponseMalformed { message: String },
 }
 
 impl ProviderError {
@@ -49,18 +50,41 @@ impl ProviderError {
             ProviderError::RateLimited { .. }
                 | ProviderError::ConnectionFailed { .. }
                 | ProviderError::StreamInterrupted { .. }
-                | ProviderError::UnexpectedStatus {
+                | ProviderError::StatusUnclassified {
                     retryable: true,
                     ..
                 }
         )
     }
 
-    pub fn retry_after_ms(&self) -> Option<u64> {
+    pub fn request_retry_delay(&self) -> Option<Duration> {
         match self {
-            ProviderError::RateLimited { retry_after_ms, .. } => *retry_after_ms,
-            ProviderError::UnexpectedStatus { retry_after_ms, .. } => *retry_after_ms,
+            ProviderError::RateLimited {
+                request_retry_delay,
+                ..
+            } => *request_retry_delay,
+            ProviderError::StatusUnclassified {
+                request_retry_delay,
+                ..
+            } => *request_retry_delay,
             _ => None,
+        }
+    }
+
+    /// Categorical discriminant for event observers. One variant per
+    /// `ProviderError` case; payloads stripped.
+    pub fn kind(&self) -> RequestErrorKind {
+        match self {
+            ProviderError::AuthenticationFailed { .. } => RequestErrorKind::AuthenticationFailed,
+            ProviderError::PermissionDenied { .. } => RequestErrorKind::PermissionDenied,
+            ProviderError::ModelNotFound { .. } => RequestErrorKind::ModelNotFound,
+            ProviderError::ContextWindowExceeded { .. } => RequestErrorKind::ContextWindowExceeded,
+            ProviderError::SafetyFilterTriggered { .. } => RequestErrorKind::SafetyFilterTriggered,
+            ProviderError::RateLimited { .. } => RequestErrorKind::RateLimited,
+            ProviderError::StatusUnclassified { .. } => RequestErrorKind::StatusUnclassified,
+            ProviderError::ConnectionFailed { .. } => RequestErrorKind::ConnectionFailed,
+            ProviderError::StreamInterrupted { .. } => RequestErrorKind::StreamInterrupted,
+            ProviderError::ResponseMalformed { .. } => RequestErrorKind::ResponseMalformed,
         }
     }
 }
@@ -68,27 +92,27 @@ impl ProviderError {
 impl fmt::Display for ProviderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ProviderError::AuthenticationFailed { provider_message } => {
-                write!(f, "Authentication failed: {provider_message}")
+            ProviderError::AuthenticationFailed { message } => {
+                write!(f, "Authentication failed: {message}")
             }
-            ProviderError::PermissionDenied { provider_message } => {
-                write!(f, "Permission denied: {provider_message}")
+            ProviderError::PermissionDenied { message } => {
+                write!(f, "Permission denied: {message}")
             }
-            ProviderError::ModelNotFound { provider_message } => {
-                write!(f, "Model not found: {provider_message}")
+            ProviderError::ModelNotFound { message } => {
+                write!(f, "Model not found: {message}")
             }
-            ProviderError::ContextWindowExceeded { provider_message } => {
-                write!(f, "Context window exceeded: {provider_message}")
+            ProviderError::ContextWindowExceeded { message } => {
+                write!(f, "Context window exceeded: {message}")
             }
-            ProviderError::SafetyFilterTriggered { provider_message } => {
-                write!(f, "Safety filter triggered: {provider_message}")
+            ProviderError::SafetyFilterTriggered { message } => {
+                write!(f, "Safety filter triggered: {message}")
             }
             ProviderError::RateLimited {
                 message, status, ..
             } => {
                 write!(f, "Rate limited (status {status}): {message}")
             }
-            ProviderError::UnexpectedStatus {
+            ProviderError::StatusUnclassified {
                 status,
                 message,
                 retryable,
@@ -99,20 +123,37 @@ impl fmt::Display for ProviderError {
                     "HTTP error (status {status}): {message} (retryable: {retryable})"
                 )
             }
-            ProviderError::ConnectionFailed { reason } => {
-                write!(f, "Connection failed: {reason}")
+            ProviderError::ConnectionFailed { message } => {
+                write!(f, "Connection failed: {message}")
             }
-            ProviderError::StreamInterrupted { reason } => {
-                write!(f, "Stream interrupted: {reason}")
+            ProviderError::StreamInterrupted { message } => {
+                write!(f, "Stream interrupted: {message}")
             }
-            ProviderError::InvalidResponse { reason } => {
-                write!(f, "Invalid response: {reason}")
+            ProviderError::ResponseMalformed { message } => {
+                write!(f, "Response malformed: {message}")
             }
         }
     }
 }
 
 impl std::error::Error for ProviderError {}
+
+/// Categorical discriminant of [`ProviderError`] for event observers. Mirrors
+/// the variants of `ProviderError` without their payloads, so matching on
+/// `kind` is a stable branching point independent of the detail carried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestErrorKind {
+    AuthenticationFailed,
+    PermissionDenied,
+    ModelNotFound,
+    ContextWindowExceeded,
+    SafetyFilterTriggered,
+    RateLimited,
+    StatusUnclassified,
+    ConnectionFailed,
+    StreamInterrupted,
+    ResponseMalformed,
+}
 
 /// Result alias for [`Provider`](super::r#trait::Provider) calls.
 pub type ProviderResult<T> = std::result::Result<T, ProviderError>;
@@ -126,44 +167,44 @@ mod tests {
         let err = ProviderError::RateLimited {
             message: "slow down".into(),
             status: 429,
-            retry_after_ms: Some(500),
+            request_retry_delay: Some(Duration::from_millis(500)),
         };
         assert!(err.is_retryable());
-        assert_eq!(err.retry_after_ms(), Some(500));
+        assert_eq!(err.request_retry_delay(), Some(Duration::from_millis(500)));
     }
 
     #[test]
     fn connection_failed_is_retryable() {
         let err = ProviderError::ConnectionFailed {
-            reason: "dns".into(),
+            message: "dns".into(),
         };
         assert!(err.is_retryable());
-        assert_eq!(err.retry_after_ms(), None);
+        assert_eq!(err.request_retry_delay(), None);
     }
 
     #[test]
     fn stream_interrupted_is_retryable() {
         let err = ProviderError::StreamInterrupted {
-            reason: "error decoding response body".into(),
+            message: "error decoding response body".into(),
         };
         assert!(err.is_retryable());
-        assert_eq!(err.retry_after_ms(), None);
+        assert_eq!(err.request_retry_delay(), None);
         assert!(err.to_string().starts_with("Stream interrupted:"));
     }
 
     #[test]
     fn unexpected_status_honours_retryable_flag() {
-        let retryable = ProviderError::UnexpectedStatus {
+        let retryable = ProviderError::StatusUnclassified {
             status: 503,
             message: "unavailable".into(),
             retryable: true,
-            retry_after_ms: None,
+            request_retry_delay: None,
         };
-        let terminal = ProviderError::UnexpectedStatus {
+        let terminal = ProviderError::StatusUnclassified {
             status: 418,
             message: "teapot".into(),
             retryable: false,
-            retry_after_ms: None,
+            request_retry_delay: None,
         };
         assert!(retryable.is_retryable());
         assert!(!terminal.is_retryable());
@@ -173,22 +214,22 @@ mod tests {
     fn classified_variants_are_not_retryable() {
         for err in [
             ProviderError::AuthenticationFailed {
-                provider_message: String::new(),
+                message: String::new(),
             },
             ProviderError::PermissionDenied {
-                provider_message: String::new(),
+                message: String::new(),
             },
             ProviderError::ModelNotFound {
-                provider_message: String::new(),
+                message: String::new(),
             },
             ProviderError::ContextWindowExceeded {
-                provider_message: String::new(),
+                message: String::new(),
             },
             ProviderError::SafetyFilterTriggered {
-                provider_message: String::new(),
+                message: String::new(),
             },
-            ProviderError::InvalidResponse {
-                reason: String::new(),
+            ProviderError::ResponseMalformed {
+                message: String::new(),
             },
         ] {
             assert!(!err.is_retryable(), "expected terminal: {err:?}");
@@ -196,42 +237,85 @@ mod tests {
     }
 
     #[test]
+    fn kind_covers_every_variant() {
+        let every = [
+            ProviderError::AuthenticationFailed {
+                message: String::new(),
+            },
+            ProviderError::PermissionDenied {
+                message: String::new(),
+            },
+            ProviderError::ModelNotFound {
+                message: String::new(),
+            },
+            ProviderError::ContextWindowExceeded {
+                message: String::new(),
+            },
+            ProviderError::SafetyFilterTriggered {
+                message: String::new(),
+            },
+            ProviderError::RateLimited {
+                message: String::new(),
+                status: 429,
+                request_retry_delay: None,
+            },
+            ProviderError::StatusUnclassified {
+                status: 500,
+                message: String::new(),
+                retryable: true,
+                request_retry_delay: None,
+            },
+            ProviderError::ConnectionFailed {
+                message: String::new(),
+            },
+            ProviderError::StreamInterrupted {
+                message: String::new(),
+            },
+            ProviderError::ResponseMalformed {
+                message: String::new(),
+            },
+        ];
+        let kinds: Vec<RequestErrorKind> = every.iter().map(|e| e.kind()).collect();
+        assert_eq!(kinds.len(), 10);
+    }
+
+    #[test]
     fn all_variants_display_non_empty() {
         let variants = [
             ProviderError::AuthenticationFailed {
-                provider_message: "bad key".into(),
+                message: "bad key".into(),
             },
             ProviderError::PermissionDenied {
-                provider_message: "nope".into(),
+                message: "nope".into(),
             },
             ProviderError::ModelNotFound {
-                provider_message: "no such model".into(),
+                message: "no such model".into(),
             },
             ProviderError::ContextWindowExceeded {
-                provider_message: "too long".into(),
+                message: "too long".into(),
             },
             ProviderError::SafetyFilterTriggered {
-                provider_message: "blocked".into(),
+                message: "blocked".into(),
             },
             ProviderError::RateLimited {
                 message: "slow".into(),
                 status: 429,
-                retry_after_ms: Some(1000),
+                request_retry_delay: Some(Duration::from_millis(1000)),
             },
-            ProviderError::UnexpectedStatus {
+            ProviderError::StatusUnclassified {
                 status: 500,
                 message: "boom".into(),
                 retryable: true,
-                retry_after_ms: None,
+                request_retry_delay: None,
             },
             ProviderError::ConnectionFailed {
-                reason: "dns".into(),
+                message: "dns".into(),
             },
             ProviderError::StreamInterrupted {
-                reason: "chunk read error".into(),
+                message: "chunk read error".into(),
             },
-            ProviderError::InvalidResponse {
-                reason: "bad json".into(),
+            ProviderError::ResponseMalformed {
+                message: "bad json".into(),
             },
         ];
         for v in &variants {
