@@ -13,7 +13,7 @@ pub enum AgentError {
     /// that must fail loudly rather than silently.
     NotImplemented(&'static str),
     /// An `OutputFuture` or `AgentHandle` was polled after the run already
-    /// completed — API misuse by the caller.
+    /// completed: API misuse by the caller.
     PolledAfterCompletion,
 }
 

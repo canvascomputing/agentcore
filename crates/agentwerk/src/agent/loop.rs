@@ -397,13 +397,7 @@ async fn call_provider_with_retry(
                 let delay =
                     compute_delay(spec.request_retry_delay, attempt, e.request_retry_delay());
                 cancellable_sleep(delay, &runtime.cancel_signal).await?;
-                emit_request_retried(
-                    runtime,
-                    spec,
-                    attempt + 1,
-                    spec.max_request_retries,
-                    &e,
-                );
+                emit_request_retried(runtime, spec, attempt + 1, spec.max_request_retries, &e);
                 last_err = Some(e);
             }
             Err(e) => {

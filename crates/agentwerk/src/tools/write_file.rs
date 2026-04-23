@@ -8,6 +8,8 @@ use serde_json::Value;
 use crate::error::Result;
 use crate::tools::tool::{ToolContext, ToolResult, Toolable};
 
+/// Create or overwrite a file. Destructive: existing content is replaced.
+/// Not read-only, so the loop runs it serially.
 pub struct WriteFileTool;
 
 const DESCRIPTION: &str = "\

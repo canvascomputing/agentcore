@@ -11,12 +11,15 @@ use crate::error::Result;
 use crate::persistence::task::{TaskStatus, TaskStore, TaskUpdate};
 use crate::tools::tool::{ToolContext, ToolResult, Toolable};
 
-/// Persistent task management. The agent can create, update, list, and get tasks.
+/// Persistent task management backed by a directory on disk. Lets an agent
+/// create, update, list, and claim tasks; tasks survive process restarts and
+/// can be shared across peers pointing at the same directory.
 pub struct TaskTool {
     store: Arc<Mutex<TaskStore>>,
 }
 
 impl TaskTool {
+    /// A new task tool storing entries under `data_dir/tasks`.
     pub fn new(data_dir: &Path) -> Self {
         Self {
             store: Arc::new(Mutex::new(TaskStore::new(data_dir, "tasks"))),

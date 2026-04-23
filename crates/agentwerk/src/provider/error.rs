@@ -155,7 +155,7 @@ pub enum RequestErrorKind {
     ResponseMalformed,
 }
 
-/// Result alias for [`Provider`](super::r#trait::Provider) calls.
+/// Result alias for [`Provider`](super::Provider) calls.
 pub type ProviderResult<T> = std::result::Result<T, ProviderError>;
 
 #[cfg(test)]

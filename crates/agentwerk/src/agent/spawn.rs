@@ -91,9 +91,9 @@ impl AgentHandle {
 /// Future that resolves to the agent's final
 /// [`Output`](crate::agent::Output).
 ///
-/// The future does not own a [`LifeToken`]: only [`AgentHandle`] clones do.
-/// Dropping this future just abandons the result; whether the loop keeps
-/// running is decided by whether any handles remain.
+/// Only [`AgentHandle`] clones keep the agent alive; dropping this future
+/// just abandons the result. Whether the loop keeps running is decided by
+/// whether any handles remain.
 pub struct OutputFuture {
     join: Mutex<Option<JoinHandle<Result<Output>>>>,
 }
@@ -113,9 +113,7 @@ impl Future for OutputFuture {
         let mut guard = self.join.lock().unwrap();
         let join = match guard.as_mut() {
             Some(j) => j,
-            None => {
-                return Poll::Ready(Err(AgentError::PolledAfterCompletion.into()))
-            }
+            None => return Poll::Ready(Err(AgentError::PolledAfterCompletion.into())),
         };
         let pinned = Pin::new(join);
         match pinned.poll(cx) {
@@ -127,7 +125,7 @@ impl Future for OutputFuture {
             Poll::Ready(Err(e)) => {
                 *guard = None;
                 Poll::Ready(Err(
-                    ConfigError::Invalid(format!("agent task failed: {e}")).into(),
+                    ConfigError::Invalid(format!("agent task failed: {e}")).into()
                 ))
             }
         }

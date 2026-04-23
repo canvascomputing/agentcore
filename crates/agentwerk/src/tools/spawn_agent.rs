@@ -12,11 +12,13 @@ use crate::tools::error::ToolError;
 use crate::tools::tool::{ToolContext, ToolResult, Toolable};
 use crate::util::generate_agent_name;
 
-/// Default identity for ad-hoc sub-agents (when the LLM doesn't supply one).
+/// Default identity for ad-hoc sub-agents (when the model doesn't supply one).
 const DEFAULT_IDENTITY: &str = "You are a focused helper agent. Answer concisely.";
 
-/// LLM-facing tool that spawns a sub-agent. Carries no state — every per-call
-/// detail (caller's `LoopRuntime`, `LoopSpec`) flows in via `ToolContext`.
+/// Spawn a sub-agent and return its [`Output`](crate::Output). Auto-registered
+/// when an agent declares `.sub_agents([...])`. The sub-agent inherits the
+/// caller's provider, model, working directory, event handler, and cancel
+/// signal; tools and prompts come from the registered template.
 pub struct SpawnAgentTool;
 
 /// Tool-control fields. Per-agent config overrides (identity, model, max_*, …)

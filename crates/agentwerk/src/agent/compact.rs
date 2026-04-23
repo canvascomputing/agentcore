@@ -1,15 +1,20 @@
 //! Context-window compaction seam. Decides when a conversation is too big for the model and hands off to the compaction strategy.
 
+use crate::agent::error::AgentError;
 use crate::agent::event::{Event, EventKind};
 use crate::agent::r#loop::{LoopRuntime, LoopState};
 use crate::agent::spec::AgentSpec;
-use crate::agent::error::AgentError;
 use crate::error::Result;
 use crate::provider::types::{ContentBlock, Message};
 
+/// Why context compaction fired.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactReason {
+    /// Estimated next-request tokens crossed the model's compact threshold
+    /// before sending; compaction ran ahead of any failure.
     Proactive,
+    /// A request failed mid-run with a context-overflow error from the
+    /// provider; compaction ran in response.
     Reactive,
 }
 

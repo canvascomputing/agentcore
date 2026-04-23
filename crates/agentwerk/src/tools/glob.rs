@@ -10,6 +10,8 @@ use serde_json::Value;
 use crate::error::Result;
 use crate::tools::tool::{ToolContext, ToolResult, Toolable};
 
+/// Find files matching a glob pattern under the working directory. Read-only.
+/// Sorted by modification time (newest first); capped at 200 results.
 pub struct GlobTool;
 
 const MAX_RESULTS: usize = 200;

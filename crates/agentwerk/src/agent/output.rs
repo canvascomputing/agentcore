@@ -1,4 +1,4 @@
-//! Final payload of an agent run — response text, status, statistics, and optional structured-output validation.
+//! Final payload of an agent run: response text, status, statistics, and optional structured-output validation.
 
 use std::fmt;
 
@@ -7,10 +7,10 @@ use serde_json::Value;
 /// Why the agent loop exited.
 ///
 /// Distinct from [`crate::provider::types::ResponseStatus`], which describes
-/// what the LLM API reported. `Status` describes the agent-level outcome.
+/// what the provider reported. `Status` describes the agent-level outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
-    /// Model chose to stop — responded without tool calls (`EndTurn`).
+    /// The model chose to stop: it responded without tool calls (`EndTurn`).
     Completed,
     /// External cancel signal was set.
     Cancelled,
@@ -22,25 +22,44 @@ pub enum Status {
     OutputBudgetExhausted { usage: u64, limit: u64 },
 }
 
+/// Per-run counters covering token usage, provider requests, tool calls,
+/// and agentic loop turns. Zero-initialized via [`Statistics::default`].
 #[derive(Debug, Clone, Default)]
 pub struct Statistics {
+    /// Cumulative input tokens across every provider request this run.
     pub input_tokens: u64,
+    /// Cumulative output tokens across every provider request this run.
     pub output_tokens: u64,
+    /// Number of provider requests made.
     pub requests: u64,
+    /// Number of tool calls invoked.
     pub tool_calls: u64,
+    /// Number of agentic loop turns executed.
     pub turns: u32,
 }
 
+/// The result of an agent run.
+///
+/// `response_raw` always holds the model's final reply text. `response` is
+/// `Some` only when an [`Agent::output_schema`](crate::Agent::output_schema)
+/// was set and the reply parsed and validated against it.
 #[derive(Debug, Clone)]
 pub struct Output {
+    /// Name of the agent that produced this output.
     pub name: String,
+    /// Validated JSON when an output schema is configured; `None` otherwise.
     pub response: Option<Value>,
+    /// The model's final reply text, before any schema validation.
     pub response_raw: String,
+    /// Counters covering the run.
     pub statistics: Statistics,
+    /// Why the loop exited.
     pub status: Status,
 }
 
 impl Output {
+    /// An empty placeholder with default statistics and [`Status::Completed`].
+    /// Useful in tests and as a neutral fallback.
     pub fn empty() -> Self {
         Self {
             name: String::new(),

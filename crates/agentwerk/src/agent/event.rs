@@ -12,7 +12,7 @@ use crate::provider::RequestErrorKind;
 /// Events are an out-of-band observation channel, distinct from the
 /// `Result<Output, Error>` returned by `.run()`. Observers (loggers, UIs,
 /// tracers) receive the event stream; the caller of `.run()` receives the
-/// final result. The stream ending is not a success signal — check the result.
+/// final result. The stream ending is not a success signal: check the result.
 ///
 /// Terminal-path invariants (verified in the loop):
 /// - `AgentFinished` fires only on `Ok` return paths: successful completion
@@ -20,12 +20,14 @@ use crate::provider::RequestErrorKind;
 ///   `InputBudgetExhausted`, `OutputBudgetExhausted`, `Cancelled`).
 /// - `Err(...)` return paths do **not** emit `AgentFinished`. The last event
 ///   on an error path is `RequestFailed`.
-/// - `ToolCallFailed` is never terminal for the run — more events follow as
+/// - `ToolCallFailed` is never terminal for the run: more events follow as
 ///   the agent continues. The tool's error string goes back to the model as
 ///   a tool-result message.
 #[derive(Debug, Clone)]
 pub struct Event {
+    /// Name of the agent that produced this event.
     pub agent_name: String,
+    /// What happened.
     pub kind: EventKind,
 }
 
@@ -103,77 +105,79 @@ impl Event {
     }
 }
 
+/// What an [`Event`] reports. Variants are grouped by lifecycle (`Agent*`),
+/// turn (`Turn*`, `Request*`), tool (`ToolCall*`), context (`OutputTruncated`,
+/// `ContextCompacted`, `*BudgetExhausted`), and pause/resume.
 #[derive(Debug, Clone)]
 pub enum EventKind {
-    AgentStarted {
-        description: Option<String>,
-    },
-    AgentFinished {
-        turns: u32,
-        status: Status,
-    },
-    TurnStarted {
-        turn: u32,
-    },
-    TurnFinished {
-        turn: u32,
-    },
+    /// Agent run began. `description` is set for sub-agents (the parent's
+    /// human-readable label for the spawn) and `None` for root runs.
+    AgentStarted { description: Option<String> },
+    /// Agent run finished on an `Ok` path. `turns` is the loop iteration
+    /// count; `status` is the exit reason.
+    AgentFinished { turns: u32, status: Status },
+    /// Agentic loop turn began.
+    TurnStarted { turn: u32 },
+    /// Agentic loop turn finished.
+    TurnFinished { turn: u32 },
+    /// Tool invocation began.
     ToolCallStarted {
         tool_name: String,
         call_id: String,
         input: serde_json::Value,
     },
+    /// Tool invocation succeeded.
     ToolCallFinished {
         tool_name: String,
         call_id: String,
         output: String,
     },
+    /// Tool invocation failed. The error is sent back to the model as a
+    /// tool-result message; the run continues.
     ToolCallFailed {
         tool_name: String,
         call_id: String,
         message: String,
     },
-    TokensReported {
-        model: String,
-        usage: TokenUsage,
-    },
-    TextChunkReceived {
-        content: String,
-    },
-    RequestStarted {
-        model: String,
-    },
-    RequestFinished {
-        model: String,
-    },
+    /// Provider reported token counts for the last request.
+    TokensReported { model: String, usage: TokenUsage },
+    /// A streamed text chunk arrived from the provider.
+    TextChunkReceived { content: String },
+    /// Provider request began.
+    RequestStarted { model: String },
+    /// Provider request finished.
+    RequestFinished { model: String },
+    /// A transient provider error triggered a retry. `attempt` is the upcoming
+    /// attempt number out of `max_attempts`; `kind` classifies the failure.
     RequestRetried {
         attempt: u32,
         max_attempts: u32,
         kind: RequestErrorKind,
         message: String,
     },
+    /// Provider request failed after exhausting retries. The run returns
+    /// `Err(...)`; no `AgentFinished` follows.
     RequestFailed {
         kind: RequestErrorKind,
         message: String,
     },
-    OutputTruncated {
-        turn: u32,
-    },
+    /// The model's response was cut off at the configured length cap.
+    OutputTruncated { turn: u32 },
+    /// Conversation history was compacted to stay within the model's window.
     ContextCompacted {
         turn: u32,
         token_count: u64,
         threshold: u64,
         reason: CompactReason,
     },
-    InputBudgetExhausted {
-        usage: u64,
-        limit: u64,
-    },
-    OutputBudgetExhausted {
-        usage: u64,
-        limit: u64,
-    },
+    /// Cumulative input tokens crossed `max_input_tokens`; the run stops.
+    InputBudgetExhausted { usage: u64, limit: u64 },
+    /// Cumulative output tokens crossed `max_output_tokens`; the run stops.
+    OutputBudgetExhausted { usage: u64, limit: u64 },
+    /// A keep-alive agent finished its current instruction and is parked
+    /// waiting for the next message.
     AgentPaused,
+    /// A keep-alive agent received a new instruction and resumed.
     AgentResumed,
 }
 

@@ -1,4 +1,4 @@
-//! Lets an agent enumerate the contents of a directory — the first step of any exploratory task against an unknown layout.
+//! Lets an agent enumerate the contents of a directory: the first step of any exploratory task against an unknown layout.
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -9,6 +9,8 @@ use serde_json::Value;
 use crate::error::Result;
 use crate::tools::tool::{ToolContext, ToolResult, Toolable};
 
+/// List the entries of a directory with type and size. Read-only. Pair with
+/// [`GlobTool`](crate::GlobTool) when you need pattern-based file discovery.
 pub struct ListDirectoryTool;
 
 const DESCRIPTION: &str = "\

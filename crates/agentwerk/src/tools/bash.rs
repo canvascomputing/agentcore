@@ -10,7 +10,27 @@ use crate::error::Result;
 use crate::tools::tool::{ToolContext, ToolResult, Toolable};
 use crate::tools::util::{glob_match, run_shell_command};
 
-/// Shell command execution tool restricted to commands matching a glob pattern.
+/// Execute shell commands. Two constructors:
+/// [`BashTool::new`] restricts execution to commands matching a glob pattern;
+/// [`BashTool::unrestricted`] allows any command. Not read-only.
+///
+/// # Examples
+///
+/// Pattern-restricted (only `git ...` commands):
+///
+/// ```
+/// use agentwerk::{Agent, BashTool};
+///
+/// Agent::new().tool(BashTool::new("git", "git *"));
+/// ```
+///
+/// Unrestricted:
+///
+/// ```
+/// use agentwerk::{Agent, BashTool};
+///
+/// Agent::new().tool(BashTool::unrestricted());
+/// ```
 pub struct BashTool {
     pattern: String,
     tool_name: String,

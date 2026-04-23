@@ -28,8 +28,9 @@ Fetches content from a specified URL and returns it as text.
 - When a URL redirects to a different host, the tool will report the redirect URL instead of following it. \
   Make a new request with the redirect URL to fetch the content.";
 
-// -- Toolable impl ------------------------------------------------------------
-
+/// Fetch a URL and return its content as text. Read-only. HTML is converted
+/// to plain text; HTTP is upgraded to HTTPS; cross-host redirects are
+/// surfaced rather than followed.
 pub struct WebFetchTool;
 
 impl Toolable for WebFetchTool {

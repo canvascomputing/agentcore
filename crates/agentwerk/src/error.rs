@@ -16,7 +16,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// that lives beside the code raising it.
 #[derive(Debug)]
 pub enum Error {
-    /// LLM provider call failures (pre-response HTTP / transport / parse).
+    /// Provider call failures (pre-response HTTP, transport, or parse).
     Provider(ProviderError),
     /// Run-lifecycle failures: cancellation, internal stubs, lifecycle misuse.
     Agent(AgentError),

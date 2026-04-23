@@ -1,4 +1,4 @@
-//! Core tool infrastructure — the `Toolable` trait, the ad-hoc `Tool` struct, and the registry the loop consults before each provider call.
+//! Core tool infrastructure: the `Toolable` trait, the ad-hoc `Tool` struct, and the registry the loop consults before each provider call.
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -14,11 +14,14 @@ use crate::agent::{AgentSpec, LoopRuntime};
 use crate::error::Result;
 use crate::provider::types::ContentBlock;
 
-/// Context passed to tool execution. `runtime` and `caller_spec` are ambient internals —
-/// `SpawnAgentTool` and `ToolSearchTool` read them to reach the run's provider / handlers /
-/// queue and to inherit the caller's resolved model; external tool authors do not use them.
+/// Context passed to tool execution. `runtime` and `caller_spec` are ambient
+/// internals: `SpawnAgentTool` and `ToolSearchTool` read them to reach the
+/// run's provider, handlers, and queue, and to inherit the caller's resolved
+/// model. External tool authors do not use them.
 #[derive(Clone)]
 pub struct ToolContext {
+    /// Working directory the tool runs in. Tools that touch the filesystem
+    /// should resolve relative paths against this.
     pub working_directory: PathBuf,
     pub(crate) tool_registry: Option<Arc<ToolRegistry>>,
     pub(crate) runtime: Option<Arc<LoopRuntime>>,
@@ -27,6 +30,9 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
+    /// A fresh context rooted at `working_directory`, with no runtime or
+    /// caller spec. Tools that call sub-agents or search the registry need a
+    /// context installed by the loop; bare contexts are for standalone use.
     pub fn new(working_directory: PathBuf) -> Self {
         Self {
             working_directory,
@@ -84,34 +90,47 @@ impl std::fmt::Debug for ToolContext {
     }
 }
 
-/// Definition sent to the LLM as part of the tools parameter.
+/// Tool definition sent to the provider as part of the `tools` parameter.
+/// Built from a [`Toolable`]'s `name`, `description`, and `input_schema`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
+    /// Unique name the model uses when calling the tool.
     pub name: String,
+    /// Human-readable description shown to the model.
     pub description: String,
+    /// JSON Schema describing the tool's arguments.
     pub input_schema: Value,
 }
 
-/// A tool call extracted from an LLM response.
+/// A tool call extracted from a provider response.
 #[derive(Debug, Clone)]
 pub struct ToolCall {
+    /// Provider-assigned call id, echoed back in the tool result block.
     pub id: String,
+    /// Name of the tool the model chose.
     pub name: String,
+    /// Arguments the model supplied, conforming to the tool's input schema.
     pub input: Value,
 }
 
-/// Outcome of a tool execution — a success payload or an error message.
+/// Outcome of a tool execution: a success payload or an error message. Both
+/// variants flow back to the model as ordinary content — [`ToolResult::Error`]
+/// lets the model correct its arguments and try again.
 #[derive(Debug, Clone)]
 pub enum ToolResult {
+    /// Tool ran and produced this text payload.
     Success(String),
+    /// Tool failed; the message is shown to the model so it can recover.
     Error(String),
 }
 
 impl ToolResult {
+    /// Build a successful result from a text payload.
     pub fn success(content: impl Into<String>) -> Self {
         Self::Success(content.into())
     }
 
+    /// Build an error result. The message is visible to the model.
     pub fn error(content: impl Into<String>) -> Self {
         Self::Error(content.into())
     }
@@ -119,32 +138,49 @@ impl ToolResult {
 
 /// The core tool interface. Object-safe via boxed futures.
 ///
-/// Implement this on any type you want an agent to be able to invoke. For ad-hoc
-/// tools defined inline, use the concrete [`Tool`] struct instead — it implements
-/// `Toolable` for you.
+/// Implement this on any type you want an agent to be able to invoke. For
+/// ad-hoc tools defined inline, use the concrete [`Tool`] struct instead: it
+/// implements `Toolable` for you.
 pub trait Toolable: Send + Sync {
+    /// Unique name the model uses to call the tool.
     fn name(&self) -> &str;
+
+    /// Human-readable description shown to the model.
     fn description(&self) -> &str;
+
+    /// JSON Schema describing the tool's arguments.
     fn input_schema(&self) -> Value;
 
+    /// Whether this tool has no side effects. Read-only tools in the same
+    /// turn run concurrently; non-read-only tools run serially. Default: `false`.
     fn is_read_only(&self) -> bool {
         false
     }
 
+    /// Whether the tool's full definition is hidden until it is discovered
+    /// via [`ToolSearchTool`](crate::ToolSearchTool). Deferred tools appear
+    /// to the model as name-only stubs. Default: `false`.
     fn should_defer(&self) -> bool {
         false
     }
 
+    /// Extra keywords used by [`ToolSearchTool`](crate::ToolSearchTool) to
+    /// rank this tool against a query. Default: empty.
     fn search_hints(&self) -> Vec<String> {
         Vec::new()
     }
 
+    /// Run the tool. The future is held by the agent loop and dropped on
+    /// cancellation; pair long-running work with [`ToolContext::wait_for_cancel`]
+    /// in a `tokio::select!` to drop the losing branch promptly.
     fn call<'a>(
         &'a self,
         input: Value,
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>>;
 
+    /// Assemble the tool's wire definition from `name`, `description`, and
+    /// `input_schema`. Override only when you need to customize the wire shape.
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
@@ -181,8 +217,8 @@ impl ToolRegistry {
         self.tools.iter().find(|t| t.name() == name).cloned()
     }
 
-    /// Tool definitions for the LLM. Deferred tools that haven't been
-    /// discovered yet get name-only stubs; all others get full definitions.
+    /// Tool definitions sent to the provider. Deferred tools that haven't
+    /// been discovered yet get name-only stubs; all others get full definitions.
     pub(crate) fn definitions(&self, discovered: &HashSet<String>) -> Vec<ToolDefinition> {
         self.tools
             .iter()
@@ -204,7 +240,7 @@ impl ToolRegistry {
     /// execution.
     ///
     /// Returns `(ContentBlock, ToolResult)` pairs so the caller can read both
-    /// the LLM-visible result block and any `ToolResult` side-effects
+    /// the model-visible result block and any `ToolResult` side-effects
     /// (structured output capture, discovered tool names) without dispatching
     /// on tool names.
     pub(crate) async fn execute(
@@ -349,6 +385,8 @@ pub struct Tool {
 }
 
 impl Tool {
+    /// A new tool with an empty-object input schema and no handler. Set the
+    /// handler with [`Tool::handler`] before handing the tool to an agent.
     pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -361,26 +399,34 @@ impl Tool {
         }
     }
 
+    /// Replace the input schema. Defaults to an empty-object schema.
     pub fn schema(mut self, schema: Value) -> Self {
         self.schema = schema;
         self
     }
 
+    /// Mark the tool read-only so the loop runs it concurrently with other
+    /// read-only calls in the same turn.
     pub fn read_only(mut self, read_only: bool) -> Self {
         self.read_only = read_only;
         self
     }
 
+    /// Hide the tool's full definition until it is discovered via
+    /// [`ToolSearchTool`](crate::ToolSearchTool).
     pub fn defer(mut self, defer: bool) -> Self {
         self.defer = defer;
         self
     }
 
+    /// Extra keywords used when ranking the tool against a search query.
     pub fn hints(mut self, hints: Vec<String>) -> Self {
         self.hints = hints;
         self
     }
 
+    /// Install the closure that runs when the model calls this tool.
+    /// Required: omitting this causes the first invocation to panic.
     pub fn handler<F>(mut self, f: F) -> Self
     where
         F: Fn(Value, &ToolContext) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + '_>>

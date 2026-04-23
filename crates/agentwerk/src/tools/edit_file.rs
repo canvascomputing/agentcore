@@ -8,6 +8,9 @@ use serde_json::Value;
 use crate::error::Result;
 use crate::tools::tool::{ToolContext, ToolResult, Toolable};
 
+/// In-place string replacement in an existing file. The model supplies the
+/// old and new strings; the tool fails if the old string is absent or
+/// matches more than once. Not read-only.
 pub struct EditFileTool;
 
 const DESCRIPTION: &str = "\

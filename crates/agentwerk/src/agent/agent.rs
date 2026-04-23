@@ -22,13 +22,33 @@ use super::queue::CommandQueue;
 use super::r#loop::{run_loop, LoopRuntime, LoopState};
 use super::spec::{build_context_prompt, AgentSpec};
 
-/// An LLM-powered agent. Cheap to clone (internally `Arc`-wrapped spec + a
-/// handful of small per-run fields).
+/// An agent. Cheap to clone: internally an `Arc`-wrapped spec plus a handful
+/// of small per-run fields.
 ///
-/// Build with `Agent::new()` and chain builder methods; call `.run()` to
-/// execute. The same `Agent` can be `run()` multiple times. Cloning an agent
-/// and mutating per-run fields (e.g. `.instruction_prompt`) does not clone
-/// the static template (tools, sub-agents, behavior prompts).
+/// Build with `Agent::new()`, chain configurations, then call `.run()`. The
+/// same agent can be cloned and run again with a new instruction; the static
+/// template (tools, sub-agents, behavior prompts) is shared, the per-run
+/// fields are not.
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::Arc;
+/// use agentwerk::Agent;
+/// use agentwerk::testutil::MockProvider;
+///
+/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+/// let provider = Arc::new(MockProvider::text("Hello!"));
+///
+/// let agent = Agent::new()
+///     .provider(provider)
+///     .model_name("claude-sonnet-4-20250514")
+///     .identity_prompt("You are a helpful assistant.");
+///
+/// let first = agent.clone().instruction_prompt("Greet me.").run().await.unwrap();
+/// assert_eq!(first.response_raw, "Hello!");
+/// # });
+/// ```
 #[derive(Clone)]
 pub struct Agent {
     pub(crate) spec: Arc<AgentSpec>,
@@ -76,6 +96,8 @@ impl Agent {
     /// Default base delay for the exponential-backoff retry policy.
     pub const DEFAULT_REQUEST_RETRY_DELAY: Duration = AgentSpec::DEFAULT_REQUEST_RETRY_DELAY;
 
+    /// A fresh agent with a generated `name`, no provider, no tools, and no
+    /// prompts. Chain builder methods to configure, then call `.run()`.
     pub fn new() -> Self {
         Self::default()
     }
@@ -133,7 +155,7 @@ impl Agent {
         self.with_spec(|c| c.identity_prompt = s)
     }
 
-    /// Maximum output tokens per LLM request (serialized as `max_tokens` on the
+    /// Maximum output tokens per request (serialized as `max_tokens` on the
     /// wire). Omit to use the provider default.
     pub fn max_request_tokens(self, n: u32) -> Self {
         self.with_spec(|c| c.max_request_tokens = Some(n))
@@ -221,13 +243,15 @@ impl Agent {
         self.with_spec(|c| c.context_prompts.push(content))
     }
 
-    /// Register one or more agents as sub-agents. The LLM can call them by
+    /// Register one or more agents as sub-agents. The model can call them by
     /// name once this agent runs.
     pub fn sub_agents(self, agents: impl IntoIterator<Item = Agent>) -> Self {
         let agents: Vec<_> = agents.into_iter().collect();
         self.with_spec(|c| c.sub_agents.extend(agents))
     }
 
+    /// Install the provider this agent calls out to. See
+    /// [`Agent::provider_from_env`] for detection from environment variables.
     pub fn provider(mut self, p: Arc<dyn Provider>) -> Self {
         self.provider = Some(p);
         self
@@ -262,16 +286,23 @@ impl Agent {
         self
     }
 
+    /// Bind `{key}` to `value`; every `{key}` placeholder in the identity,
+    /// instruction, context, and behavior prompts is replaced before the run.
     pub fn template_variable(mut self, key: impl Into<String>, value: Value) -> Self {
         self.template_variables.insert(key.into(), value);
         self
     }
 
+    /// Working directory surfaced to tools via [`crate::ToolContext`] and to
+    /// the environment prompt. Defaults to the process's current directory.
     pub fn working_directory(mut self, d: impl Into<PathBuf>) -> Self {
         self.working_directory = Some(d.into());
         self
     }
 
+    /// Observe loop activity. The handler is called once per [`Event`]; it
+    /// should be cheap and non-blocking. Without a handler the default stderr
+    /// logger is installed; use [`Agent::silent`] to drop events entirely.
     pub fn event_handler(mut self, h: Arc<dyn Fn(Event) + Send + Sync>) -> Self {
         self.event_handler = Some(h);
         self
@@ -284,6 +315,8 @@ impl Agent {
         self
     }
 
+    /// Share a cancel flag. Set it to `true` to stop the loop at the next
+    /// safe point; the run returns with [`crate::Status::Cancelled`].
     pub fn cancel_signal(mut self, s: Arc<AtomicBool>) -> Self {
         self.cancel_signal = Some(s);
         self
@@ -308,7 +341,11 @@ impl Agent {
         &self.spec.name
     }
 
-    /// Execute this agent to completion. Requires `.provider()` and `.instruction_prompt()`.
+    /// Drive the agentic loop to completion and return the agent's output.
+    ///
+    /// Requires `.provider()` (or [`Agent::provider_from_env`]), `.model_name()`
+    /// (or [`Agent::model_from_env`]), and `.instruction_prompt()`. The agent
+    /// may be run again after this returns: the static template is preserved.
     pub async fn run(&self) -> Result<Output> {
         let (spec, runtime) = self.compile(None)?;
         let runtime = Arc::new(runtime);

@@ -1,4 +1,4 @@
-.PHONY: build test test_integration fmt clean update use_case litellm bump
+.PHONY: build test test_integration fmt clean update use_case litellm bump doc
 
 # Build the project (warnings are errors)
 build: fmt
@@ -17,6 +17,11 @@ ifdef name
 else
 	RUSTFLAGS="-D warnings" cargo test --test integration -- --nocapture --test-threads=1
 endif
+
+# Build rustdoc (warnings are errors; broken intra-doc links fail)
+doc:
+	RUSTDOCFLAGS="-D warnings -D rustdoc::broken-intra-doc-links -D rustdoc::private-intra-doc-links" \
+	  cargo doc --no-deps -p agentwerk
 
 # Format all code
 fmt:

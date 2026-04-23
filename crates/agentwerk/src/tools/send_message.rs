@@ -24,11 +24,10 @@ you. The recipient sees your agent name as the sender; you do not pass it.
 - To spawn a new agent — use spawn_agent instead.
 - To return a result to your caller — just finish your turn normally.";
 
-/// LLM-facing tool that delivers a message to a peer agent in the same
-/// run-tree. Delivery goes through the shared `CommandQueue` and is
-/// injected into the recipient's next turn by `drain_command_queue`. If no
-/// agent with the given name is running, the message sits in the queue
-/// indefinitely — the caller is responsible for using a correct name.
+/// Deliver a message to a peer agent in the same run-tree. Routes through
+/// the shared command queue and is injected into the recipient's next turn.
+/// If no agent with the given name is running, the message sits in the queue
+/// indefinitely; the caller is responsible for using a correct name.
 pub struct SendMessageTool;
 
 #[derive(Deserialize)]

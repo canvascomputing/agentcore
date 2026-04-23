@@ -10,6 +10,9 @@ use crate::error::Result;
 use crate::tools::tool::{ToolContext, ToolResult, Toolable};
 use crate::tools::util::glob_match;
 
+/// Search file contents by substring under the working directory. Read-only.
+/// Returns matching line snippets with file paths and line numbers; capped
+/// at 100 hits by default.
 pub struct GrepTool;
 
 const DEFAULT_MAX_RESULTS: u64 = 100;

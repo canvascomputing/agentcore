@@ -1,4 +1,4 @@
-//! The `Provider` trait every LLM backend implements, plus the request shape callers pass in. The one seam between the agent loop and any particular LLM API.
+//! The `Provider` trait every backend implements, plus the request shape callers pass in. The one seam between the agent loop and any particular vendor API.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -11,23 +11,64 @@ use super::error::ProviderResult;
 use super::types::{CompletionResponse, Message, StreamEvent};
 use crate::tools::tool::ToolDefinition;
 
+/// One request to a provider. Built by the agent loop from the agent's
+/// configuration and the running conversation; passed to [`Provider::complete`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionRequest {
+    /// Model name (e.g. `claude-sonnet-4-20250514`).
     pub model: String,
+    /// System prompt assembled from identity, behavior, and environment.
     pub system_prompt: String,
+    /// Conversation history including the latest user input.
     pub messages: Vec<Message>,
+    /// Tool definitions available to the model this turn.
     pub tools: Vec<ToolDefinition>,
+    /// Cap on output tokens for this single request. `None` lets the
+    /// provider apply its default.
     pub max_request_tokens: Option<u32>,
+    /// Constraint on which tool the model may pick this turn.
     pub tool_choice: Option<ToolChoice>,
 }
 
+/// Constraint on which tool the model may pick on a given turn.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolChoice {
+    /// The model picks freely (or replies without a tool call).
     Auto,
+    /// Force the model to call this tool.
     Specific { name: String },
 }
 
-/// Core LLM provider trait. Object-safe via boxed futures.
+/// Core provider trait every backend implements. Object-safe via boxed futures.
+///
+/// Build a provider with one of the vendor constructors
+/// ([`AnthropicProvider`](crate::AnthropicProvider),
+/// [`OpenAiProvider`](crate::OpenAiProvider),
+/// [`MistralProvider`](crate::MistralProvider),
+/// [`LiteLlmProvider`](crate::LiteLlmProvider)) or pick one from the
+/// environment with [`from_env`](crate::provider::from_env).
+///
+/// # Examples
+///
+/// Pick a provider from environment variables and hand it to an agent:
+///
+/// ```no_run
+/// use agentwerk::Agent;
+///
+/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+/// let output = Agent::new()
+///     .provider_from_env()
+///     .unwrap()
+///     .model_from_env()
+///     .unwrap()
+///     .instruction_prompt("Summarize the project.")
+///     .run()
+///     .await
+///     .unwrap();
+///
+/// println!("{}", output.response_raw);
+/// # });
+/// ```
 pub trait Provider: Send + Sync {
     /// One-shot completion. Returns the full response after the model stops.
     fn complete(
@@ -51,14 +92,14 @@ pub trait Provider: Send + Sync {
         })
     }
 
-    /// Warm the TCP+TLS connection pool before the first API request.
+    /// Warm the TCP+TLS connection pool before the first request.
     ///
     /// Called automatically by the agent loop before the first turn. Sends
     /// a fire-and-forget HEAD request to the provider's base URL so the
     /// TLS handshake (~100-200 ms) overlaps with agent startup, letting
-    /// the first real LLM call reuse the already-established connection.
+    /// the first real request reuse the already-established connection.
     ///
-    /// Default implementation is a no-op — override in providers that own
+    /// Default implementation is a no-op: override in providers that own
     /// a `reqwest::Client` and call `prewarm_with` from there.
     fn prewarm(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async {})

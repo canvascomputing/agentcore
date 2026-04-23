@@ -1,4 +1,49 @@
-//! agentwerk: build LLM-powered agents as small function-call-shaped units, composed from prompts, tools, and a shared execution loop.
+//! A minimal core for agentic applications: build agents as small,
+//! function-call-shaped units.
+//!
+//! [`Agent`] is the entry point. Build with `Agent::new()`, chain
+//! configurations, then call `.run()`. The same agent can be cloned and run
+//! again with a new instruction: the static template (tools, sub-agents,
+//! behavior prompts) is shared, the per-run fields are not.
+//!
+//! # Quick start
+//!
+//! ```
+//! use std::sync::Arc;
+//! use agentwerk::Agent;
+//! use agentwerk::testutil::MockProvider;
+//!
+//! # tokio::runtime::Runtime::new().unwrap().block_on(async {
+//! let provider = Arc::new(MockProvider::text("done"));
+//!
+//! let output = Agent::new()
+//!     .provider(provider)
+//!     .model_name("claude-sonnet-4-20250514")
+//!     .instruction_prompt("Find all Rust source files.")
+//!     .run()
+//!     .await
+//!     .unwrap();
+//!
+//! assert_eq!(output.response_raw, "done");
+//! # });
+//! ```
+//!
+//! For a runnable example against a real provider, see the README's Quick Start.
+//!
+//! # Where to look
+//!
+//! | Module | Purpose | Headline type |
+//! |---|---|---|
+//! | [`agent`] | Build and run agents; observe events; validate output | [`Agent`] |
+//! | [`provider`] | Anthropic, OpenAI, Mistral, LiteLLM | [`Provider`] |
+//! | [`tools`] | Built-in tools and the trait for custom ones | [`Toolable`] |
+//! | [`error`] | The single error type every fallible call returns | [`Error`] |
+//!
+//! # Crate conventions
+//!
+//! - Every fallible call returns [`Result`] (alias for `Result<T, Error>`).
+//! - The loop emits [`Event`]s; observers, not hooks.
+//! - Agents are cheap to clone and may be `.run()` again.
 
 pub mod agent;
 pub mod config;

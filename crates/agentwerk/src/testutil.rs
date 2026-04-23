@@ -1,4 +1,9 @@
-//! Mock provider, mock tool, and test harness that let unit tests drive the agent loop without reaching a live LLM.
+//! Mock provider, mock tool, and test harness that let unit tests drive the agent loop without reaching a live provider.
+//!
+//! These types are also intended for doctests across the crate: prefer
+//! [`MockProvider`] over `no_run` whenever an example can run hermetically.
+//! Use `no_run` only when the example must show real provider selection
+//! (e.g. [`crate::Agent::provider_from_env`]).
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
@@ -16,10 +21,11 @@ use crate::provider::types::{
 use crate::provider::{CompletionRequest, Provider, ProviderError, ProviderResult};
 use crate::tools::{ToolContext, ToolResult, Toolable};
 
-/// A mock LLM provider that returns pre-configured responses in order.
+/// A mock provider that returns pre-configured responses in order.
 ///
-/// Use `new()` for simple response sequences, or `with_results()` to interleave
-/// errors and successes (useful for testing retry logic).
+/// Use [`MockProvider::new`] for simple response sequences, or
+/// [`MockProvider::with_results`] to interleave errors and successes (useful
+/// for testing retry logic).
 pub struct MockProvider {
     results: Mutex<VecDeque<ProviderResult<CompletionResponse>>>,
     pub requests: Mutex<Vec<CompletionRequest>>,

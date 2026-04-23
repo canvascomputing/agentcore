@@ -8,7 +8,10 @@ use serde_json::Value;
 use crate::error::Result;
 use crate::tools::tool::{ToolContext, ToolResult, Toolable};
 
-/// Tool that searches the tool registry by query string.
+/// Search the tool registry by query string. Pair with tools that set
+/// [`Toolable::should_defer`](crate::Toolable::should_defer) to `true`: the
+/// model sees only their names until it discovers them through this tool,
+/// keeping the initial system prompt small.
 pub struct ToolSearchTool;
 
 const DESCRIPTION: &str = "\

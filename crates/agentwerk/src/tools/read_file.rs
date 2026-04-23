@@ -8,6 +8,9 @@ use serde_json::Value;
 use crate::error::Result;
 use crate::tools::tool::{ToolContext, ToolResult, Toolable};
 
+/// Read a file with optional line offset and limit. Returns line-numbered
+/// text so the model can reference specific lines in subsequent edits.
+/// Read-only.
 pub struct ReadFileTool;
 
 const DESCRIPTION: &str = "\

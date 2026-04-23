@@ -143,7 +143,10 @@ fn format_event(e: &Event) -> Option<String> {
         } => Some(format!("tool   {tool_name} -> ok {}", truncate(output, 80))),
         EventKind::ToolCallFailed {
             tool_name, message, ..
-        } => Some(format!("tool   {tool_name} -> err {}", truncate(message, 80))),
+        } => Some(format!(
+            "tool   {tool_name} -> err {}",
+            truncate(message, 80)
+        )),
         EventKind::ContextCompacted {
             turn,
             token_count,

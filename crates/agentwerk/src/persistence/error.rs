@@ -10,10 +10,7 @@ pub enum PersistenceError {
     /// A task write was attempted on a task already marked completed.
     TaskAlreadyCompleted(String),
     /// A task is blocked by another task that has not yet completed.
-    TaskBlocked {
-        task_id: String,
-        blocker_id: String,
-    },
+    TaskBlocked { task_id: String, blocker_id: String },
     /// Acquiring the on-disk lock failed after the configured retry budget.
     LockFailed { attempts: u32 },
     /// Underlying filesystem I/O failed.
@@ -30,10 +27,7 @@ impl fmt::Display for PersistenceError {
             PersistenceError::TaskBlocked {
                 task_id,
                 blocker_id,
-            } => write!(
-                f,
-                "Task {task_id} blocked by unfinished task {blocker_id}"
-            ),
+            } => write!(f, "Task {task_id} blocked by unfinished task {blocker_id}"),
             PersistenceError::LockFailed { attempts } => {
                 write!(f, "Failed to acquire lock after {attempts} attempts")
             }
@@ -59,10 +53,7 @@ impl From<std::io::Error> for PersistenceError {
 
 impl From<serde_json::Error> for PersistenceError {
     fn from(err: serde_json::Error) -> Self {
-        PersistenceError::IoFailed(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            err,
-        ))
+        PersistenceError::IoFailed(std::io::Error::new(std::io::ErrorKind::InvalidData, err))
     }
 }
 
