@@ -33,10 +33,12 @@
 //! - **C. Tools and end-conditions** — tools run first, truncation defers, guards skip.
 //! - **D. Sub-agent boundary** — the propagation bug: registered, ad-hoc, and background.
 
+use agentwerk::provider::{ModelRequest, ContentBlock, Message};
 use agentwerk::testutil::{
     text_response, tool_response, truncated_response, MockProvider, MockTool, TestHarness,
 };
-use agentwerk::{Agent, CompletionRequest, ContentBlock, Error, Message, SpawnAgentTool};
+use agentwerk::tools::SpawnAgentTool;
+use agentwerk::{Agent, Error};
 
 fn answer_schema() -> serde_json::Value {
     serde_json::json!({
@@ -426,7 +428,7 @@ async fn missing_required_field_at_depth_triggers_retry() {
 }
 
 #[tokio::test]
-async fn retry_exhaustion_returns_schema_retry_exhausted() {
+async fn retry_exhaustion_returns_schema_exhausted() {
     // Cap retries at 2 → after 3 failures, the loop bails with the original
     // limit attached to the error.
     let provider = MockProvider::new(vec![
@@ -436,11 +438,16 @@ async fn retry_exhaustion_returns_schema_retry_exhausted() {
     ]);
     let agent = schema_agent().max_schema_retries(2);
     let harness = TestHarness::new(provider);
-    let err = harness.run_agent(&agent, "go").await.unwrap_err();
+    let output = harness.run_agent(&agent, "go").await.unwrap();
 
+    assert_eq!(output.outcome, agentwerk::output::Outcome::Failed);
     assert!(matches!(
-        err,
-        Error::Output(agentwerk::OutputError::SchemaRetryExhausted { retries: 2 })
+        output.errors.last(),
+        Some(Error::Agent(agentwerk::agent::AgentError::PolicyViolated {
+            kind: agentwerk::event::PolicyKind::SchemaRetries,
+            usage: 3,
+            limit: 2,
+        }))
     ));
 }
 
@@ -493,14 +500,14 @@ async fn validation_deferred_through_truncation() {
 #[tokio::test]
 async fn cancel_before_any_reply_skips_validation() {
     // Pre-cancelled run: check_guards fires on the first iteration; finish_early
-    // returns Status::Cancelled with response=None and never calls validate_value.
+    // returns Outcome::Cancelled with response=None and never calls validate_value.
     let provider = MockProvider::new(vec![text_response("would-be JSON if we got here")]);
     let harness = TestHarness::new(provider);
     harness.cancel();
     let output = harness.run_agent(&schema_agent(), "go").await.unwrap();
 
-    use agentwerk::Status;
-    assert_eq!(output.status, Status::Cancelled);
+    use agentwerk::output::Outcome;
+    assert_eq!(output.outcome, Outcome::Cancelled);
     assert_eq!(output.response, None);
     // No request was sent at all (guard fires before the first turn body).
     assert_eq!(harness.provider().request_count(), 0);
@@ -519,8 +526,8 @@ async fn turn_limit_skips_validation() {
     let harness = TestHarness::new(provider);
     let output = harness.run_agent(&agent, "go").await.unwrap();
 
-    use agentwerk::Status;
-    assert_eq!(output.status, Status::TurnLimitReached { limit: 1 });
+    use agentwerk::output::Outcome;
+    assert_eq!(output.outcome, Outcome::Failed);
     assert_eq!(output.response, None);
 }
 
@@ -628,6 +635,153 @@ async fn ad_hoc_spawned_agent_declares_schema_via_overrides() {
 // is unreachable, so an integration test would only duplicate coverage
 // while introducing tokio-spawn races between parent and child mock pops.)
 
+#[tokio::test]
+async fn schema_retry_emits_retried_event_per_attempt() {
+    use agentwerk::event::EventKind;
+
+    let provider = MockProvider::new(vec![
+        text_response("nope"),
+        text_response("still nope"),
+        text_response(VALID_JSON),
+    ]);
+    let agent = schema_agent().max_schema_retries(5);
+    let harness = TestHarness::new(provider);
+    let output = harness.run_agent(&agent, "go").await.unwrap();
+
+    assert_eq!(output.response, Some(serde_json::json!({"answer": 42})));
+
+    let retry_events: Vec<_> = harness
+        .events()
+        .all()
+        .into_iter()
+        .filter_map(|e| match e.kind {
+            EventKind::SchemaRetried {
+                attempt,
+                max_attempts,
+                ..
+            } => Some((attempt, max_attempts)),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        retry_events,
+        vec![(1, 5), (2, 5)],
+        "expected two retry events with increasing attempt numbers; got {retry_events:?}"
+    );
+}
+
+#[tokio::test]
+async fn output_truncation_emits_event_and_keeps_outcome_completed() {
+    use agentwerk::event::EventKind;
+
+    let provider = MockProvider::new(vec![
+        truncated_response("partial…"),
+        text_response("final answer"),
+    ]);
+    let agent = Agent::new()
+        .name("plain")
+        .model_name("mock")
+        .identity_prompt("")
+        .behavior_prompt("");
+    let harness = TestHarness::new(provider);
+    let output = harness.run_agent(&agent, "go").await.unwrap();
+
+    assert_eq!(output.outcome, agentwerk::output::Outcome::Completed);
+    assert_eq!(output.response_raw, "final answer");
+
+    let truncated: Vec<u32> = harness
+        .events()
+        .all()
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EventKind::OutputTruncated { turn } => Some(*turn),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        truncated,
+        vec![1],
+        "expected one OutputTruncated event on turn 1"
+    );
+}
+
+#[tokio::test]
+async fn turn_limit_emits_policy_violated_event() {
+    use agentwerk::event::{PolicyKind, EventKind};
+
+    // Turn 1 is truncated so the loop must enter turn 2, where the guard
+    // trips. max_turns(1) means state.turn >= 1 at the top of turn 2.
+    let provider = MockProvider::new(vec![
+        truncated_response("partial"),
+        text_response("unreached"),
+    ]);
+    let agent = Agent::new()
+        .name("capped")
+        .model_name("mock")
+        .identity_prompt("")
+        .behavior_prompt("")
+        .max_turns(1);
+    let harness = TestHarness::new(provider);
+    let output = harness.run_agent(&agent, "go").await.unwrap();
+
+    assert_eq!(output.outcome, agentwerk::output::Outcome::Failed);
+
+    let events = harness.events().all();
+    let policy_idx = events
+        .iter()
+        .position(|e| {
+            matches!(
+                e.kind,
+                EventKind::PolicyViolated {
+                    kind: PolicyKind::Turns,
+                    ..
+                }
+            )
+        })
+        .expect("expected PolicyViolated event with PolicyKind::Turns");
+    let finished_idx = events
+        .iter()
+        .position(|e| matches!(e.kind, EventKind::AgentFinished { .. }))
+        .expect("expected AgentFinished event");
+    assert!(
+        policy_idx < finished_idx,
+        "PolicyViolated must fire before AgentFinished"
+    );
+}
+
+#[tokio::test]
+async fn cancel_before_run_does_not_emit_request_failed() {
+    // A cancel signal set before the loop starts must produce
+    // Outcome::Cancelled with no RequestFailed event and no error entries.
+    use agentwerk::event::EventKind;
+
+    let provider = MockProvider::new(vec![text_response("unused")]);
+    let harness = TestHarness::new(provider);
+    harness.cancel();
+    let agent = Agent::new()
+        .name("ghost")
+        .model_name("mock")
+        .identity_prompt("")
+        .behavior_prompt("");
+    let output = harness.run_agent(&agent, "go").await.unwrap();
+
+    assert_eq!(output.outcome, agentwerk::output::Outcome::Cancelled);
+    assert!(
+        output.errors.is_empty(),
+        "cancel must leave Output.errors empty; got: {:?}",
+        output.errors
+    );
+    assert!(
+        !harness
+            .events()
+            .all()
+            .iter()
+            .any(|e| matches!(e.kind, EventKind::RequestFailed { .. })),
+        "RequestFailed must not fire on cancellation"
+    );
+}
+
 fn schema_agent() -> Agent {
     Agent::new()
         .name("classifier")
@@ -637,9 +791,9 @@ fn schema_agent() -> Agent {
         .output_schema(answer_schema())
 }
 
-/// Render a CompletionRequest as plain text. Mirrors `context_window_events.rs`'s
+/// Render a ModelRequest as plain text. Mirrors `context_window_events.rs`'s
 /// helper of the same name — same shape so snapshots are visually comparable.
-fn render(req: &CompletionRequest) -> String {
+fn render(req: &ModelRequest) -> String {
     render_conversation(&req.system_prompt, &req.messages)
 }
 
@@ -723,7 +877,7 @@ fn replace_value_with_placeholder(line: &str) -> String {
 
 /// Pull the text of the most recent `Message::User` entry — useful for tests
 /// that want to check what the loop just told the model.
-fn last_user_text(req: &CompletionRequest) -> Option<String> {
+fn last_user_text(req: &ModelRequest) -> Option<String> {
     req.messages.iter().rev().find_map(|m| match m {
         Message::User { content } => {
             let text: String = content
@@ -743,7 +897,7 @@ fn last_user_text(req: &CompletionRequest) -> Option<String> {
 /// Pull the content of the most recent `tool_result` block in the conversation.
 /// Used by the sub-agent boundary tests to assert the child's JSON reached the
 /// parent intact.
-fn last_tool_result_content(req: &CompletionRequest) -> Option<String> {
+fn last_tool_result_content(req: &ModelRequest) -> Option<String> {
     req.messages.iter().rev().find_map(|m| {
         if let Message::User { content } = m {
             content.iter().rev().find_map(|b| match b {

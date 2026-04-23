@@ -6,7 +6,7 @@ use std::pin::Pin;
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::tools::tool::{ToolContext, ToolResult, Toolable};
+use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
 
 /// Read a file with optional line offset and limit. Returns line-numbered
 /// text so the model can reference specific lines in subsequent edits.
@@ -20,7 +20,7 @@ Read the contents of a file, optionally returning a specific range of lines.
 - When you already know which part of the file you need, use offset and limit to read only that part. This is important for larger files.
 - This tool can only read files, not directories. To list a directory, use list_directory or bash with ls.";
 
-impl Toolable for ReadFileTool {
+impl ToolLike for ReadFileTool {
     fn name(&self) -> &str {
         "read_file"
     }

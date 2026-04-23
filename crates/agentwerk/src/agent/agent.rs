@@ -8,16 +8,16 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::config::ConfigError;
 use crate::error::Result;
 use crate::persistence::session::SessionStore;
 use crate::provider::model::Model;
 use crate::provider::Provider;
-use crate::tools::{SpawnAgentTool, ToolRegistry, Toolable};
+use crate::tools::{SpawnAgentTool, ToolLike, ToolRegistry};
 use crate::util::generate_agent_name;
 
-use super::event::Event;
-use super::output::{Output, OutputSchema};
+use crate::event::Event;
+use crate::output::{Output, OutputSchema};
+
 use super::queue::CommandQueue;
 use super::r#loop::{run_loop, LoopRuntime, LoopState};
 use super::spec::{build_context_prompt, AgentSpec};
@@ -177,7 +177,7 @@ impl Agent {
     }
 
     /// Register a tool.
-    pub fn tool(self, tool: impl Toolable + 'static) -> Self {
+    pub fn tool(self, tool: impl ToolLike + 'static) -> Self {
         self.with_spec(|c| c.tools.register(tool))
     }
 
@@ -293,7 +293,7 @@ impl Agent {
         self
     }
 
-    /// Working directory surfaced to tools via [`crate::ToolContext`] and to
+    /// Working directory surfaced to tools via [`crate::tools::ToolContext`] and to
     /// the environment prompt. Defaults to the process's current directory.
     pub fn working_directory(mut self, d: impl Into<PathBuf>) -> Self {
         self.working_directory = Some(d.into());
@@ -316,7 +316,7 @@ impl Agent {
     }
 
     /// Share a cancel flag. Set it to `true` to stop the loop at the next
-    /// safe point; the run returns with [`crate::Status::Cancelled`].
+    /// safe point; the run returns with [`crate::output::Outcome::Cancelled`].
     pub fn cancel_signal(mut self, s: Arc<AtomicBool>) -> Self {
         self.cancel_signal = Some(s);
         self
@@ -347,7 +347,7 @@ impl Agent {
     /// (or [`Agent::model_from_env`]), and `.instruction_prompt()`. The agent
     /// may be run again after this returns: the static template is preserved.
     pub async fn run(&self) -> Result<Output> {
-        let (spec, runtime) = self.compile(None)?;
+        let (spec, runtime) = self.compile(None);
         let runtime = Arc::new(runtime);
         let instruction = self.interpolate(&self.instruction_prompt);
         let context_prompt =
@@ -366,7 +366,7 @@ impl Agent {
         parent_runtime: &LoopRuntime,
         description: Option<String>,
     ) -> Result<Output> {
-        let (spec, runtime) = self.compile(Some((parent_spec, parent_runtime)))?;
+        let (spec, runtime) = self.compile(Some((parent_spec, parent_runtime)));
         let runtime = Arc::new(runtime);
         let instruction = self.interpolate(&self.instruction_prompt);
         let context_prompt =
@@ -428,18 +428,14 @@ impl Agent {
     pub(crate) fn compile(
         &self,
         parent: Option<(&AgentSpec, &LoopRuntime)>,
-    ) -> Result<(Arc<AgentSpec>, LoopRuntime)> {
+    ) -> (Arc<AgentSpec>, LoopRuntime) {
         // Resolve the model first — root runs require an explicit model.
         let resolved_model = match (self.spec.model.as_ref(), parent) {
             (Some(m), _) => m.clone(),
             (None, Some((parent_spec, _))) => parent_spec.model().clone(),
-            (None, None) => {
-                return Err(ConfigError::Invalid(
-                    "root agent requires an explicit .model() / .model_name() (or must be spawned as a child)"
-                        .into(),
-                )
-                .into());
-            }
+            (None, None) => panic!(
+                "Agent::run() requires .model() / .model_name() on root agents (sub-agents inherit)"
+            ),
         };
 
         // CoW-clone the spec and fill in the resolved model.
@@ -449,19 +445,18 @@ impl Agent {
         // Build the runtime: inherit from parent or build fresh externals.
         let runtime = match parent {
             Some((_, parent_runtime)) => self.inherit_runtime(parent_runtime, &spec),
-            None => self.build_runtime(&spec)?,
+            None => self.build_runtime(&spec),
         };
 
-        Ok((spec, runtime))
+        (spec, runtime)
     }
 
     /// Build the root `LoopRuntime` from this agent's per-run fields plus
     /// reasonable defaults. Requires `self.provider` to be set.
-    fn build_runtime(&self, spec: &AgentSpec) -> Result<LoopRuntime> {
-        let provider = self
-            .provider
-            .clone()
-            .ok_or(ConfigError::ProviderNotConfigured)?;
+    fn build_runtime(&self, spec: &AgentSpec) -> LoopRuntime {
+        let provider = self.provider.clone().unwrap_or_else(|| {
+            panic!("Agent::run() requires .provider() (or .provider_from_env()) on root agents")
+        });
 
         let working_directory = self
             .working_directory
@@ -494,7 +489,7 @@ impl Agent {
 
         let metadata = Some(LoopRuntime::environment(&working_directory));
 
-        Ok(LoopRuntime {
+        LoopRuntime {
             provider,
             event_handler,
             cancel_signal,
@@ -505,7 +500,7 @@ impl Agent {
             discovered_tools: Arc::new(Mutex::new(HashSet::new())),
             tools: build_tools(spec),
             template_variables: self.template_variables.clone(),
-        })
+        }
     }
 
     /// Build a child `LoopRuntime`: inherit externals from the parent, let this
@@ -551,10 +546,9 @@ fn build_tools(spec: &AgentSpec) -> Arc<ToolRegistry> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::event::EventKind;
-    use super::super::output::Status;
     use super::*;
-    use crate::error::Error;
+    use crate::event::EventKind;
+    use crate::output::Outcome;
 
     #[test]
     fn silent_sets_a_no_op_handler() {
@@ -570,7 +564,7 @@ mod tests {
             "t",
             EventKind::AgentFinished {
                 turns: 1,
-                status: Status::Completed,
+                outcome: Outcome::Completed,
             },
         ));
     }
@@ -591,7 +585,7 @@ mod tests {
         assert!(agent.event_handler.is_none());
         // `compile` must succeed without a user-set handler — proves the
         // default path is wired up.
-        let _ = agent.compile(None).expect("compile with default logger");
+        let _ = agent.compile(None);
     }
 
     #[test]
@@ -668,16 +662,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_provider_fails_run() {
+    #[should_panic(expected = ".provider()")]
+    async fn missing_provider_panics_on_run() {
         let agent = Agent::new()
             .name("test")
             .model_name("mock")
             .identity_prompt("x")
             .instruction_prompt("do");
-        let err = agent.run().await.unwrap_err();
-        match err {
-            Error::Config(ConfigError::ProviderNotConfigured) => {}
-            other => panic!("expected Config(ProviderNotConfigured), got {other:?}"),
-        }
+        let _ = agent.run().await;
     }
 }

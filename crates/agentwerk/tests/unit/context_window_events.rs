@@ -16,19 +16,17 @@
 
 use std::sync::Arc;
 
+use agentwerk::event::{CompactReason, EventKind};
 use agentwerk::provider::types::ResponseStatus;
+use agentwerk::provider::{ModelRequest, ContentBlock, Message, ProviderError, TokenUsage};
 use agentwerk::testutil::{text_response, tool_response, MockProvider, MockTool, TestHarness};
-use agentwerk::{
-    Agent, CompactReason, CompletionRequest, ContentBlock, Error, Event, EventKind, Message, Model,
-    ProviderError, TokenUsage,
-};
+use agentwerk::{Agent, Error, Event, Model};
 
-/// Local helper: compact threshold for a known window size, used by these tests.
+/// Local helper: compact threshold for a known window size. Mirrors the
+/// crate-internal constants `RESERVED_RESPONSE_TOKENS` (20_000) +
+/// `COMPACTION_HEADROOM_TOKENS` (13_000) = 33_000 below the hard limit.
 fn compact_threshold(window: u64) -> u64 {
-    Model::from_name("unknown")
-        .context_window_size(window)
-        .compact_threshold()
-        .expect("explicit window size always yields a threshold")
+    window.saturating_sub(20_000).saturating_sub(13_000)
 }
 
 const S0_INITIAL: &str = "\
@@ -411,14 +409,16 @@ async fn reactive_compact_suppressed_when_model_has_no_window() {
         .identity_prompt("");
 
     let harness = TestHarness::with_provider(provider);
-    let result = harness.run_agent(&agent, "hi").await;
+    let output = harness.run_agent(&agent, "hi").await.unwrap();
 
+    assert_eq!(output.outcome, agentwerk::output::Outcome::Failed);
     assert!(
         matches!(
-            result,
-            Err(Error::Provider(ProviderError::ContextWindowExceeded { .. }))
+            output.errors.last(),
+            Some(Error::Provider(ProviderError::ContextWindowExceeded { .. }))
         ),
-        "expected ContextWindowExceeded, got {result:?}"
+        "expected ContextWindowExceeded error in output.errors, got {:?}",
+        output.errors
     );
     assert!(
         compact_reasons(&harness.events().all()).is_empty(),
@@ -426,10 +426,10 @@ async fn reactive_compact_suppressed_when_model_has_no_window() {
     );
 }
 
-/// Render a CompletionRequest as plain text. The output structure mirrors
+/// Render a ModelRequest as plain text. The output structure mirrors
 /// what the provider receives: a `system` section followed by every message
 /// in order, each labelled with its index and role.
-fn render(req: &CompletionRequest) -> String {
+fn render(req: &ModelRequest) -> String {
     let mut out = String::new();
     out.push_str("=== system ===\n");
     out.push_str(&req.system_prompt);

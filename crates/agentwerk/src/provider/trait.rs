@@ -8,13 +8,13 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use super::error::ProviderResult;
-use super::types::{CompletionResponse, Message, StreamEvent};
-use crate::tools::tool::ToolDefinition;
+use super::types::{ModelResponse, Message, StreamEvent};
+use crate::tools::ToolDefinition;
 
 /// One request to a provider. Built by the agent loop from the agent's
-/// configuration and the running conversation; passed to [`Provider::complete`].
+/// configuration and the running conversation; passed to [`Provider::respond`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompletionRequest {
+pub struct ModelRequest {
     /// Model name (e.g. `claude-sonnet-4-20250514`).
     pub model: String,
     /// System prompt assembled from identity, behavior, and environment.
@@ -42,10 +42,10 @@ pub enum ToolChoice {
 /// Core provider trait every backend implements. Object-safe via boxed futures.
 ///
 /// Build a provider with one of the vendor constructors
-/// ([`AnthropicProvider`](crate::AnthropicProvider),
-/// [`OpenAiProvider`](crate::OpenAiProvider),
-/// [`MistralProvider`](crate::MistralProvider),
-/// [`LiteLlmProvider`](crate::LiteLlmProvider)) or pick one from the
+/// ([`AnthropicProvider`](crate::provider::AnthropicProvider),
+/// [`OpenAiProvider`](crate::provider::OpenAiProvider),
+/// [`MistralProvider`](crate::provider::MistralProvider),
+/// [`LiteLlmProvider`](crate::provider::LiteLlmProvider)) or pick one from the
 /// environment with [`from_env`](crate::provider::from_env).
 ///
 /// # Examples
@@ -70,23 +70,24 @@ pub enum ToolChoice {
 /// # });
 /// ```
 pub trait Provider: Send + Sync {
-    /// One-shot completion. Returns the full response after the model stops.
-    fn complete(
+    /// One-shot response. Sends the request, waits for the model to stop,
+    /// and returns the assembled reply.
+    fn respond(
         &self,
-        request: CompletionRequest,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<CompletionResponse>> + Send + '_>>;
+        request: ModelRequest,
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>>;
 
-    /// Streaming completion. Emits incremental [`StreamEvent`]s via the
-    /// callback as the model generates, then returns the assembled response.
-    /// Default implementation falls back to [`Self::complete`] and emits a
+    /// Streaming response. Emits incremental [`StreamEvent`]s via the
+    /// callback as the model generates, then returns the assembled reply.
+    /// Default implementation falls back to [`Self::respond`] and emits a
     /// single `MessageDone`.
-    fn complete_streaming(
+    fn respond_streaming(
         &self,
-        request: CompletionRequest,
+        request: ModelRequest,
         on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<CompletionResponse>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
         Box::pin(async move {
-            let response = self.complete(request).await?;
+            let response = self.respond(request).await?;
             on_event(StreamEvent::MessageDone);
             Ok(response)
         })

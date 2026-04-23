@@ -1,12 +1,13 @@
 //! Interactive terminal chat with an agent. Demonstrates `Agent::spawn` + `AgentHandle` for back-and-forth conversation against a live LLM.
 
+use std::future::IntoFuture;
 use std::io::{self, IsTerminal, Write};
 use std::sync::Arc;
 
-use agentwerk::{
-    Agent, Error, Event, EventKind, GlobTool, GrepTool, ListDirectoryTool, Output, ReadFileTool,
-    Status,
-};
+use agentwerk::event::EventKind;
+use agentwerk::output::Outcome;
+use agentwerk::tools::{GlobTool, GrepTool, ListDirectoryTool, ReadFileTool};
+use agentwerk::{Agent, Error, Event, Output};
 use tokio::sync::Notify;
 
 const IDENTITY: &str = "You are a local-repo search assistant. Help the user explore this \
@@ -50,6 +51,7 @@ async fn main() {
         }))
         .spawn();
 
+    let output = output.into_future();
     tokio::pin!(output);
     let mut early_result: Option<Result<Output, Error>> = None;
 
@@ -86,7 +88,7 @@ async fn main() {
         Ok(o) => eprintln!(
             "\n{}— {} · {} turns · {} in / {} out{}",
             style.dim,
-            status_label(&o.status),
+            outcome_label(&o.outcome),
             o.statistics.turns,
             o.statistics.input_tokens,
             o.statistics.output_tokens,
@@ -106,13 +108,11 @@ fn announce_assistant(style: &Style) {
     let _ = io::stdout().flush();
 }
 
-fn status_label(status: &Status) -> &'static str {
-    match status {
-        Status::Completed => "completed",
-        Status::Cancelled => "cancelled",
-        Status::TurnLimitReached { .. } => "turn limit reached",
-        Status::InputBudgetExhausted { .. } => "input budget exhausted",
-        Status::OutputBudgetExhausted { .. } => "output budget exhausted",
+fn outcome_label(outcome: &Outcome) -> &'static str {
+    match outcome {
+        Outcome::Completed => "completed",
+        Outcome::Cancelled => "cancelled",
+        Outcome::Failed => "failed",
     }
 }
 

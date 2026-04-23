@@ -2,7 +2,8 @@
 
 use super::common;
 
-use agentwerk::{Agent, BashTool};
+use agentwerk::tools::BashTool;
+use agentwerk::Agent;
 
 #[tokio::test]
 async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {

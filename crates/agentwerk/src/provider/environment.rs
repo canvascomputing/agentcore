@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use crate::config::ConfigError;
 use crate::error::Result;
 
+use super::error::ProviderError;
 use super::{AnthropicProvider, LiteLlmProvider, MistralProvider, OpenAiProvider, Provider};
 
 /// Detected provider name, before constructing the actual provider.
@@ -29,7 +29,12 @@ pub(crate) fn env_required(name: &'static str) -> Result<String> {
     std::env::var(name)
         .ok()
         .filter(|v| !v.is_empty())
-        .ok_or_else(|| ConfigError::EnvVarNotSet(name).into())
+        .ok_or_else(|| {
+            ProviderError::ProviderUnrecognized {
+                message: format!("{name} environment variable not set"),
+            }
+            .into()
+        })
 }
 
 /// Detect an LLM provider from environment variables and construct it from
@@ -96,9 +101,11 @@ where
             "mistral" => Ok(DetectedProvider::Mistral),
             "openai" => Ok(DetectedProvider::OpenAi),
             "litellm" => Ok(DetectedProvider::LiteLlm),
-            other => Err(ConfigError::Invalid(format!(
-                "Unknown LITELLM_PROVIDER \"{other}\". Supported: anthropic, mistral, openai, litellm"
-            ))
+            other => Err(ProviderError::ProviderUnrecognized {
+                message: format!(
+                    "Unknown LITELLM_PROVIDER \"{other}\". Supported: anthropic, mistral, openai, litellm"
+                ),
+            }
             .into()),
         };
     }
@@ -119,11 +126,10 @@ where
         return Ok(DetectedProvider::OpenAi);
     }
 
-    Err(ConfigError::Invalid(
-        "No LLM provider found. \
-         Set one of: LITELLM_PROVIDER, LITELLM_API_KEY, MISTRAL_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY"
+    Err(ProviderError::ProviderUnrecognized {
+        message: "No LLM provider found. Set one of: LITELLM_PROVIDER, LITELLM_API_KEY, MISTRAL_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY"
             .into(),
-    )
+    }
     .into())
 }
 

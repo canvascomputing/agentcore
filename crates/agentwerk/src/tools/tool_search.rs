@@ -6,10 +6,10 @@ use std::pin::Pin;
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::tools::tool::{ToolContext, ToolResult, Toolable};
+use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
 
 /// Search the tool registry by query string. Pair with tools that set
-/// [`Toolable::should_defer`](crate::Toolable::should_defer) to `true`: the
+/// [`Tool::should_defer`](crate::Tool::should_defer) to `true`: the
 /// model sees only their names until it discovers them through this tool,
 /// keeping the initial system prompt small.
 pub struct ToolSearchTool;
@@ -17,7 +17,7 @@ pub struct ToolSearchTool;
 const DESCRIPTION: &str = "\
 Search for available tools by name or keyword. Returns tool names, descriptions, and input schemas.";
 
-impl Toolable for ToolSearchTool {
+impl ToolLike for ToolSearchTool {
     fn name(&self) -> &str {
         "tool_search"
     }
@@ -41,10 +41,6 @@ impl Toolable for ToolSearchTool {
 
     fn is_read_only(&self) -> bool {
         true
-    }
-
-    fn should_defer(&self) -> bool {
-        false
     }
 
     fn call<'a>(
@@ -210,7 +206,7 @@ mod tests {
             .model_name("mock")
             .identity_prompt("")
             .provider(Arc::new(crate::testutil::MockProvider::text("ok")));
-        let (_spec, runtime) = agent.compile(None).unwrap();
+        let (_spec, runtime) = agent.compile(None);
         let runtime = Arc::new(runtime);
         let ctx = ToolContext::new(
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),

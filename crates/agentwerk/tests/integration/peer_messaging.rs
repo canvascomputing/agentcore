@@ -11,7 +11,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use agentwerk::{Agent, Event, EventKind, SendMessageTool};
+use agentwerk::event::EventKind;
+use agentwerk::tools::SendMessageTool;
+use agentwerk::{Agent, Event};
 
 #[tokio::test]
 async fn orchestrator_sends_message_to_backgrounded_worker(
@@ -131,8 +133,8 @@ fn format_event(e: &Event) -> Option<String> {
             Some(d) => format!("start  ({d})"),
             None => "start".into(),
         }),
-        EventKind::AgentFinished { turns, status } => {
-            Some(format!("end    ({turns} turns, {status:?})"))
+        EventKind::AgentFinished { turns, outcome } => {
+            Some(format!("end    ({turns} turns, {outcome:?})"))
         }
         EventKind::TurnStarted { turn } => Some(format!("turn   {turn}")),
         EventKind::ToolCallStarted {

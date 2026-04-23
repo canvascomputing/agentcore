@@ -4,7 +4,8 @@
 
 use super::common;
 
-use agentwerk::{Agent, TaskTool};
+use agentwerk::tools::TaskTool;
+use agentwerk::Agent;
 
 #[tokio::test]
 async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {

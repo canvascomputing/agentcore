@@ -11,7 +11,9 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use agentwerk::{Agent, Event, EventKind, WebFetchTool};
+use agentwerk::event::EventKind;
+use agentwerk::tools::WebFetchTool;
+use agentwerk::{Agent, Event};
 
 const PRICING_RESEARCHER_PROMPT: &str = "\
 You are a pricing researcher. Fetch current model pricing from provider websites.\n\n\

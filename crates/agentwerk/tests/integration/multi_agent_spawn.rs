@@ -4,7 +4,8 @@ use super::common;
 
 use std::sync::Arc;
 
-use agentwerk::{Agent, Event, EventKind};
+use agentwerk::event::EventKind;
+use agentwerk::{Agent, Event};
 
 #[tokio::test]
 async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {

@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::agent::Agent;
 use crate::error::Result;
 use crate::tools::error::ToolError;
-use crate::tools::tool::{ToolContext, ToolResult, Toolable};
+use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
 use crate::util::generate_agent_name;
 
 /// Default identity for ad-hoc sub-agents (when the model doesn't supply one).
@@ -55,7 +55,7 @@ Write prompts that prove you understood the problem and what specifically needs 
 - Foreground (default): blocks until the agent completes. Use when you need results before proceeding.
 - Background: returns immediately with an agent ID. Use when you have independent work to do in parallel.";
 
-impl Toolable for SpawnAgentTool {
+impl ToolLike for SpawnAgentTool {
     fn name(&self) -> &str {
         "spawn_agent"
     }
@@ -147,17 +147,15 @@ impl Toolable for SpawnAgentTool {
             let runtime = ctx
                 .runtime
                 .as_ref()
-                .ok_or_else(|| ToolError::ContextUnavailable {
-                    tool_name: "spawn_agent".into(),
-                    message: "LoopRuntime not available in ToolContext".into(),
+                .ok_or_else(|| {
+                    ToolError::new("spawn_agent", "LoopRuntime not available in ToolContext")
                 })?
                 .clone();
             let caller = ctx
                 .caller_spec
                 .as_ref()
-                .ok_or_else(|| ToolError::ContextUnavailable {
-                    tool_name: "spawn_agent".into(),
-                    message: "caller LoopSpec not available in ToolContext".into(),
+                .ok_or_else(|| {
+                    ToolError::new("spawn_agent", "caller LoopSpec not available in ToolContext")
                 })?
                 .clone();
 
@@ -387,8 +385,8 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_agent_propagates_max_input_tokens() {
-        use crate::provider::types::TokenUsage;
-        use crate::EventKind;
+        use crate::event::EventKind;
+        use crate::provider::TokenUsage;
 
         let sub = Agent::new()
             .name("tight-budget")
@@ -431,9 +429,9 @@ mod tests {
             e.agent_name == "tight-budget"
                 && matches!(
                     e.kind,
-                    EventKind::InputBudgetExhausted {
-                        limit: 4000,
-                        usage: 5000,
+                    EventKind::AgentFinished {
+                        outcome: crate::output::Outcome::Failed,
+                        ..
                     }
                 )
         });
@@ -445,8 +443,8 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_agent_propagates_max_output_tokens() {
-        use crate::provider::types::TokenUsage;
-        use crate::EventKind;
+        use crate::event::EventKind;
+        use crate::provider::TokenUsage;
 
         let sub = Agent::new()
             .name("tight-budget")
@@ -489,9 +487,9 @@ mod tests {
             e.agent_name == "tight-budget"
                 && matches!(
                     e.kind,
-                    EventKind::OutputBudgetExhausted {
-                        limit: 4000,
-                        usage: 5000,
+                    EventKind::AgentFinished {
+                        outcome: crate::output::Outcome::Failed,
+                        ..
                     }
                 )
         });

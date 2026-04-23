@@ -8,8 +8,9 @@ use serde_json::Value;
 use crate::provider::model::Model;
 use crate::tools::ToolRegistry;
 
+use crate::output::OutputSchema;
+
 use super::agent::Agent;
-use super::output::OutputSchema;
 use super::prompts;
 
 /// The agent's definition. Shared across clones via `Arc<AgentSpec>` with copy-on-write

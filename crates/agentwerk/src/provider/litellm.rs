@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use super::error::ProviderResult;
 use super::openai::OpenAiProvider;
-use super::r#trait::{CompletionRequest, Provider};
-use super::types::{CompletionResponse, StreamEvent};
+use super::r#trait::{ModelRequest, Provider};
+use super::types::{ModelResponse, StreamEvent};
 use crate::error::Result;
 
 /// LiteLLM proxy provider. Delegates to an inner [`OpenAiProvider`] with
@@ -39,19 +39,19 @@ impl LiteLlmProvider {
 }
 
 impl Provider for LiteLlmProvider {
-    fn complete(
+    fn respond(
         &self,
-        request: CompletionRequest,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<CompletionResponse>> + Send + '_>> {
-        self.0.complete(request)
+        request: ModelRequest,
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
+        self.0.respond(request)
     }
 
-    fn complete_streaming(
+    fn respond_streaming(
         &self,
-        request: CompletionRequest,
+        request: ModelRequest,
         on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<CompletionResponse>> + Send + '_>> {
-        self.0.complete_streaming(request, on_event)
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
+        self.0.respond_streaming(request, on_event)
     }
 
     fn prewarm(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {

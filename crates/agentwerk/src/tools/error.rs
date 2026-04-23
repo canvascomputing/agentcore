@@ -2,33 +2,31 @@
 
 use std::fmt;
 
-/// Failures a tool reports as `Err` rather than as an in-band `ToolResult::Error`.
-/// Reserved for situations the model cannot recover from by correcting its
-/// arguments. Most tool failures (bad args, non-zero bash exit, file-not-found,
-/// timeouts) flow through `ToolResult::Error(String)` instead.
+/// A tool failed for reasons the model can't fix by retrying with different
+/// arguments — harness wiring missing, persistence broken, etc. Most tool
+/// failures (bad args, non-zero bash exit, file-not-found, timeouts, unknown
+/// tool names) flow through [`ToolResult::Error`](super::ToolResult::Error)
+/// instead; those reach the model as tool-result messages.
 #[derive(Debug)]
-pub enum ToolError {
-    /// A tool was invoked but its `ToolContext` was missing infrastructure
-    /// the tool needs: `LoopRuntime`, caller spec, or command queue. A
-    /// harness-configuration bug, not a model error.
-    ContextUnavailable { tool_name: String, message: String },
+pub struct ToolError {
+    /// Name of the tool that raised the error.
+    pub tool_name: String,
+    /// Human-readable description of what went wrong.
+    pub message: String,
+}
 
-    /// Tool arguments could not be deserialized into the tool's input type.
-    /// Raised when the tool cannot produce a useful `ToolResult::Error`
-    /// because the argument shape itself is invalid.
-    ArgumentsRejected { tool_name: String, message: String },
+impl ToolError {
+    pub fn new(tool_name: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            tool_name: tool_name.into(),
+            message: message.into(),
+        }
+    }
 }
 
 impl fmt::Display for ToolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ToolError::ContextUnavailable { tool_name, message } => {
-                write!(f, "Tool context unavailable ({tool_name}): {message}")
-            }
-            ToolError::ArgumentsRejected { tool_name, message } => {
-                write!(f, "Tool arguments rejected ({tool_name}): {message}")
-            }
-        }
+        write!(f, "Tool {} failed: {}", self.tool_name, self.message)
     }
 }
 

@@ -4,9 +4,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::agent::error::AgentError;
-use crate::error::Result;
-
 /// Resolves when the cancel flag flips to true, polling every 100 ms. Pair
 /// with `tokio::select!` to abort any mid-flight work: the loser branch is
 /// dropped, which cascades to dropped HTTP futures (reqwest aborts the
@@ -17,14 +14,14 @@ pub(crate) async fn wait_for_cancel(cancel: &Arc<AtomicBool>) {
     }
 }
 
-/// Sleep for `duration`, but bail as soon as `cancel` trips. Returns
-/// `Err(AgentError::Cancelled)` if cancel fired, `Ok(())` if the full
-/// duration elapsed. Used by retry backoff to stay responsive to Ctrl-C.
-pub(crate) async fn cancellable_sleep(duration: Duration, cancel: &Arc<AtomicBool>) -> Result<()> {
+/// Sleep for `duration`, but bail as soon as `cancel` trips. Returns `true` if
+/// the full duration elapsed, `false` if cancel fired. Used by retry backoff
+/// to stay responsive to Ctrl-C.
+pub(crate) async fn cancellable_sleep(duration: Duration, cancel: &Arc<AtomicBool>) -> bool {
     tokio::select! {
         biased;
-        _ = wait_for_cancel(cancel) => Err(AgentError::Cancelled.into()),
-        _ = tokio::time::sleep(duration) => Ok(()),
+        _ = wait_for_cancel(cancel) => false,
+        _ = tokio::time::sleep(duration) => true,
     }
 }
 

@@ -1,21 +1,30 @@
 //! Context-window compaction seam. Decides when a conversation is too big for the model and hands off to the compaction strategy.
 
-use crate::agent::error::AgentError;
-use crate::agent::event::{Event, EventKind};
 use crate::agent::r#loop::{LoopRuntime, LoopState};
 use crate::agent::spec::AgentSpec;
 use crate::error::Result;
+use crate::event::{CompactReason, Event, EventKind};
 use crate::provider::types::{ContentBlock, Message};
+use crate::provider::Model;
 
-/// Why context compaction fired.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompactReason {
-    /// Estimated next-request tokens crossed the model's compact threshold
-    /// before sending; compaction ran ahead of any failure.
-    Proactive,
-    /// A request failed mid-run with a context-overflow error from the
-    /// provider; compaction ran in response.
-    Reactive,
+/// Tokens set aside for the model's response. The context window holds
+/// input + output combined, so input must leave at least this much room for
+/// the next reply. Treated as an upper bound on one response.
+pub(crate) const RESERVED_RESPONSE_TOKENS: u64 = 20_000;
+
+/// Headroom reserved below the hard window limit so compaction has room to
+/// fire *and* finish before the real overflow. Also absorbs drift in the
+/// `bytes / 4` token estimate, which usually under-counts code and JSON.
+pub(crate) const COMPACTION_HEADROOM_TOKENS: u64 = 13_000;
+
+/// Token count at which proactive compaction fires for `model`. Returns
+/// `None` when the model's context window size is unknown — callers treat
+/// that as "no threshold; compaction is dormant".
+pub(crate) fn compact_threshold(model: &Model) -> Option<u64> {
+    model.context_window_size.map(|size| {
+        size.saturating_sub(RESERVED_RESPONSE_TOKENS)
+            .saturating_sub(COMPACTION_HEADROOM_TOKENS)
+    })
 }
 
 /// Estimate of the next request's input-token count: last API response's
@@ -60,7 +69,7 @@ pub(crate) async fn trigger_if_over_threshold(
     spec: &AgentSpec,
     state: &mut LoopState,
 ) -> Result<()> {
-    let Some(threshold) = spec.model().compact_threshold() else {
+    let Some(threshold) = compact_threshold(spec.model()) else {
         return Ok(());
     };
     let tokens = estimate_next_request_tokens(state);
@@ -101,15 +110,16 @@ pub(crate) async fn trigger_reactive(
     run(runtime, spec, state, CompactReason::Reactive).await
 }
 
-/// Compact `state.messages` in place. Not yet implemented — returns
-/// `AgentError::NotImplemented` so callers see the trigger fired.
+/// Compact `state.messages` in place. Currently a no-op: the
+/// [`EventKind::ContextCompacted`] event fires so observers know the trigger
+/// tripped, but the messages are left unchanged.
 pub(crate) async fn run(
     _runtime: &LoopRuntime,
     _spec: &AgentSpec,
     _state: &mut LoopState,
     _reason: CompactReason,
 ) -> Result<()> {
-    Err(AgentError::NotImplemented("context compaction").into())
+    Ok(())
 }
 
 #[cfg(test)]
@@ -124,5 +134,24 @@ mod tests {
             estimate_tokens_from_message_bytes(&long) > estimate_tokens_from_message_bytes(&short)
         );
         assert_eq!(estimate_tokens_from_message_bytes(&long), 100);
+    }
+
+    #[test]
+    fn compact_threshold_200k_model() {
+        let m = Model::from_name("unknown").context_window_size(200_000);
+        assert_eq!(compact_threshold(&m), Some(167_000));
+    }
+
+    #[test]
+    fn compact_threshold_saturates_on_tiny_window() {
+        let tiny = Model::from_name("unknown").context_window_size(100);
+        let zero = Model::from_name("unknown").context_window_size(0);
+        assert_eq!(compact_threshold(&tiny), Some(0));
+        assert_eq!(compact_threshold(&zero), Some(0));
+    }
+
+    #[test]
+    fn compact_threshold_none_for_unknown_window() {
+        assert_eq!(compact_threshold(&Model::from_name("unknown")), None);
     }
 }

@@ -6,7 +6,7 @@ use std::pin::Pin;
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::tools::tool::{ToolContext, ToolResult, Toolable};
+use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
 
 /// In-place string replacement in an existing file. The model supplies the
 /// old and new strings; the tool fails if the old string is absent or
@@ -22,7 +22,7 @@ Edit a file by replacing occurrences of a string.
 - ALWAYS prefer editing existing files over creating new ones.
 - Use replace_all for renaming or replacing a string across the entire file.";
 
-impl Toolable for EditFileTool {
+impl ToolLike for EditFileTool {
     fn name(&self) -> &str {
         "edit_file"
     }

@@ -1,4 +1,4 @@
-//! Tool system: the `Toolable` trait and the built-in tools that give agents reach into the filesystem, shell, search, web, sub-agents, and task records.
+//! Tool system: the `ToolLike` trait, the ad-hoc `Tool` struct, and the built-in tools that give agents reach into the filesystem, shell, search, web, sub-agents, and task records.
 
 mod bash;
 mod edit_file;
@@ -7,10 +7,10 @@ mod glob;
 mod grep;
 mod list_directory;
 mod read_file;
-pub mod send_message;
-pub mod spawn_agent;
-pub mod task_tools;
-pub mod tool;
+mod send_message;
+mod spawn_agent;
+mod task_tools;
+mod tool;
 mod tool_search;
 pub(crate) mod util;
 mod web_fetch;
@@ -18,7 +18,7 @@ mod write_file;
 
 // Re-export tool infrastructure
 pub use error::ToolError;
-pub use tool::{Tool, ToolContext, ToolResult, Toolable};
+pub use tool::{Tool, ToolContext, ToolDefinition, ToolLike, ToolResult};
 pub(crate) use tool::{ToolCall, ToolRegistry};
 
 // Re-export built-in tools

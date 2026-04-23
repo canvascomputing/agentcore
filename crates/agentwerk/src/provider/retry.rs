@@ -10,15 +10,15 @@ pub(crate) const MAX_DELAY: Duration = Duration::from_millis(32_000);
 ///
 /// Exponential backoff `base_delay * 2^attempt`, clamped at [`MAX_DELAY`],
 /// then extended by additive jitter in `[0, 25%]` of the clamped value. If
-/// the server provides a `request_retry_delay` hint, that value takes
+/// the server provides a `retry_delay` hint, that value takes
 /// precedence and bypasses the cap (the server is explicit about what it
 /// wants).
 pub(crate) fn compute_delay(
     base_delay: Duration,
     attempt: u32,
-    request_retry_delay: Option<Duration>,
+    retry_delay: Option<Duration>,
 ) -> Duration {
-    if let Some(server_delay) = request_retry_delay {
+    if let Some(server_delay) = retry_delay {
         return server_delay;
     }
 
@@ -58,7 +58,7 @@ mod tests {
     }
 
     #[test]
-    fn respects_request_retry_delay() {
+    fn respects_retry_delay() {
         let delay = compute_delay(
             Duration::from_millis(1000),
             0,

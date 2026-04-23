@@ -1,4 +1,4 @@
-//! Errors a provider raises before producing a `CompletionResponse`. Anything that maps to a valid response-with-status belongs on `ResponseStatus`, not here.
+//! Errors a provider raises before producing a `ModelResponse`. Anything that maps to a valid response-with-status belongs on `ResponseStatus`, not here.
 
 use std::fmt;
 use std::time::Duration;
@@ -17,11 +17,11 @@ pub enum ProviderError {
     ContextWindowExceeded { message: String },
     /// Provider-side safety filter blocked the request input.
     SafetyFilterTriggered { message: String },
-    /// HTTP 429 / 529: retry with backoff, honouring `request_retry_delay` if set.
+    /// HTTP 429 / 529: retry with backoff, honouring `retry_delay` if set.
     RateLimited {
         message: String,
         status: u16,
-        request_retry_delay: Option<Duration>,
+        retry_delay: Option<Duration>,
     },
     /// HTTP error with no more specific classification (unclassified 4xx,
     /// generic 5xx). `retryable` is true for standard transient server
@@ -30,7 +30,7 @@ pub enum ProviderError {
         status: u16,
         message: String,
         retryable: bool,
-        request_retry_delay: Option<Duration>,
+        retry_delay: Option<Duration>,
     },
     /// Network / TLS / connection failure before any HTTP response.
     ConnectionFailed { message: String },
@@ -41,6 +41,11 @@ pub enum ProviderError {
     /// The response arrived but its body couldn't be parsed — malformed
     /// JSON, unexpected shape, or a broken SSE frame.
     ResponseMalformed { message: String },
+    /// Provider construction failed to resolve a provider from the
+    /// environment: no provider was detected, a required env var was unset,
+    /// or `LITELLM_PROVIDER` named an unknown provider. `message` states the
+    /// specific failure.
+    ProviderUnrecognized { message: String },
 }
 
 impl ProviderError {
@@ -57,16 +62,16 @@ impl ProviderError {
         )
     }
 
-    pub fn request_retry_delay(&self) -> Option<Duration> {
+    pub fn retry_delay(&self) -> Option<Duration> {
         match self {
             ProviderError::RateLimited {
-                request_retry_delay,
+                retry_delay,
                 ..
-            } => *request_retry_delay,
+            } => *retry_delay,
             ProviderError::StatusUnclassified {
-                request_retry_delay,
+                retry_delay,
                 ..
-            } => *request_retry_delay,
+            } => *retry_delay,
             _ => None,
         }
     }
@@ -85,6 +90,7 @@ impl ProviderError {
             ProviderError::ConnectionFailed { .. } => RequestErrorKind::ConnectionFailed,
             ProviderError::StreamInterrupted { .. } => RequestErrorKind::StreamInterrupted,
             ProviderError::ResponseMalformed { .. } => RequestErrorKind::ResponseMalformed,
+            ProviderError::ProviderUnrecognized { .. } => RequestErrorKind::ProviderUnrecognized,
         }
     }
 }
@@ -132,6 +138,9 @@ impl fmt::Display for ProviderError {
             ProviderError::ResponseMalformed { message } => {
                 write!(f, "Response malformed: {message}")
             }
+            ProviderError::ProviderUnrecognized { message } => {
+                write!(f, "{message}")
+            }
         }
     }
 }
@@ -153,6 +162,7 @@ pub enum RequestErrorKind {
     ConnectionFailed,
     StreamInterrupted,
     ResponseMalformed,
+    ProviderUnrecognized,
 }
 
 /// Result alias for [`Provider`](super::Provider) calls.
@@ -167,10 +177,10 @@ mod tests {
         let err = ProviderError::RateLimited {
             message: "slow down".into(),
             status: 429,
-            request_retry_delay: Some(Duration::from_millis(500)),
+            retry_delay: Some(Duration::from_millis(500)),
         };
         assert!(err.is_retryable());
-        assert_eq!(err.request_retry_delay(), Some(Duration::from_millis(500)));
+        assert_eq!(err.retry_delay(), Some(Duration::from_millis(500)));
     }
 
     #[test]
@@ -179,7 +189,7 @@ mod tests {
             message: "dns".into(),
         };
         assert!(err.is_retryable());
-        assert_eq!(err.request_retry_delay(), None);
+        assert_eq!(err.retry_delay(), None);
     }
 
     #[test]
@@ -188,7 +198,7 @@ mod tests {
             message: "error decoding response body".into(),
         };
         assert!(err.is_retryable());
-        assert_eq!(err.request_retry_delay(), None);
+        assert_eq!(err.retry_delay(), None);
         assert!(err.to_string().starts_with("Stream interrupted:"));
     }
 
@@ -198,13 +208,13 @@ mod tests {
             status: 503,
             message: "unavailable".into(),
             retryable: true,
-            request_retry_delay: None,
+            retry_delay: None,
         };
         let terminal = ProviderError::StatusUnclassified {
             status: 418,
             message: "teapot".into(),
             retryable: false,
-            request_retry_delay: None,
+            retry_delay: None,
         };
         assert!(retryable.is_retryable());
         assert!(!terminal.is_retryable());
@@ -257,13 +267,13 @@ mod tests {
             ProviderError::RateLimited {
                 message: String::new(),
                 status: 429,
-                request_retry_delay: None,
+                retry_delay: None,
             },
             ProviderError::StatusUnclassified {
                 status: 500,
                 message: String::new(),
                 retryable: true,
-                request_retry_delay: None,
+                retry_delay: None,
             },
             ProviderError::ConnectionFailed {
                 message: String::new(),
@@ -274,9 +284,12 @@ mod tests {
             ProviderError::ResponseMalformed {
                 message: String::new(),
             },
+            ProviderError::ProviderUnrecognized {
+                message: "no provider".into(),
+            },
         ];
         let kinds: Vec<RequestErrorKind> = every.iter().map(|e| e.kind()).collect();
-        assert_eq!(kinds.len(), 10);
+        assert_eq!(kinds.len(), 11);
     }
 
     #[test]
@@ -300,13 +313,13 @@ mod tests {
             ProviderError::RateLimited {
                 message: "slow".into(),
                 status: 429,
-                request_retry_delay: Some(Duration::from_millis(1000)),
+                retry_delay: Some(Duration::from_millis(1000)),
             },
             ProviderError::StatusUnclassified {
                 status: 500,
                 message: "boom".into(),
                 retryable: true,
-                request_retry_delay: None,
+                retry_delay: None,
             },
             ProviderError::ConnectionFailed {
                 message: "dns".into(),
@@ -316,6 +329,9 @@ mod tests {
             },
             ProviderError::ResponseMalformed {
                 message: "bad json".into(),
+            },
+            ProviderError::ProviderUnrecognized {
+                message: "ANTHROPIC_API_KEY environment variable not set".into(),
             },
         ];
         for v in &variants {

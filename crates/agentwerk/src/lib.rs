@@ -36,7 +36,7 @@
 //! |---|---|---|
 //! | [`agent`] | Build and run agents; observe events; validate output | [`Agent`] |
 //! | [`provider`] | Anthropic, OpenAI, Mistral, LiteLLM | [`Provider`] |
-//! | [`tools`] | Built-in tools and the trait for custom ones | [`Toolable`] |
+//! | [`tools`] | Built-in tools and the trait for custom ones | [`Tool`] |
 //! | [`error`] | The single error type every fallible call returns | [`Error`] |
 //!
 //! # Crate conventions
@@ -46,8 +46,10 @@
 //! - Agents are cheap to clone and may be `.run()` again.
 
 pub mod agent;
-pub mod config;
+pub mod batch;
 pub mod error;
+pub mod event;
+pub mod output;
 pub(crate) mod persistence;
 pub mod provider;
 pub mod tools;
@@ -55,22 +57,13 @@ pub(crate) mod util;
 
 pub mod testutil;
 
-pub use config::ConfigError;
 pub use error::{Error, Result};
-pub use persistence::error::PersistenceError;
 
-pub use provider::{
-    AnthropicProvider, CompletionRequest, ContentBlock, LiteLlmProvider, Message, MistralProvider,
-    Model, ModelLookup, OpenAiProvider, Provider, ProviderError, RequestErrorKind, TokenUsage,
-};
+pub use provider::{Model, Provider};
 
-pub use tools::{
-    BashTool, EditFileTool, GlobTool, GrepTool, ListDirectoryTool, ReadFileTool, SendMessageTool,
-    SpawnAgentTool, TaskTool, Tool, ToolContext, ToolError, ToolResult, ToolSearchTool, Toolable,
-    WebFetchTool, WriteFileTool,
-};
+pub use tools::{Tool, ToolContext, ToolLike};
 
-pub use agent::{
-    Agent, AgentError, AgentHandle, Batch, BatchHandle, BatchOutputStream, CompactReason, Event,
-    EventKind, Output, OutputError, OutputFuture, Statistics, Status, DEFAULT_BEHAVIOR_PROMPT,
-};
+pub use agent::Agent;
+pub use batch::Batch;
+pub use event::Event;
+pub use output::Output;

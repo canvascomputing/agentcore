@@ -2,24 +2,61 @@
 
 use std::sync::Arc;
 
-use crate::agent::compact::CompactReason;
-use crate::agent::output::Status;
-use crate::provider::types::TokenUsage;
-use crate::provider::RequestErrorKind;
+use crate::output::Outcome;
+use crate::provider::{RequestErrorKind, TokenUsage};
+
+/// Why context compaction fired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactReason {
+    /// Estimated next-request tokens crossed the model's compact threshold
+    /// before sending; compaction ran ahead of any failure.
+    Proactive,
+    /// A request failed mid-run with a context-overflow error from the
+    /// provider; compaction ran in response.
+    Reactive,
+}
+
+/// Which configured policy a [`EventKind::PolicyViolated`] refers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicyKind {
+    /// `max_turns` — the agentic loop iteration cap.
+    Turns,
+    /// `max_input_tokens` — cumulative request-side token cap.
+    InputTokens,
+    /// `max_output_tokens` — cumulative reply-side token cap.
+    OutputTokens,
+    /// `max_schema_retries` — structured-output validation retry cap.
+    SchemaRetries,
+}
+
+/// Classification of a [`EventKind::ToolCallFailed`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolFailureKind {
+    /// The tool returned `Ok(ToolResult::Error(...))`, or the registry could
+    /// not find a tool by that name. The error message is visible to the
+    /// model, which may recover by adjusting its arguments or picking a
+    /// different tool.
+    InBand,
+    /// The tool's `call` raised `Err(...)` — a structural / harness-level
+    /// failure the model cannot recover from by retrying.
+    Infrastructure,
+}
 
 /// Observation emitted during an agent run.
 ///
 /// Events are an out-of-band observation channel, distinct from the
-/// `Result<Output, Error>` returned by `.run()`. Observers (loggers, UIs,
+/// [`Output`](crate::Output) returned by `.run()`. Observers (loggers, UIs,
 /// tracers) receive the event stream; the caller of `.run()` receives the
-/// final result. The stream ending is not a success signal: check the result.
+/// final result.
 ///
 /// Terminal-path invariants (verified in the loop):
-/// - `AgentFinished` fires only on `Ok` return paths: successful completion
-///   and configured-limit exits (`Status::TurnLimitReached`,
-///   `InputBudgetExhausted`, `OutputBudgetExhausted`, `Cancelled`).
-/// - `Err(...)` return paths do **not** emit `AgentFinished`. The last event
-///   on an error path is `RequestFailed`.
+/// - `AgentFinished` fires on every normal termination path — `Ok(Output)`
+///   with `Outcome::Completed`, `Cancelled`, or `Failed`. Its `outcome` field
+///   matches `output.outcome`. This holds even after `RequestFailed`: the loop
+///   folds the failure into `Outcome::Failed` and emits `AgentFinished` last.
+/// - `.run()` returns `Err(...)` only for pre-flight failures (missing
+///   provider, unreadable prompt file, model not set); those never emit
+///   `AgentFinished` because the loop never started.
 /// - `ToolCallFailed` is never terminal for the run: more events follow as
 ///   the agent continues. The tool's error string goes back to the model as
 ///   a tool-result message.
@@ -56,8 +93,8 @@ impl Event {
                 } => {
                     eprintln!("[{agent}] start: {d}");
                 }
-                EventKind::AgentFinished { turns, status } => {
-                    eprintln!("[{agent}] done ({turns} turns, {status:?})");
+                EventKind::AgentFinished { turns, outcome } => {
+                    eprintln!("[{agent}] done ({turns} turns, {outcome:?})");
                 }
                 EventKind::ToolCallStarted {
                     tool_name, input, ..
@@ -65,9 +102,12 @@ impl Event {
                     eprintln!("[{agent}] → {tool_name}({})", compact_input(input));
                 }
                 EventKind::ToolCallFailed {
-                    tool_name, message, ..
+                    tool_name,
+                    message,
+                    kind,
+                    ..
                 } => {
-                    eprintln!("[{agent}] ✗ {tool_name}: {message}");
+                    eprintln!("[{agent}] ✗ {tool_name} ({kind:?}): {message}");
                 }
                 EventKind::ContextCompacted {
                     turn,
@@ -82,11 +122,18 @@ impl Event {
                 EventKind::OutputTruncated { turn } => {
                     eprintln!("[{agent}] truncated turn={turn}");
                 }
-                EventKind::InputBudgetExhausted { usage, limit } => {
-                    eprintln!("[{agent}] ✗ input budget exhausted ({usage}/{limit})");
+                EventKind::PolicyViolated { kind, usage, limit } => {
+                    eprintln!("[{agent}] policy violated: {kind:?} {usage}/{limit}");
                 }
-                EventKind::OutputBudgetExhausted { usage, limit } => {
-                    eprintln!("[{agent}] ✗ output budget exhausted ({usage}/{limit})");
+                EventKind::SchemaRetried {
+                    attempt,
+                    max_attempts,
+                    path,
+                    message,
+                } => {
+                    eprintln!(
+                        "[{agent}] ↻ schema retry {attempt}/{max_attempts} at {path}: {message}"
+                    );
                 }
                 EventKind::RequestRetried {
                     attempt,
@@ -107,15 +154,15 @@ impl Event {
 
 /// What an [`Event`] reports. Variants are grouped by lifecycle (`Agent*`),
 /// turn (`Turn*`, `Request*`), tool (`ToolCall*`), context (`OutputTruncated`,
-/// `ContextCompacted`, `*BudgetExhausted`), and pause/resume.
+/// `ContextCompacted`, `*PolicyViolated`), and pause/resume.
 #[derive(Debug, Clone)]
 pub enum EventKind {
     /// Agent run began. `description` is set for sub-agents (the parent's
     /// human-readable label for the spawn) and `None` for root runs.
     AgentStarted { description: Option<String> },
     /// Agent run finished on an `Ok` path. `turns` is the loop iteration
-    /// count; `status` is the exit reason.
-    AgentFinished { turns: u32, status: Status },
+    /// count; `outcome` is the exit reason.
+    AgentFinished { turns: u32, outcome: Outcome },
     /// Agentic loop turn began.
     TurnStarted { turn: u32 },
     /// Agentic loop turn finished.
@@ -133,11 +180,13 @@ pub enum EventKind {
         output: String,
     },
     /// Tool invocation failed. The error is sent back to the model as a
-    /// tool-result message; the run continues.
+    /// tool-result message; the run continues. `kind` distinguishes in-band
+    /// failures (model-fixable) from infrastructure failures (harness-level).
     ToolCallFailed {
         tool_name: String,
         call_id: String,
         message: String,
+        kind: ToolFailureKind,
     },
     /// Provider reported token counts for the last request.
     TokensReported { model: String, usage: TokenUsage },
@@ -170,10 +219,24 @@ pub enum EventKind {
         threshold: u64,
         reason: CompactReason,
     },
-    /// Cumulative input tokens crossed `max_input_tokens`; the run stops.
-    InputBudgetExhausted { usage: u64, limit: u64 },
-    /// Cumulative output tokens crossed `max_output_tokens`; the run stops.
-    OutputBudgetExhausted { usage: u64, limit: u64 },
+    /// A configured policy (`max_turns`, `max_input_tokens`, `max_output_tokens`,
+    /// `max_schema_retries`) was exceeded; the run is about to terminate with
+    /// `Outcome::Failed`.
+    PolicyViolated {
+        kind: PolicyKind,
+        usage: u64,
+        limit: u64,
+    },
+    /// The model's terminal reply failed output-schema validation and the loop
+    /// is sending a corrective message. `attempt` is the upcoming attempt
+    /// number out of `max_attempts`; `path` and `message` come from the
+    /// validator.
+    SchemaRetried {
+        attempt: u32,
+        max_attempts: u32,
+        path: String,
+        message: String,
+    },
     /// A keep-alive agent finished its current instruction and is parked
     /// waiting for the next message.
     AgentPaused,
@@ -196,7 +259,6 @@ fn compact_input(input: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::types::TokenUsage;
 
     /// Every variant must survive the default logger without panicking.
     /// Exhaustive match keeps this test honest when a new variant is added.
@@ -210,7 +272,7 @@ mod tests {
             EventKind::AgentStarted { description: None },
             EventKind::AgentFinished {
                 turns: 3,
-                status: Status::Completed,
+                outcome: Outcome::Completed,
             },
             EventKind::TurnStarted { turn: 1 },
             EventKind::TurnFinished { turn: 1 },
@@ -228,6 +290,13 @@ mod tests {
                 tool_name: "glob".into(),
                 call_id: "c1".into(),
                 message: "boom".into(),
+                kind: ToolFailureKind::InBand,
+            },
+            EventKind::ToolCallFailed {
+                tool_name: "glob".into(),
+                call_id: "c2".into(),
+                message: "panic".into(),
+                kind: ToolFailureKind::Infrastructure,
             },
             EventKind::TokensReported {
                 model: "m".into(),
@@ -255,13 +324,16 @@ mod tests {
                 threshold: 10_000,
                 reason: CompactReason::Proactive,
             },
-            EventKind::InputBudgetExhausted {
-                usage: 4_200,
-                limit: 4_000,
+            EventKind::PolicyViolated {
+                kind: PolicyKind::Turns,
+                usage: 5,
+                limit: 5,
             },
-            EventKind::OutputBudgetExhausted {
-                usage: 5_200,
-                limit: 5_000,
+            EventKind::SchemaRetried {
+                attempt: 1,
+                max_attempts: 3,
+                path: "root.answer".into(),
+                message: "expected integer".into(),
             },
             EventKind::AgentPaused,
             EventKind::AgentResumed,
@@ -286,8 +358,8 @@ mod tests {
                 | EventKind::RequestFailed { .. }
                 | EventKind::OutputTruncated { .. }
                 | EventKind::ContextCompacted { .. }
-                | EventKind::InputBudgetExhausted { .. }
-                | EventKind::OutputBudgetExhausted { .. }
+                | EventKind::PolicyViolated { .. }
+                | EventKind::SchemaRetried { .. }
                 | EventKind::AgentPaused
                 | EventKind::AgentResumed => {}
             }

@@ -8,11 +8,9 @@ use std::task::{Context, Poll};
 use futures_util::stream::{FuturesUnordered, Stream, StreamExt};
 use tokio::sync::mpsc;
 
-use crate::config::ConfigError;
+use crate::agent::Agent;
 use crate::error::Result;
-
-use super::agent::Agent;
-use super::output::Output;
+use crate::output::Output;
 
 const DEFAULT_CONCURRENCY: usize = 1;
 
@@ -88,15 +86,7 @@ impl Batch {
         }
         slots
             .into_iter()
-            .enumerate()
-            .map(|(i, slot)| {
-                slot.unwrap_or_else(|| {
-                    Err(ConfigError::Invalid(format!(
-                        "batch: missing result for submission index {i}"
-                    ))
-                    .into())
-                })
-            })
+            .map(|slot| slot.expect("batch stream yields one result per submission"))
             .collect()
     }
 
@@ -367,9 +357,18 @@ mod tests {
             .run()
             .await;
         assert_eq!(results.len(), 3);
-        assert!(results[0].is_ok());
-        assert!(results[1].is_err());
-        assert!(results[2].is_ok());
+        assert_eq!(
+            results[0].as_ref().unwrap().outcome,
+            crate::output::Outcome::Completed
+        );
+        assert_eq!(
+            results[1].as_ref().unwrap().outcome,
+            crate::output::Outcome::Failed
+        );
+        assert_eq!(
+            results[2].as_ref().unwrap().outcome,
+            crate::output::Outcome::Completed
+        );
     }
 
     #[tokio::test]
@@ -558,7 +557,7 @@ mod tests {
         let mut seen = 0;
         while let Some((_, r)) = stream.next().await {
             let out = r.unwrap();
-            assert_eq!(out.status, crate::agent::Status::Completed);
+            assert_eq!(out.outcome, crate::output::Outcome::Completed);
             seen += 1;
         }
         assert_eq!(seen, 2);
@@ -574,7 +573,7 @@ mod tests {
 
         let (_, result) = stream.next().await.expect("result after cancel");
         let out = result.unwrap();
-        assert_eq!(out.status, crate::agent::Status::Cancelled);
+        assert_eq!(out.outcome, crate::output::Outcome::Cancelled);
         assert!(pool.is_cancelled());
         drop(pool);
         assert!(stream.next().await.is_none());

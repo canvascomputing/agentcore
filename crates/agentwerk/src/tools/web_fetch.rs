@@ -6,7 +6,7 @@ use std::pin::Pin;
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::tools::tool::{ToolContext, ToolResult, Toolable};
+use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
 
 const MAX_URL_LENGTH: usize = 2000;
 const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
@@ -33,7 +33,7 @@ Fetches content from a specified URL and returns it as text.
 /// surfaced rather than followed.
 pub struct WebFetchTool;
 
-impl Toolable for WebFetchTool {
+impl ToolLike for WebFetchTool {
     fn name(&self) -> &str {
         "web_fetch"
     }

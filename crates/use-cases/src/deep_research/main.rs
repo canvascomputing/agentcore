@@ -11,7 +11,9 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use agentwerk::{Agent, ConfigError, Event, EventKind, Tool, ToolResult};
+use agentwerk::event::EventKind;
+use agentwerk::tools::{Tool, ToolResult};
+use agentwerk::{Agent, Event};
 
 #[tokio::main]
 async fn main() {
@@ -119,7 +121,7 @@ fn output_schema() -> serde_json::Value {
     })
 }
 
-fn brave_search_tool(api_key: String) -> impl agentwerk::Toolable {
+fn brave_search_tool(api_key: String) -> impl agentwerk::tools::ToolLike {
     Tool::new(
         "brave_search",
         "Search the web. Returns titles, URLs, and descriptions.",
@@ -149,18 +151,21 @@ async fn brave_search(api_key: &str, input: &serde_json::Value) -> agentwerk::Re
         count,
     );
 
-    let response = reqwest::Client::new()
+    let response = match reqwest::Client::new()
         .get(&url)
         .header("X-Subscription-Token", api_key)
         .header("Accept", "application/json")
         .send()
         .await
-        .map_err(|e| ConfigError::Invalid(format!("Brave search failed: {e}")))?;
+    {
+        Ok(r) => r,
+        Err(e) => return Ok(ToolResult::error(format!("Brave search failed: {e}"))),
+    };
 
-    let json: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| ConfigError::Invalid(format!("Failed to parse response: {e}")))?;
+    let json: serde_json::Value = match response.json().await {
+        Ok(j) => j,
+        Err(e) => return Ok(ToolResult::error(format!("Failed to parse response: {e}"))),
+    };
 
     let Some(results) = json["web"]["results"].as_array() else {
         return Ok(ToolResult::success("No results found."));

@@ -22,12 +22,13 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agentwerk::provider::types::CompletionResponse;
+use agentwerk::agent::{AgentHandle, OutputFuture};
+use agentwerk::event::EventKind;
+use agentwerk::output::Outcome;
+use agentwerk::provider::types::ModelResponse;
+use agentwerk::provider::{ModelRequest, ContentBlock, Message};
 use agentwerk::testutil::{text_response, MockProvider};
-use agentwerk::{
-    Agent, AgentHandle, CompletionRequest, ContentBlock, Error, Event, EventKind, Message,
-    OutputFuture, Status,
-};
+use agentwerk::{Agent, Event};
 
 #[tokio::test]
 async fn output_resolves_with_final_text_after_cancel() {
@@ -49,27 +50,7 @@ async fn output_resolves_with_final_text_after_cancel() {
     handle.cancel();
     let output = output.await.expect("run should succeed");
     assert_eq!(output.response_raw, "hello world");
-    assert_eq!(output.status, Status::Completed);
-}
-
-#[tokio::test]
-async fn awaiting_the_future_twice_returns_an_error() {
-    let (handle, mut output) = Agent::new()
-        .model_name("mock")
-        .provider(Arc::new(MockProvider::text("done")))
-        .instruction_prompt("x")
-        .spawn();
-
-    handle.cancel();
-    let _first = (&mut output).await.expect("first await succeeds");
-    let second = output.await;
-    assert!(
-        matches!(
-            &second,
-            Err(Error::Agent(agentwerk::AgentError::PolledAfterCompletion))
-        ),
-        "expected 'polled after completion' error, got {second:?}",
-    );
+    assert_eq!(output.outcome, Outcome::Completed);
 }
 
 #[tokio::test]
@@ -125,7 +106,7 @@ async fn cancel_breaks_an_idle_agent_out_of_its_wait() {
         .wait_for(|e| matches!(e.kind, EventKind::AgentResumed))
         .await;
     let out = output.await.expect("output");
-    assert_eq!(out.status, Status::Completed);
+    assert_eq!(out.outcome, Outcome::Completed);
 }
 
 #[tokio::test]
@@ -167,12 +148,12 @@ async fn dropping_the_last_handle_terminates_the_agent() {
         .await;
     drop(handle);
     let out = output.await.expect("output");
-    assert_eq!(out.status, Status::Completed);
+    assert_eq!(out.outcome, Outcome::Completed);
 }
 
 /// Spawn a fresh agent wired to a MockProvider and the given event log.
 fn spawn_agent(
-    responses: Vec<CompletionResponse>,
+    responses: Vec<ModelResponse>,
     events: &EventLog,
 ) -> (Arc<MockProvider>, AgentHandle, OutputFuture) {
     let provider = Arc::new(MockProvider::new(responses));
@@ -231,7 +212,7 @@ async fn wait_until<F: FnMut() -> bool>(mut pred: F) {
     panic!("timed out after 5s waiting for condition");
 }
 
-fn last_user_text(req: &CompletionRequest) -> Option<String> {
+fn last_user_text(req: &ModelRequest) -> Option<String> {
     req.messages.iter().rev().find_map(|m| match m {
         Message::User { content } => Some(
             content

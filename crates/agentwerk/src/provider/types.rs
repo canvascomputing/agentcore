@@ -113,7 +113,7 @@ impl std::ops::AddAssign<&TokenUsage> for TokenUsage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompletionResponse {
+pub struct ModelResponse {
     pub content: Vec<ContentBlock>,
     pub status: ResponseStatus,
     pub usage: TokenUsage,

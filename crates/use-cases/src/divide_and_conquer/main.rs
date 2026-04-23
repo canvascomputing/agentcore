@@ -15,7 +15,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use agentwerk::{Agent, Batch, Event, EventKind, Output, Tool, ToolResult};
+use agentwerk::event::EventKind;
+use agentwerk::tools::{Tool, ToolResult};
+use agentwerk::{Agent, Batch, Event, Output};
 use serde_json::{json, Value};
 
 const WORKER_PROMPT: &str = "\
@@ -339,13 +341,13 @@ fn format_range(range: Option<&(u64, u64)>) -> String {
 }
 
 fn failure_reason(output: &Output) -> String {
-    let status = format!("{:?}", output.status);
+    let outcome = format!("{:?}", output.outcome);
     let turns = output.statistics.turns;
     let preview = truncate(output.response_raw.trim(), 100);
     if preview.is_empty() {
-        format!("[{status}, {turns} turns, no final text]")
+        format!("[{outcome}, {turns} turns, no final text]")
     } else {
-        format!("[{status}, {turns} turns] final text: {preview}")
+        format!("[{outcome}, {turns} turns] final text: {preview}")
     }
 }
 

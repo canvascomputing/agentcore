@@ -1,29 +1,42 @@
-//! Agent-level run errors: cancellation, internal stubs, and lifecycle misuse.
+//! Agent-level run and construction errors: policy violations (budgets / caps) and spawned-task crashes.
 
 use std::fmt;
 
-/// Failures that originate in the agent runtime, independent of the provider
-/// or any tool.
+use crate::event::PolicyKind;
+
+/// Failures that originate in the agent runtime, independent of the
+/// provider or any tool. Builder misconfiguration (missing provider / model,
+/// unreadable prompt files) panics at run / builder time instead.
 #[derive(Debug)]
 pub enum AgentError {
-    /// External cancellation fired during the run.
-    Cancelled,
-    /// A code path intentionally returns this sentinel because the feature
-    /// is not yet implemented (e.g. context compaction). Reserved for stubs
-    /// that must fail loudly rather than silently.
-    NotImplemented(&'static str),
-    /// An `OutputFuture` or `AgentHandle` was polled after the run already
-    /// completed: API misuse by the caller.
-    PolledAfterCompletion,
+    /// A spawned agent's execution blew up — either panicked inside a tool or
+    /// prompt, or was externally aborted. `message` is the runtime's
+    /// description of the crash (panic payload or abort reason).
+    AgentCrashed { message: String },
+    /// A configured policy (`max_turns`, `max_input_tokens`, `max_output_tokens`,
+    /// `max_schema_retries`) was exceeded and the run terminated. `kind` says
+    /// which policy tripped.
+    PolicyViolated {
+        kind: PolicyKind,
+        usage: u64,
+        limit: u64,
+    },
 }
 
 impl fmt::Display for AgentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AgentError::Cancelled => write!(f, "Operation cancelled"),
-            AgentError::NotImplemented(what) => write!(f, "Not implemented: {what}"),
-            AgentError::PolledAfterCompletion => {
-                write!(f, "Agent handle polled after completion")
+            AgentError::AgentCrashed { message } => {
+                write!(f, "agent crashed: {message}")
+            }
+            AgentError::PolicyViolated { kind, usage, limit } => {
+                let label = match kind {
+                    PolicyKind::Turns => "Turn limit reached",
+                    PolicyKind::InputTokens => "Input token limit reached",
+                    PolicyKind::OutputTokens => "Output token limit reached",
+                    PolicyKind::SchemaRetries => "Schema retry limit reached",
+                };
+                write!(f, "{label}: {usage}/{limit}")
             }
         }
     }

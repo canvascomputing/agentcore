@@ -13,13 +13,15 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use crate::agent::queue::CommandQueue;
-use crate::agent::{Agent, Event, EventKind, Output, Status};
+use crate::agent::Agent;
 use crate::error::Result;
+use crate::event::{Event, EventKind};
+use crate::output::{Outcome, Output};
 use crate::provider::types::{
-    CompletionResponse, ContentBlock, ResponseStatus, StreamEvent, TokenUsage,
+    ModelResponse, ContentBlock, ResponseStatus, StreamEvent, TokenUsage,
 };
-use crate::provider::{CompletionRequest, Provider, ProviderError, ProviderResult};
-use crate::tools::{ToolContext, ToolResult, Toolable};
+use crate::provider::{ModelRequest, Provider, ProviderError, ProviderResult};
+use crate::tools::{ToolLike, ToolContext, ToolResult};
 
 /// A mock provider that returns pre-configured responses in order.
 ///
@@ -27,19 +29,19 @@ use crate::tools::{ToolContext, ToolResult, Toolable};
 /// [`MockProvider::with_results`] to interleave errors and successes (useful
 /// for testing retry logic).
 pub struct MockProvider {
-    results: Mutex<VecDeque<ProviderResult<CompletionResponse>>>,
-    pub requests: Mutex<Vec<CompletionRequest>>,
+    results: Mutex<VecDeque<ProviderResult<ModelResponse>>>,
+    pub requests: Mutex<Vec<ModelRequest>>,
 }
 
 impl MockProvider {
-    pub fn new(responses: Vec<CompletionResponse>) -> Self {
+    pub fn new(responses: Vec<ModelResponse>) -> Self {
         Self {
             results: Mutex::new(responses.into_iter().map(Ok).collect()),
             requests: Mutex::new(Vec::new()),
         }
     }
 
-    pub fn with_results(results: Vec<ProviderResult<CompletionResponse>>) -> Self {
+    pub fn with_results(results: Vec<ProviderResult<ModelResponse>>) -> Self {
         Self {
             results: Mutex::new(VecDeque::from(results)),
             requests: Mutex::new(Vec::new()),
@@ -61,7 +63,7 @@ impl MockProvider {
         self.requests.lock().unwrap().len()
     }
 
-    pub fn last_request(&self) -> Option<CompletionRequest> {
+    pub fn last_request(&self) -> Option<ModelRequest> {
         self.requests.lock().unwrap().last().cloned()
     }
 
@@ -76,10 +78,10 @@ impl MockProvider {
 }
 
 impl Provider for MockProvider {
-    fn complete(
+    fn respond(
         &self,
-        request: CompletionRequest,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<CompletionResponse>> + Send + '_>> {
+        request: ModelRequest,
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
         self.requests.lock().unwrap().push(request);
 
         Box::pin(async move {
@@ -91,13 +93,13 @@ impl Provider for MockProvider {
         })
     }
 
-    fn complete_streaming(
+    fn respond_streaming(
         &self,
-        request: CompletionRequest,
+        request: ModelRequest,
         on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<CompletionResponse>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
         Box::pin(async move {
-            let response = self.complete(request).await?;
+            let response = self.respond(request).await?;
             for block in &response.content {
                 if let ContentBlock::Text { text } = block {
                     on_event(StreamEvent::TextDelta {
@@ -112,8 +114,8 @@ impl Provider for MockProvider {
     }
 }
 
-pub fn text_response(text: &str) -> CompletionResponse {
-    CompletionResponse {
+pub fn text_response(text: &str) -> ModelResponse {
+    ModelResponse {
         content: vec![ContentBlock::Text {
             text: text.to_string(),
         }],
@@ -123,8 +125,8 @@ pub fn text_response(text: &str) -> CompletionResponse {
     }
 }
 
-pub fn truncated_response(text: &str) -> CompletionResponse {
-    CompletionResponse {
+pub fn truncated_response(text: &str) -> ModelResponse {
+    ModelResponse {
         content: vec![ContentBlock::Text {
             text: text.to_string(),
         }],
@@ -134,8 +136,8 @@ pub fn truncated_response(text: &str) -> CompletionResponse {
     }
 }
 
-pub fn tool_response(tool_name: &str, id: &str, input: serde_json::Value) -> CompletionResponse {
-    CompletionResponse {
+pub fn tool_response(tool_name: &str, id: &str, input: serde_json::Value) -> ModelResponse {
+    ModelResponse {
         content: vec![ContentBlock::ToolUse {
             id: id.to_string(),
             name: tool_name.to_string(),
@@ -174,7 +176,7 @@ impl MockTool {
     }
 }
 
-impl Toolable for MockTool {
+impl ToolLike for MockTool {
     fn name(&self) -> &str {
         &self.name
     }
@@ -210,7 +212,7 @@ impl DeferredMockTool {
     }
 }
 
-impl Toolable for DeferredMockTool {
+impl ToolLike for DeferredMockTool {
     fn name(&self) -> &str {
         &self.name
     }
@@ -292,14 +294,14 @@ impl EventCollector {
         self.events.lock().unwrap().clone()
     }
 
-    pub fn agent_ends(&self) -> Vec<(String, u32, Status)> {
+    pub fn agent_ends(&self) -> Vec<(String, u32, Outcome)> {
         self.events
             .lock()
             .unwrap()
             .iter()
             .filter_map(|e| match &e.kind {
-                EventKind::AgentFinished { turns, status } => {
-                    Some((e.agent_name.clone(), *turns, status.clone()))
+                EventKind::AgentFinished { turns, outcome } => {
+                    Some((e.agent_name.clone(), *turns, outcome.clone()))
                 }
                 _ => None,
             })

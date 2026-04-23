@@ -11,7 +11,8 @@ use super::common;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use agentwerk::{Agent, Event, EventKind};
+use agentwerk::event::EventKind;
+use agentwerk::{Agent, Event};
 
 #[tokio::test]
 async fn external_sender_delivers_two_instructions_and_clone_cancels(
@@ -169,8 +170,8 @@ fn format_event(e: &Event) -> Option<String> {
             Some(d) => format!("start  ({d})"),
             None => "start".into(),
         }),
-        EventKind::AgentFinished { turns, status } => {
-            Some(format!("end    ({turns} turns, {status:?})"))
+        EventKind::AgentFinished { turns, outcome } => {
+            Some(format!("end    ({turns} turns, {outcome:?})"))
         }
         EventKind::TurnStarted { turn } => Some(format!("turn   {turn}")),
         EventKind::ToolCallStarted {

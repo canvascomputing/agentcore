@@ -11,13 +11,12 @@ use serde_json::Value;
 use crate::error::Result;
 
 use super::error::{ProviderError, ProviderResult};
-use super::model::ModelLookup;
 use super::r#trait::{
-    build_client, CompletionRequest, Provider, ToolChoice, DEFAULT_REQUEST_TIMEOUT,
+    build_client, ModelRequest, Provider, ToolChoice, DEFAULT_REQUEST_TIMEOUT,
 };
 use super::stream::{SseEvent, StreamParser};
 use super::types::{
-    CompletionResponse, ContentBlock, Message, ResponseStatus, StreamEvent, TokenUsage,
+    ModelResponse, ContentBlock, Message, ResponseStatus, StreamEvent, TokenUsage,
 };
 
 /// OpenAI-compatible LLM provider.
@@ -70,8 +69,8 @@ impl OpenAiProvider {
     }
 }
 
-impl ModelLookup for OpenAiProvider {
-    fn lookup_context_window_size(id: &str) -> Option<u64> {
+impl OpenAiProvider {
+    pub(crate) fn lookup_context_window_size(id: &str) -> Option<u64> {
         let m = id.to_ascii_lowercase();
         // Newest first so "gpt-4" doesn't shadow "gpt-4.1".
         if m.contains("gpt-4.1") {
@@ -131,10 +130,10 @@ impl Provider for OpenAiProvider {
         Box::pin(async { super::r#trait::prewarm_with(&self.client, &self.base_url).await })
     }
 
-    fn complete(
+    fn respond(
         &self,
-        request: CompletionRequest,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<CompletionResponse>> + Send + '_>> {
+        request: ModelRequest,
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
         let body = serialize_request(&request);
         let url = format!("{}/v1/chat/completions", self.base_url);
 
@@ -144,11 +143,11 @@ impl Provider for OpenAiProvider {
         })
     }
 
-    fn complete_streaming(
+    fn respond_streaming(
         &self,
-        request: CompletionRequest,
+        request: ModelRequest,
         on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<CompletionResponse>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
         let mut body = serialize_request(&request);
         body["stream"] = Value::Bool(true);
         body["stream_options"] = serde_json::json!({"include_usage": true});
@@ -231,7 +230,7 @@ async fn stream_response(
     response: reqwest::Response,
     on_event: &Arc<dyn Fn(StreamEvent) + Send + Sync>,
     cache_tokens: bool,
-) -> ProviderResult<CompletionResponse> {
+) -> ProviderResult<ModelResponse> {
     use futures_util::StreamExt;
 
     let mut state = StreamState::default();
@@ -274,7 +273,7 @@ struct StreamState {
 }
 
 impl StreamState {
-    fn into_response(self) -> CompletionResponse {
+    fn into_response(self) -> ModelResponse {
         let mut content = Vec::new();
         if !self.text.is_empty() {
             content.push(ContentBlock::Text { text: self.text });
@@ -290,7 +289,7 @@ impl StreamState {
                 input,
             });
         }
-        CompletionResponse {
+        ModelResponse {
             content,
             status: self.status,
             usage: self.usage,
@@ -374,7 +373,7 @@ fn parse_streaming_usage(u: &Value, cache_tokens: bool, dst: &mut TokenUsage) {
     }
 }
 
-fn serialize_request(request: &CompletionRequest) -> Value {
+fn serialize_request(request: &ModelRequest) -> Value {
     let mut body = serde_json::json!({
         "model": request.model,
         "messages": serialize_messages(request),
@@ -396,7 +395,7 @@ fn serialize_request(request: &CompletionRequest) -> Value {
     body
 }
 
-fn serialize_messages(request: &CompletionRequest) -> Vec<Value> {
+fn serialize_messages(request: &ModelRequest) -> Vec<Value> {
     let mut messages = Vec::new();
 
     if !request.system_prompt.is_empty() {
@@ -481,7 +480,7 @@ fn serialize_assistant_message(blocks: &[ContentBlock]) -> Value {
     msg
 }
 
-fn serialize_tool_definition(tool: &crate::tools::tool::ToolDefinition) -> Value {
+fn serialize_tool_definition(tool: &crate::tools::ToolDefinition) -> Value {
     serde_json::json!({
         "type": "function",
         "function": {
@@ -501,11 +500,11 @@ fn serialize_tool_choice(choice: &ToolChoice) -> Value {
     }
 }
 
-fn parse_response(json: Value, cache_tokens: bool) -> CompletionResponse {
+fn parse_response(json: Value, cache_tokens: bool) -> ModelResponse {
     let choice = &json["choices"][0];
     let message = &choice["message"];
 
-    CompletionResponse {
+    ModelResponse {
         content: parse_content(message),
         status: parse_status(choice),
         usage: parse_usage(&json, cache_tokens),
@@ -574,10 +573,10 @@ fn parse_usage(json: &Value, cache_tokens: bool) -> TokenUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::tool::ToolDefinition;
+    use crate::tools::ToolDefinition;
 
-    fn dummy_request() -> CompletionRequest {
-        CompletionRequest {
+    fn dummy_request() -> ModelRequest {
+        ModelRequest {
             model: "test-model".into(),
             system_prompt: "You are helpful.".into(),
             messages: vec![Message::User {
@@ -625,7 +624,7 @@ mod tests {
 
     #[test]
     fn serialize_tools() {
-        let request = CompletionRequest {
+        let request = ModelRequest {
             model: "test".into(),
             system_prompt: String::new(),
             messages: vec![],
@@ -646,7 +645,7 @@ mod tests {
 
     #[test]
     fn serialize_tool_choice_specific() {
-        let request = CompletionRequest {
+        let request = ModelRequest {
             model: "test".into(),
             system_prompt: String::new(),
             messages: vec![],

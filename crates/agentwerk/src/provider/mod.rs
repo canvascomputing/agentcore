@@ -17,12 +17,12 @@ pub use environment::{from_env, model_from_env};
 pub use error::{ProviderError, ProviderResult, RequestErrorKind};
 pub use litellm::LiteLlmProvider;
 pub use mistral::MistralProvider;
-pub use model::{Model, ModelLookup};
+pub use model::Model;
 pub use openai::OpenAiProvider;
-pub use r#trait::{CompletionRequest, Provider, ToolChoice};
+pub use r#trait::{ModelRequest, Provider, ToolChoice};
 pub use types::{ContentBlock, Message, TokenUsage};
 
-pub(crate) fn request_retry_delay_from_headers(
+pub(crate) fn retry_delay_from_headers(
     resp: &reqwest::Response,
 ) -> Option<std::time::Duration> {
     let value = resp.headers().get("retry-after")?.to_str().ok()?;
@@ -50,30 +50,30 @@ where
     if status < 400 {
         return Ok(resp);
     }
-    let request_retry_delay = request_retry_delay_from_headers(&resp);
+    let retry_delay = retry_delay_from_headers(&resp);
     let body = resp.text().await.unwrap_or_default();
     if let Some(e) = classify(status, &body) {
         return Err(e);
     }
-    Err(fallback_http_error(status, body, request_retry_delay))
+    Err(fallback_http_error(status, body, retry_delay))
 }
 
 fn fallback_http_error(
     status: u16,
     body: String,
-    request_retry_delay: Option<std::time::Duration>,
+    retry_delay: Option<std::time::Duration>,
 ) -> ProviderError {
     match status {
         429 | 529 => ProviderError::RateLimited {
             message: body,
             status,
-            request_retry_delay,
+            retry_delay,
         },
         _ => ProviderError::StatusUnclassified {
             status,
             message: body,
             retryable: matches!(status, 500 | 502 | 503 | 504),
-            request_retry_delay,
+            retry_delay,
         },
     }
 }

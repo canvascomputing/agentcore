@@ -7,10 +7,10 @@ use std::pin::Pin;
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::tools::tool::{ToolContext, ToolResult, Toolable};
+use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
 
 /// List the entries of a directory with type and size. Read-only. Pair with
-/// [`GlobTool`](crate::GlobTool) when you need pattern-based file discovery.
+/// [`GlobTool`](crate::tools::GlobTool) when you need pattern-based file discovery.
 pub struct ListDirectoryTool;
 
 const DESCRIPTION: &str = "\
@@ -19,7 +19,7 @@ List the contents of a directory. Returns file and directory names.
 - Use this for a quick overview of directory structure.
 - For finding files by pattern across the tree, use glob instead.";
 
-impl Toolable for ListDirectoryTool {
+impl ToolLike for ListDirectoryTool {
     fn name(&self) -> &str {
         "list_directory"
     }

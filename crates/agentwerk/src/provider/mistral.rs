@@ -6,10 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::error::ProviderResult;
-use super::model::ModelLookup;
 use super::openai::OpenAiProvider;
-use super::r#trait::{CompletionRequest, Provider};
-use super::types::{CompletionResponse, StreamEvent};
+use super::r#trait::{ModelRequest, Provider};
+use super::types::{ModelResponse, StreamEvent};
 use crate::error::Result;
 
 /// Mistral LLM provider. Speaks OpenAI's chat-completions API, so it
@@ -38,8 +37,8 @@ impl MistralProvider {
     }
 }
 
-impl ModelLookup for MistralProvider {
-    fn lookup_context_window_size(id: &str) -> Option<u64> {
+impl MistralProvider {
+    pub(crate) fn lookup_context_window_size(id: &str) -> Option<u64> {
         let m = id.to_ascii_lowercase();
         if m.contains("codestral") {
             return Some(256_000);
@@ -55,19 +54,19 @@ impl ModelLookup for MistralProvider {
 }
 
 impl Provider for MistralProvider {
-    fn complete(
+    fn respond(
         &self,
-        request: CompletionRequest,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<CompletionResponse>> + Send + '_>> {
-        self.0.complete(request)
+        request: ModelRequest,
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
+        self.0.respond(request)
     }
 
-    fn complete_streaming(
+    fn respond_streaming(
         &self,
-        request: CompletionRequest,
+        request: ModelRequest,
         on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<CompletionResponse>> + Send + '_>> {
-        self.0.complete_streaming(request, on_event)
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
+        self.0.respond_streaming(request, on_event)
     }
 
     fn prewarm(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {

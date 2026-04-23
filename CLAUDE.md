@@ -39,9 +39,9 @@ crates/agentwerk/src/
 
   provider/
     mod.rs                re-exports
-    trait.rs              Provider trait, CompletionRequest, ToolChoice, prewarm_with
-    types.rs              Message, ContentBlock, TokenUsage, ResponseStatus, CompletionResponse, StreamEvent
-    model.rs              Model (compact_threshold, RESERVED_RESPONSE_TOKENS, COMPACTION_HEADROOM_TOKENS)
+    trait.rs              Provider trait, ModelRequest, ToolChoice, prewarm_with
+    types.rs              Message, ContentBlock, TokenUsage, ResponseStatus, ModelResponse, StreamEvent
+    model.rs              Model (name + context_window_size)
     anthropic.rs          AnthropicProvider (with SSE streaming)
     openai.rs             OpenAiProvider (with SSE streaming; includes litellm/mistral constructors)
     litellm.rs            LiteLlmProvider
@@ -57,17 +57,19 @@ crates/agentwerk/src/
     spec.rs               AgentSpec (model accessor, system_prompt method, Default + DEFAULT_MAX_REQUEST_RETRIES/DEFAULT_BACKOFF_MS), interpolate, build_context_prompt
     loop.rs               LoopRuntime (environment), LoopState (initial), run_loop
     spawn.rs              AgentHandle, OutputFuture, impl Agent { spawn }
-    event.rs              Event struct + EventKind enum (AgentStarted carries description for spawned children)
-    error.rs              AgentError (run-lifecycle failures: Cancelled, NotImplemented, PolledAfterCompletion)
-    output.rs             Output, Status, Statistics, OutputSchema (validate, retry_message), OutputError
+    error.rs              AgentError (run-lifecycle and builder failures)
     prompts.rs            DEFAULT_BEHAVIOR_PROMPT and structured-output constants
-    batch.rs              Batch (builder: .run waits for all, .spawn returns BatchHandle + BatchOutputStream for dynamic pools)
+    compact.rs            Context-window compaction seam (pub(crate))
     queue.rs              CommandQueue, QueuePriority, QueuedCommand (internal)
+
+  batch.rs                Batch (builder: .run waits for all, .spawn returns BatchHandle + BatchOutputStream for dynamic pools)
+  event.rs                Event struct + EventKind enum (AgentStarted carries description for spawned children); CompactReason
+  output.rs               Output, Outcome, Statistics, OutputSchema (validate, retry_message), SchemaViolation (pub(crate))
 
   tools/
     mod.rs                re-exports
-    tool.rs               Toolable trait, Tool struct (ad-hoc, closure-handler), ToolRegistry (ToolRegistry::execute), ToolContext
-    error.rs              ToolError (ContextUnavailable, ArgumentsRejected — most tool failures flow through ToolResult::Error instead)
+    tool.rs               ToolLike trait, Tool struct (ad-hoc, closure-handler), ToolRegistry (ToolRegistry::execute), ToolContext
+    error.rs              ToolError (struct with tool_name + message — most tool failures flow through ToolResult::Error instead)
     read_file.rs          ReadFileTool
     write_file.rs         WriteFileTool
     edit_file.rs          EditFileTool
@@ -102,32 +104,42 @@ Use cases are in `crates/use-cases/src/cli/`. Run with `make use_case name=<name
 ## Key conventions
 
 - **No new dependencies without asking.** The crate is intentionally minimal (tokio, serde, serde_json, libc, reqwest, futures-util). Providers own a `reqwest::Client` directly — no transport abstraction.
-- **No ad-hoc changes to critical types without a plan.** These types form the public API and are used across the entire codebase: `Agent`, `ToolContext`, `Event`, `Toolable` trait, `CompletionRequest`, `Output`, `Batch`. Propose changes in a plan first.
+- **No ad-hoc changes to critical types without a plan.** These types form the public API and are used across the entire codebase: `Agent`, `ToolContext`, `Event`, `ToolLike` trait, `ModelRequest`, `Output`, `Batch`. Propose changes in a plan first.
 - **Tools capture dependencies at construction time** via closures or struct fields. The internal `ToolContext` handles (`runtime: Arc<LoopRuntime>`, `caller_spec: Arc<AgentSpec>`) exist solely for the agent loop to give `SpawnAgentTool` / `ToolSearchTool` read access to loop state — do not use them for new tools.
-- **`tools/tool.rs` vs `tools/`**: `tool.rs` defines the trait and infrastructure (`Toolable` trait, `Tool` struct for ad-hoc tools, `ToolRegistry`, `ToolContext`). Other files in `tools/` are concrete implementations.
-- **`agent/` vs `provider/` vs `persistence/`**: `agent/` contains the agent's builder surface (`Agent` in `werk.rs`) and everything the execution loop consumes (`AgentSpec` / `LoopRuntime` / `LoopState` / `run_loop` in `loop.rs`), events, output, and prompts. `provider/` contains LLM communication and estimated costs. `persistence/` contains internal disk storage (session transcripts, tasks).
-- **`_file` variants**: All prompt builder methods (`identity_prompt`, `instruction_prompt`, `behavior_prompt`, `context_prompt`) and `output_schema` have `_file` counterparts (e.g. `identity_prompt_file(path)`, `output_schema_file(path)`) that load content from disk. File-read errors are collected on the `Agent` and surfaced when `run()` is called.
+- **`tools/tool.rs` vs `tools/`**: `tool.rs` defines the trait and infrastructure (`ToolLike` trait, `Tool` struct for ad-hoc tools, `ToolRegistry`, `ToolContext`). Other files in `tools/` are concrete implementations.
+- **`agent/` vs `batch` / `event` / `output` vs `provider/` vs `persistence/`**: `agent/` contains the agent's builder surface (`Agent`) and everything the execution loop consumes internally (`AgentSpec` / `LoopRuntime` / `LoopState` / `run_loop`), plus `AgentError`, `AgentHandle`, and prompts. `batch.rs`, `event.rs`, `output.rs` are sibling top-level modules: concerns that callers observe in their own right (running many agents, watching a run, reading the result). `provider/` contains LLM communication and estimated costs. `persistence/` contains internal disk storage (session transcripts, tasks).
+- **`_file` variants**: All prompt builder methods (`identity_prompt`, `instruction_prompt`, `behavior_prompt`, `context_prompt`) and `output_schema` have `_file` counterparts (e.g. `identity_prompt_file(path)`, `output_schema_file(path)`) that load content from disk. Missing / unreadable files panic at builder time — prompt resolution is eager, not deferred.
 - **Tests live inline** in each module as `#[cfg(test)] mod tests`. Use `MockProvider` and `TestHarness` from `testutil.rs`.
 
 ## Naming conventions
 
 ### Type names
 
-**The rule: headline types re-exported at the crate root use bare, single-word names. Everything else is qualified enough to read self-documenting on its own — either an inherently specific compound, a vendor-prefixed variant, or an internal type whose module path disambiguates it.**
+**The rule: the crate root holds only headline types and primary abstractions. Everything else lives with its domain module.**
 
-- **Crate-root headline types use bare single-word names.** `Agent`, `Tool`, `Event`, `Message`, `Result`, `Output`, `Status`, `Statistics`, `OutputFuture` — all re-exported at `agentwerk::`, and their bare names read unambiguously from that crate path. New headline types follow the same pattern.
-- **Inherently specific compounds stand alone.** `LoopState`, `LoopRuntime`, `AgentSpec`, `AgentHandle`, `EventKind`, `OutputSchema`, `CompactReason`, `CompletionRequest`, `CompletionResponse`, `TokenUsage`, `ContentBlock`, `StreamEvent`, `ToolCall`, `ToolRegistry`, `ResponseStatus`, `CommandQueue`, `SessionStore`, `TaskStore`, `ModelLookup`, `ProviderError`, `ProviderResult` already say what they are.
-- **Vendor-prefixed types** follow the same logic — `AnthropicProvider`, `OpenAiProvider`, `MistralProvider`, `LiteLlmProvider`, `BashTool`, `ReadFileTool`. The prefix disambiguates which thing.
-- **Acronyms follow Rust API guidelines**: `LiteLlmProvider`, not `LiteLLMProvider`. Already consistent: `OpenAiProvider`.
+- **Crate root = headlines only.** Currently 9 items: `Error`, `Result`, `Model`, `Provider`, `Tool`, `Agent`, `Batch`, `Event`, `Output`. These are what callers reach for first. A new item earns a root slot only if it's the entry point to a new dimension of the API — not because it's convenient to import.
+- **Everything else lives under its domain module.** The rule applies uniformly:
+  - **Concrete implementations** stay with their abstraction: `AnthropicProvider`, `OpenAiProvider`, `MistralProvider`, `LiteLlmProvider` under `provider::`; `BashTool`, `ReadFileTool`, `SpawnAgentTool`, etc. under `tools::`.
+  - **Companion types and handles** stay with their owner: `AgentHandle`, `OutputFuture` under `agent::`; `BatchHandle`, `BatchOutputStream` under `batch::`; `EventKind`, `CompactReason`, `PolicyKind`, `ToolFailureKind` under `event::`; `Outcome`, `Statistics` under `output::`.
+  - **Domain errors** stay with their domain: `ProviderError` under `provider::`, `ToolError` under `tools::`, `AgentError` under `agent::`. Internal-only errors (e.g. `PersistenceError`, `SchemaViolation`) stay `pub(crate)` and route through their consumer — the task store's in-band failures surface as `ToolResult::Error`, structural failures bubble up as `ToolError`; schema violations surface as `EventKind::SchemaRetried` per attempt and `AgentError::PolicyViolated { kind: SchemaRetries, … }` on exhaustion.
+  - **Event-variant tag enums** stay with the event: `CompactReason` under `event::`, `RequestErrorKind` under `provider::` (where the request lives).
+  - **Wire-protocol types** stay with the protocol: `ModelRequest`, `Message`, `ContentBlock`, `TokenUsage` under `provider::`.
+  - **Free functions** stay in their module, never at the root: `tool()` lives at `tools::tool`.
+- **Name collisions at the root are forbidden.** Don't put `ToolResult` next to `Result`, or `ToolError` next to `Error` — demote one. The root namespace must read unambiguously.
+- **Inherently specific compounds stand alone at their module path.** `LoopState`, `LoopRuntime`, `AgentSpec`, `EventKind`, `OutputSchema`, `ModelRequest`, `TokenUsage`, `ToolRegistry`, `SessionStore`, `TaskStore` already say what they are; no further prefixing needed.
+- **Vendor-prefixed types** use the prefix to disambiguate: `AnthropicProvider`, `OpenAiProvider`, `LiteLlmProvider`, `BashTool`, `ReadFileTool`.
+- **Acronyms follow Rust API guidelines**: `LiteLlmProvider`, not `LiteLLMProvider`; `OpenAiProvider`, not `OpenAIProvider`.
 - **Two structs may not share a bare name in one module.** When that would happen, keep both qualified — don't pick one to prefix as a tiebreaker.
 
-**Variant naming — tense uniformity.** Every failure-state variant across the crate uses passive-voice past-participle form: `<Subject><Verb-ed>`. Examples: `RequestFailed`, `ToolCallFailed`, `AuthenticationFailed`, `SchemaViolated`, `EnvVarNotSet`, `TaskNotFound`, `ContextWindowExceeded`, `StreamInterrupted`. No adjective-first forms (`Invalid<X>`, `Unexpected<X>`, `Missing<X>`). No noun-suffix forms (`<X>Error` — the `Error` suffix is reserved for the crate-level `Error` type and its domain sub-enums: `ProviderError`, `ToolError`, `AgentError`, `OutputError`, `PersistenceError`, `ConfigError`). State-transition events also use past-participle: `AgentStarted`, `AgentFinished`, `ToolCallStarted`, `ToolCallFinished`, `RequestRetried`, `ContextCompacted`, `OutputTruncated`, `InputBudgetExhausted`. Whether a failure is terminal for the run is documented on the variant, not encoded in the name (e.g. `RequestFailed` is run-terminal; `ToolCallFailed` is call-terminal and the run continues).
+**Variant naming — tense uniformity.** Every failure-state variant across the crate uses passive-voice past-participle form: `<Subject><Verb-ed>`. Examples: `RequestFailed`, `ToolCallFailed`, `AuthenticationFailed`, `ProviderUnrecognized`, `TaskNotFound`, `ContextWindowExceeded`, `StreamInterrupted`, `PolicyViolated`. No adjective-first forms (`Invalid<X>`, `Unexpected<X>`, `Missing<X>`). No noun-suffix forms (`<X>Error` — the `Error` suffix is reserved for the crate-level `Error` type and its domain sub-enums: `ProviderError`, `ToolError`, `AgentError`). State-transition events also use past-participle: `AgentStarted`, `AgentFinished`, `ToolCallStarted`, `ToolCallFinished`, `RequestRetried`, `ContextCompacted`, `OutputTruncated`, `SchemaRetried`. Whether a failure is terminal for the run is documented on the variant, not encoded in the name (e.g. `ToolCallFailed` is call-terminal and the run continues).
 
-**`Error` is categorical.** The top-level `Error` enum is a thin wrapper: `Provider(ProviderError)`, `Agent(AgentError)`, `Tool(ToolError)`, `Output(OutputError)`, `Persistence(PersistenceError)`, `Config(ConfigError)`. Each sub-enum lives beside the code that raises it and owns its own variants. No blanket `From<io::Error>` or `From<serde_json::Error>` — each domain either has its own From impl (e.g. `From<io::Error> for PersistenceError`) or calls `.map_err(...)` at the boundary, so every IO/JSON failure declares its domain. `Error::is_retryable()` and `Error::request_retry_delay()` delegate to `ProviderError`.
+**`Error` is categorical.** The top-level `Error` enum is a thin wrapper: `Provider(ProviderError)`, `Agent(AgentError)`, `Tool(ToolError)`. `ProviderError` and `AgentError` are enums; `ToolError` is a flat struct (`tool_name` + `message`) because every infrastructure-level tool failure is handled the same way — two variants would be a distinction without a difference. Internal-only errors (e.g. `PersistenceError`, `SchemaViolation`) stay `pub(crate)` and their consumer routes them into a public variant — the task store folds in-band failures into `ToolResult::Error` and structural failures into a `ToolError`; schema mismatches surface through `EventKind::SchemaRetried` per attempt and `AgentError::PolicyViolated { kind: SchemaRetries, … }` on exhaustion. No blanket `From<io::Error>` or `From<serde_json::Error>` — each domain either has its own `From` impl or calls `.map_err(...)` at the boundary, so every IO/JSON failure declares its domain. `Error::is_retryable()` and `Error::retry_delay()` delegate to `ProviderError`.
 
-**Payload field naming.** Human-readable strings on every variant are named `message: String` (never `error`). Underlying-error fields are named `source` (e.g. `FileReadFailed { path, source: io::Error }`). Typed metadata sits alongside with descriptive names (`status`, `retryable`, `request_retry_delay`, `tool_name`, `retries`, `after_ms`).
+**Run terminations surface on `Output`, not on `.run()`'s `Err`.** Once the loop starts, every termination returns `Ok(Output)`. `Output.outcome` is a three-way verdict — `Completed`, `Cancelled`, `Failed` — and `Output.errors` is the full list of errors observed during the run (retried transient failures, tool-call bubbles, budget hits, schema exhaustion). On `Failed` the last entry is the cause. `.run()` on a non-spawned agent effectively never returns `Err` — builder misconfiguration (missing provider, missing model, unreadable prompt or schema files) panics. `.spawn()` catches panics at the tokio boundary and surfaces them as `AgentError::AgentCrashed` on the `OutputFuture`. Budget and turn-limit hits land in `errors` as `AgentError::PolicyViolated { kind: PolicyKind, … }`, where `kind` distinguishes `Turns` / `InputTokens` / `OutputTokens`.
 
-**Variant shape.** Tuple variants wrap one semantic payload with no field disambiguation needed: `Provider(ProviderError)`, `NotImplemented(&'static str)`, `TaskNotFound(String)`, `EnvVarNotSet(&'static str)`, `IoFailed(io::Error)`. Struct variants carry multiple fields or where a field name adds meaning: `ToolError::ContextUnavailable { tool_name, message }`, `ConfigError::FileReadFailed { path, source }`.
+**Payload field naming.** Human-readable strings on every variant are named `message: String` (never `error`). Underlying-error fields are named `source` when wrapped (e.g. `FooFailed { source: io::Error }`). Typed metadata sits alongside with descriptive names (`status`, `retryable`, `retry_delay`, `tool_name`, `retries`, `after_ms`).
+
+**Variant shape.** Tuple variants wrap one semantic payload with no field disambiguation needed: `Provider(ProviderError)`, `TaskNotFound(String)`, `IoFailed(io::Error)`. Struct variants carry multiple fields or where a field name adds meaning: `AgentError::PolicyViolated { kind, usage, limit }`, `ProviderError::ProviderUnrecognized { message }`.
 
 **`ToolResult` and similar two-arm result enums.** Use one word per variant across the whole type — variants `Success` / `Error`, constructors `success()` / `error()`, no `is_*` predicates or `content()` accessors (callers pattern-match `Success(s) | Error(s)`).
 
@@ -150,7 +162,7 @@ Use cases are in `crates/use-cases/src/cli/`. Run with `make use_case name=<name
 
 ### Free functions
 
-- snake_case, reserved for cases without a natural receiver type. Most operations live as methods on their owning type — `OutputSchema::validate`, `ToolRegistry::execute`, `Model::compact_threshold`, `Agent::interpolate`.
+- snake_case, reserved for cases without a natural receiver type. Most operations live as methods on their owning type — `OutputSchema::validate`, `ToolRegistry::execute`, `Agent::interpolate`.
 
 ### Tool structs
 
@@ -187,7 +199,7 @@ Not allowed:
 - Restating what the code does.
 - Task, PR, issue, or changelog references ("added for X flow", "fixes #123").
 - Commented-out code: delete it; git remembers.
-- Stub or aspirational markers. If a function is not implemented, return `Error::NotImplemented("...")`; do not leave a promise in a comment.
+- Stub or aspirational markers. If a function is not implemented, panic with `unimplemented!(...)` or (for harmless stubs that must not crash the run) return `Ok(())`; do not leave a promise in a comment.
 - `TODO` / `FIXME` / `NOTE` markers. Track work in GitHub issues; a marker without a plan is noise.
 - **Section dividers of any kind** (`// -----`, `// ====`, `// ####`, ASCII boxes). If a file has several concerns, split it. Rely on `impl` blocks, module boundaries, and type structure to organize code.
 
@@ -290,7 +302,7 @@ fn drain_stream(...) { ... }
 
 // BAD: stale marker
 // TODO: implement compaction
-fn compact(...) { Err(Error::NotImplemented("context compaction")) }
+fn compact(...) { Ok(()) }
 
 // BAD: section divider
 // ---------------------------------------------------------------------------
@@ -304,12 +316,12 @@ The README is the public face of the library. Keep it terse, example-driven, and
 
 - **Section order is fixed**: Installation → Quick Start → Use Cases → API → Development. Each top-level section maps to a TOC link in the centered header.
 - **Code before prose.** Lead every subsection with a minimal working example, then explain. A one-sentence intro is enough — don't over-narrate.
-- **Tables for enumerations.** Use tables to list methods, events, built-in tools, guardrails, env variables, and inheritance rules. Prefer a table over a bulleted list whenever items share the same shape (name + description, or method + default + effect).
+- **Tables for enumerations.** Use tables to list methods, events, built-in tools, policies, env variables, and inheritance rules. Prefer a table over a bulleted list whenever items share the same shape (name + description, or method + default + effect).
 - **Shape tables with grouping columns.** When entries cluster (Agent / LLM Provider / Tool Usage for events; File / Search / Shell / Web / Utility for tools), use a leading empty-header column with bold group labels spanning multiple rows.
 - **Use `>` blockquotes for callouts** — tips, prerequisites, cross-references. Example: `> Consider configuring your LLM provider (see [Environment](#environment)).`
 - **Use cases show real output.** Every entry in Use Cases includes the invocation (`make use_case ...`) and a realistic JSON output block. No placeholder results.
 - **Cross-link, don't repeat.** Reference the Environment section from anywhere that mentions provider setup; reference Inheritance when discussing sub-agents. Keep each fact in one place.
-- **Headers**: `#` title, `##` top-level (Installation, API, Development), `###` features (Agent, Prompting, Sub-agents, Guardrails, Batch, Tools), `####` nested topics (Inheritance).
+- **Headers**: `#` title, `##` top-level (Installation, API, Development), `###` features (Agent, Prompting, Sub-agents, Policies, Batch, Tools), `####` nested topics (Inheritance).
 - **Voice**: direct, imperative, no marketing. "Give your agent access to simple tools" — not "empower your application with…". Keep the one-sentence tagline style ("A minimal Rust crate that…").
 - **Keep examples minimal.** Show the smallest snippet that demonstrates the feature. Elide unrelated setup with `...` or obvious imports. Use `claude-haiku-4-5-20251001` / `claude-sonnet-4-20250514` as example models to stay consistent.
 - **Update triggers**: a new builder method, a new tool, a new event kind, a new env variable, or a changed default all require a README edit in the matching table. Structural/internal changes do not.

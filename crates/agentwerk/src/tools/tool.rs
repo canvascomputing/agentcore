@@ -1,4 +1,4 @@
-//! Core tool infrastructure: the `Toolable` trait, the ad-hoc `Tool` struct, and the registry the loop consults before each provider call.
+//! Core tool infrastructure: the `Tool` trait, the ad-hoc `Tool` struct, and the registry the loop consults before each provider call.
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -12,6 +12,7 @@ use serde_json::Value;
 
 use crate::agent::{AgentSpec, LoopRuntime};
 use crate::error::Result;
+use crate::event::ToolFailureKind;
 use crate::provider::types::ContentBlock;
 
 /// Context passed to tool execution. `runtime` and `caller_spec` are ambient
@@ -91,7 +92,7 @@ impl std::fmt::Debug for ToolContext {
 }
 
 /// Tool definition sent to the provider as part of the `tools` parameter.
-/// Built from a [`Toolable`]'s `name`, `description`, and `input_schema`.
+/// Built from a [`Tool`]'s `name`, `description`, and `input_schema`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
     /// Unique name the model uses when calling the tool.
@@ -139,9 +140,9 @@ impl ToolResult {
 /// The core tool interface. Object-safe via boxed futures.
 ///
 /// Implement this on any type you want an agent to be able to invoke. For
-/// ad-hoc tools defined inline, use the concrete [`Tool`] struct instead: it
-/// implements `Toolable` for you.
-pub trait Toolable: Send + Sync {
+/// ad-hoc tools defined inline, use the [`Tool`] struct's builder
+/// (`Tool::new(name, description).schema(...).handler(...)`).
+pub trait ToolLike: Send + Sync {
     /// Unique name the model uses to call the tool.
     fn name(&self) -> &str;
 
@@ -158,16 +159,10 @@ pub trait Toolable: Send + Sync {
     }
 
     /// Whether the tool's full definition is hidden until it is discovered
-    /// via [`ToolSearchTool`](crate::ToolSearchTool). Deferred tools appear
+    /// via [`ToolSearchTool`](crate::tools::ToolSearchTool). Deferred tools appear
     /// to the model as name-only stubs. Default: `false`.
     fn should_defer(&self) -> bool {
         false
-    }
-
-    /// Extra keywords used by [`ToolSearchTool`](crate::ToolSearchTool) to
-    /// rank this tool against a query. Default: empty.
-    fn search_hints(&self) -> Vec<String> {
-        Vec::new()
     }
 
     /// Run the tool. The future is held by the agent loop and dropped on
@@ -178,21 +173,11 @@ pub trait Toolable: Send + Sync {
         input: Value,
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>>;
-
-    /// Assemble the tool's wire definition from `name`, `description`, and
-    /// `input_schema`. Override only when you need to customize the wire shape.
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: self.name().to_string(),
-            description: self.description().to_string(),
-            input_schema: self.input_schema(),
-        }
-    }
 }
 
 /// Registry of tools available to an agent.
 pub(crate) struct ToolRegistry {
-    pub(crate) tools: Vec<Arc<dyn Toolable>>,
+    pub(crate) tools: Vec<Arc<dyn ToolLike>>,
 }
 
 impl std::fmt::Debug for ToolRegistry {
@@ -209,11 +194,11 @@ impl ToolRegistry {
         Self { tools: Vec::new() }
     }
 
-    pub(crate) fn register(&mut self, tool: impl Toolable + 'static) {
+    pub(crate) fn register(&mut self, tool: impl ToolLike + 'static) {
         self.tools.push(Arc::new(tool));
     }
 
-    pub(crate) fn get(&self, name: &str) -> Option<Arc<dyn Toolable>> {
+    pub(crate) fn get(&self, name: &str) -> Option<Arc<dyn ToolLike>> {
         self.tools.iter().find(|t| t.name() == name).cloned()
     }
 
@@ -230,7 +215,11 @@ impl ToolRegistry {
                         input_schema: serde_json::json!({}),
                     }
                 } else {
-                    t.definition()
+                    ToolDefinition {
+                        name: t.name().to_string(),
+                        description: t.description().to_string(),
+                        input_schema: t.input_schema(),
+                    }
                 }
             })
             .collect()
@@ -239,17 +228,17 @@ impl ToolRegistry {
     /// Execute tool calls with concurrent read-only batching and serial write
     /// execution.
     ///
-    /// Returns `(ContentBlock, ToolResult)` pairs so the caller can read both
-    /// the model-visible result block and any `ToolResult` side-effects
-    /// (structured output capture, discovered tool names) without dispatching
-    /// on tool names.
+    /// Returns `(ContentBlock, ToolResult, Option<ToolFailureKind>)` triples
+    /// so the caller can read both the model-visible result block and the
+    /// failure classification (`InBand` for `ToolResult::Error`, `Infrastructure`
+    /// for an `Err` raised by the tool or an unknown-tool lookup).
     pub(crate) async fn execute(
         &self,
         calls: &[ToolCall],
         ctx: &ToolContext,
-    ) -> Vec<(ContentBlock, ToolResult)> {
+    ) -> Vec<(ContentBlock, ToolResult, Option<ToolFailureKind>)> {
         let batches = partition_tool_calls(calls, self);
-        let mut results: Vec<(ContentBlock, ToolResult)> = Vec::new();
+        let mut results: Vec<(ContentBlock, ToolResult, Option<ToolFailureKind>)> = Vec::new();
         let semaphore = Arc::new(tokio::sync::Semaphore::new(10));
 
         for batch in batches {
@@ -266,34 +255,24 @@ impl ToolRegistry {
 
                         set.spawn(async move {
                             let _permit = sem.acquire().await.unwrap();
-                            let result = match tool_arc {
-                                Some(t) => match t.call(input, &ctx).await {
-                                    Ok(r) => r,
-                                    Err(e) => ToolResult::error(format!("Tool error: {e}")),
-                                },
-                                None => ToolResult::error(format!("Unknown tool: {call_name}")),
-                            };
-                            (call_id, result)
+                            let (result, failure_kind) =
+                                invoke(tool_arc, &call_name, input, &ctx).await;
+                            (call_id, result, failure_kind)
                         });
                     }
 
                     while let Some(join_result) = set.join_next().await {
-                        if let Ok((id, result)) = join_result {
+                        if let Ok((id, result, failure_kind)) = join_result {
                             let block = content_block_for(&id, &result);
-                            results.push((block, result));
+                            results.push((block, result, failure_kind));
                         }
                     }
                 }
                 ToolBatch::Serial(call) => {
-                    let result = match self.get(&call.name) {
-                        Some(tool) => match tool.call(call.input.clone(), ctx).await {
-                            Ok(r) => r,
-                            Err(e) => ToolResult::error(format!("Tool error: {e}")),
-                        },
-                        None => ToolResult::error(format!("Unknown tool: {}", call.name)),
-                    };
+                    let (result, failure_kind) =
+                        invoke(self.get(&call.name), &call.name, call.input.clone(), ctx).await;
                     let block = content_block_for(&call.id, &result);
-                    results.push((block, result));
+                    results.push((block, result, failure_kind));
                 }
             }
         }
@@ -324,15 +303,15 @@ impl ToolRegistry {
                     score += 25;
                 }
 
-                // Search hints match
-                for hint in t.search_hints() {
-                    if hint.to_lowercase().contains(&query_lower) {
-                        score += 30;
-                    }
-                }
-
                 if score > 0 {
-                    Some((t.definition(), score))
+                    Some((
+                        ToolDefinition {
+                            name: t.name().to_string(),
+                            description: t.description().to_string(),
+                            input_schema: t.input_schema(),
+                        },
+                        score,
+                    ))
                 } else {
                     None
                 }
@@ -371,16 +350,15 @@ type ToolHandler = Box<
 /// Agent::new().tool(greet);
 /// ```
 ///
-/// A handler is required — omitting [`Tool::handler`] causes the first invocation
-/// to panic. For tools with complex state, implement [`Toolable`] directly on your
-/// own type instead.
+/// A handler is required — omitting [`Tool::handler`] causes the first
+/// invocation to panic. For tools with complex state, implement
+/// [`ToolLike`] directly on your own type instead.
 pub struct Tool {
     name: String,
     description: String,
     schema: Value,
     read_only: bool,
     defer: bool,
-    hints: Vec<String>,
     handler: Option<ToolHandler>,
 }
 
@@ -394,7 +372,6 @@ impl Tool {
             schema: serde_json::json!({"type": "object", "properties": {}}),
             read_only: false,
             defer: false,
-            hints: Vec::new(),
             handler: None,
         }
     }
@@ -413,15 +390,9 @@ impl Tool {
     }
 
     /// Hide the tool's full definition until it is discovered via
-    /// [`ToolSearchTool`](crate::ToolSearchTool).
+    /// [`ToolSearchTool`](crate::tools::ToolSearchTool).
     pub fn defer(mut self, defer: bool) -> Self {
         self.defer = defer;
-        self
-    }
-
-    /// Extra keywords used when ranking the tool against a search query.
-    pub fn hints(mut self, hints: Vec<String>) -> Self {
-        self.hints = hints;
         self
     }
 
@@ -439,7 +410,7 @@ impl Tool {
     }
 }
 
-impl Toolable for Tool {
+impl ToolLike for Tool {
     fn name(&self) -> &str {
         &self.name
     }
@@ -460,10 +431,6 @@ impl Toolable for Tool {
         self.defer
     }
 
-    fn search_hints(&self) -> Vec<String> {
-        self.hints.clone()
-    }
-
     fn call<'a>(
         &'a self,
         input: Value,
@@ -474,6 +441,28 @@ impl Toolable for Tool {
             .as_ref()
             .expect("Tool requires a handler — set one via `.handler(...)` before use");
         (handler)(input, ctx)
+    }
+}
+
+async fn invoke(
+    tool: Option<Arc<dyn ToolLike>>,
+    name: &str,
+    input: Value,
+    ctx: &ToolContext,
+) -> (ToolResult, Option<ToolFailureKind>) {
+    match tool {
+        Some(t) => match t.call(input, ctx).await {
+            Ok(r @ ToolResult::Success(_)) => (r, None),
+            Ok(r @ ToolResult::Error(_)) => (r, Some(ToolFailureKind::InBand)),
+            Err(e) => (
+                ToolResult::error(format!("Tool error: {e}")),
+                Some(ToolFailureKind::Infrastructure),
+            ),
+        },
+        None => (
+            ToolResult::error(format!("Unknown tool: {name}")),
+            Some(ToolFailureKind::InBand),
+        ),
     }
 }
 
@@ -678,14 +667,12 @@ mod tests {
     }
 
     #[test]
-    fn tool_defer_and_hints() {
+    fn tool_defer_builder() {
         let tool = Tool::new("advanced", "Advanced tool")
             .defer(true)
-            .hints(vec!["analyze".into(), "inspect".into()])
             .handler(|_input, _ctx| Box::pin(async { Ok(ToolResult::success("ok")) }));
 
         assert!(tool.should_defer());
-        assert_eq!(tool.search_hints().len(), 2);
     }
 
     #[tokio::test]

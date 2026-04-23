@@ -10,12 +10,11 @@ use serde_json::Value;
 use crate::error::Result;
 
 use super::error::{ProviderError, ProviderResult};
-use super::model::ModelLookup;
 use super::r#trait::{
-    build_client, CompletionRequest, Provider, ToolChoice, DEFAULT_REQUEST_TIMEOUT,
+    build_client, ModelRequest, Provider, ToolChoice, DEFAULT_REQUEST_TIMEOUT,
 };
 use super::types::{
-    CompletionResponse, ContentBlock, Message, ResponseStatus, StreamEvent, TokenUsage,
+    ModelResponse, ContentBlock, Message, ResponseStatus, StreamEvent, TokenUsage,
 };
 
 pub struct AnthropicProvider {
@@ -65,7 +64,7 @@ impl AnthropicProvider {
         ]
     }
 
-    fn serialize_request(&self, request: &CompletionRequest) -> Value {
+    fn serialize_request(&self, request: &ModelRequest) -> Value {
         let mut body = serde_json::json!({
             "model": request.model,
             "system": request.system_prompt,
@@ -88,8 +87,8 @@ impl AnthropicProvider {
         body
     }
 
-    fn parse_response(&self, json: Value) -> CompletionResponse {
-        CompletionResponse {
+    fn parse_response(&self, json: Value) -> ModelResponse {
+        ModelResponse {
             content: parse_content(&json),
             status: parse_status(&json),
             usage: parse_usage(&json),
@@ -149,8 +148,8 @@ fn classify_400(body: &str) -> Option<ProviderError> {
     }
 }
 
-impl ModelLookup for AnthropicProvider {
-    fn lookup_context_window_size(id: &str) -> Option<u64> {
+impl AnthropicProvider {
+    pub(crate) fn lookup_context_window_size(id: &str) -> Option<u64> {
         let m = id.to_ascii_lowercase();
         if m.contains("[1m]") {
             return Some(1_000_000);
@@ -176,10 +175,10 @@ impl Provider for AnthropicProvider {
         Box::pin(async { super::r#trait::prewarm_with(&self.client, &self.base_url).await })
     }
 
-    fn complete(
+    fn respond(
         &self,
-        request: CompletionRequest,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<CompletionResponse>> + Send + '_>> {
+        request: ModelRequest,
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
         let body = self.serialize_request(&request);
 
         Box::pin(async move {
@@ -194,11 +193,11 @@ impl Provider for AnthropicProvider {
         })
     }
 
-    fn complete_streaming(
+    fn respond_streaming(
         &self,
-        request: CompletionRequest,
+        request: ModelRequest,
         on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<CompletionResponse>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
         let mut body = self.serialize_request(&request);
         body["stream"] = Value::Bool(true);
 
@@ -212,7 +211,7 @@ impl Provider for AnthropicProvider {
 async fn stream_response(
     response: reqwest::Response,
     on_event: &Arc<dyn Fn(StreamEvent) + Send + Sync>,
-) -> ProviderResult<CompletionResponse> {
+) -> ProviderResult<ModelResponse> {
     use super::stream::{SseEvent, StreamParser};
     use futures_util::StreamExt;
 
@@ -263,8 +262,8 @@ impl StreamState {
         &mut self.blocks[idx]
     }
 
-    fn into_response(self) -> CompletionResponse {
-        CompletionResponse {
+    fn into_response(self) -> ModelResponse {
+        ModelResponse {
             content: self.content_blocks,
             status: self.status,
             usage: self.usage,
@@ -416,7 +415,7 @@ fn serialize_content_block(block: &ContentBlock) -> Value {
     }
 }
 
-fn serialize_tool_definition(tool: &crate::tools::tool::ToolDefinition) -> Value {
+fn serialize_tool_definition(tool: &crate::tools::ToolDefinition) -> Value {
     serde_json::json!({
         "name": tool.name,
         "description": tool.description,
@@ -482,8 +481,8 @@ fn parse_usage(json: &Value) -> TokenUsage {
 mod tests {
     use super::*;
 
-    fn simple_request() -> CompletionRequest {
-        CompletionRequest {
+    fn simple_request() -> ModelRequest {
+        ModelRequest {
             model: "test-model".into(),
             system_prompt: "You are helpful.".into(),
             messages: vec![Message::User {

@@ -7,7 +7,7 @@ use std::pin::Pin;
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::tools::tool::{ToolContext, ToolResult, Toolable};
+use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
 use crate::tools::util::glob_match;
 
 /// Search file contents by substring under the working directory. Read-only.
@@ -26,7 +26,7 @@ Search file contents using a substring pattern.
 - Use the glob parameter to filter by file type (e.g., \"*.rs\", \"*.ts\").
 - For open-ended searches requiring multiple rounds, use spawn_agent instead.";
 
-impl Toolable for GrepTool {
+impl ToolLike for GrepTool {
     fn name(&self) -> &str {
         "grep"
     }

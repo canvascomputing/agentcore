@@ -9,7 +9,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use agentwerk::{Agent, Batch, EventKind, GlobTool, ListDirectoryTool, ReadFileTool};
+use agentwerk::event::EventKind;
+use agentwerk::tools::{GlobTool, ListDirectoryTool, ReadFileTool};
+use agentwerk::{Agent, Batch};
 use serde_json::{json, Value};
 
 const DISCOVERY_PROMPT: &str = "\

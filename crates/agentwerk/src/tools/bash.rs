@@ -7,7 +7,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::tools::tool::{ToolContext, ToolResult, Toolable};
+use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
 use crate::tools::util::{glob_match, run_shell_command};
 
 /// Execute shell commands. Two constructors:
@@ -19,7 +19,8 @@ use crate::tools::util::{glob_match, run_shell_command};
 /// Pattern-restricted (only `git ...` commands):
 ///
 /// ```
-/// use agentwerk::{Agent, BashTool};
+/// use agentwerk::tools::BashTool;
+/// use agentwerk::Agent;
 ///
 /// Agent::new().tool(BashTool::new("git", "git *"));
 /// ```
@@ -27,7 +28,8 @@ use crate::tools::util::{glob_match, run_shell_command};
 /// Unrestricted:
 ///
 /// ```
-/// use agentwerk::{Agent, BashTool};
+/// use agentwerk::tools::BashTool;
+/// use agentwerk::Agent;
 ///
 /// Agent::new().tool(BashTool::unrestricted());
 /// ```
@@ -81,7 +83,7 @@ impl BashTool {
     }
 }
 
-impl Toolable for BashTool {
+impl ToolLike for BashTool {
     fn name(&self) -> &str {
         &self.tool_name
     }

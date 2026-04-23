@@ -8,8 +8,31 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 
 use crate::error::Result;
+use crate::persistence::error::PersistenceError;
 use crate::persistence::task::{TaskStatus, TaskStore, TaskUpdate};
-use crate::tools::tool::{ToolContext, ToolResult, Toolable};
+use crate::tools::error::ToolError;
+use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
+
+/// Routes a task-store failure: in-band problems (not found, already
+/// completed, blocked) become `ToolResult::Error` so the model can retry;
+/// structural failures (lock contention, I/O) become `ToolError`.
+fn route(err: PersistenceError) -> Result<ToolResult> {
+    match err {
+        PersistenceError::TaskNotFound(id) => Ok(ToolResult::error(format!("Task {id} not found"))),
+        PersistenceError::TaskAlreadyCompleted(id) => {
+            Ok(ToolResult::error(format!("Task {id} already completed")))
+        }
+        PersistenceError::TaskBlocked {
+            task_id,
+            blocker_id,
+        } => Ok(ToolResult::error(format!(
+            "Task {task_id} blocked by unfinished task {blocker_id}"
+        ))),
+        err @ PersistenceError::LockFailed { .. } | err @ PersistenceError::IoFailed(_) => {
+            Err(ToolError::new("task", err.to_string()).into())
+        }
+    }
+}
 
 /// Persistent task management backed by a directory on disk. Lets an agent
 /// create, update, list, and claim tasks; tasks survive process restarts and
@@ -27,7 +50,7 @@ impl TaskTool {
     }
 }
 
-impl Toolable for TaskTool {
+impl ToolLike for TaskTool {
     fn name(&self) -> &str {
         "task"
     }
@@ -76,10 +99,12 @@ impl Toolable for TaskTool {
                 "create" => {
                     let subject = input["subject"].as_str().unwrap_or("");
                     let description = input["description"].as_str().unwrap_or("");
-                    let task = self.store.lock().unwrap().create(subject, description)?;
-                    Ok(ToolResult::success(
-                        serde_json::to_string_pretty(&task).unwrap(),
-                    ))
+                    match self.store.lock().unwrap().create(subject, description) {
+                        Ok(task) => Ok(ToolResult::success(
+                            serde_json::to_string_pretty(&task).unwrap(),
+                        )),
+                        Err(e) => route(e),
+                    }
                 }
                 "update" => {
                     let id = input["id"].as_str().unwrap_or("");
@@ -90,53 +115,62 @@ impl Toolable for TaskTool {
                         _ => None,
                     });
                     let subject = input["subject"].as_str().map(|s| s.to_string());
-                    let task = self.store.lock().unwrap().update(
+                    match self.store.lock().unwrap().update(
                         id,
                         TaskUpdate {
                             status,
                             subject,
                             ..Default::default()
                         },
-                    )?;
-                    Ok(ToolResult::success(
-                        serde_json::to_string_pretty(&task).unwrap(),
-                    ))
+                    ) {
+                        Ok(task) => Ok(ToolResult::success(
+                            serde_json::to_string_pretty(&task).unwrap(),
+                        )),
+                        Err(e) => route(e),
+                    }
                 }
-                "list" => {
-                    let tasks = self.store.lock().unwrap().list()?;
-                    Ok(ToolResult::success(
+                "list" => match self.store.lock().unwrap().list() {
+                    Ok(tasks) => Ok(ToolResult::success(
                         serde_json::to_string_pretty(&tasks).unwrap(),
-                    ))
-                }
+                    )),
+                    Err(e) => route(e),
+                },
                 "get" => {
                     let id = input["id"].as_str().unwrap_or("");
-                    match self.store.lock().unwrap().get(id)? {
-                        Some(t) => Ok(ToolResult::success(
+                    match self.store.lock().unwrap().get(id) {
+                        Ok(Some(t)) => Ok(ToolResult::success(
                             serde_json::to_string_pretty(&t).unwrap(),
                         )),
-                        None => Ok(ToolResult::error(format!("Task {id} not found"))),
+                        Ok(None) => Ok(ToolResult::error(format!("Task {id} not found"))),
+                        Err(e) => route(e),
                     }
                 }
                 "delete" => {
                     let id = input["id"].as_str().unwrap_or("");
-                    self.store.lock().unwrap().delete(id)?;
-                    Ok(ToolResult::success(format!("Task {id} deleted")))
+                    match self.store.lock().unwrap().delete(id) {
+                        Ok(()) => Ok(ToolResult::success(format!("Task {id} deleted"))),
+                        Err(e) => route(e),
+                    }
                 }
                 "claim" => {
                     let id = input["id"].as_str().unwrap_or("");
                     let agent_name = input["agent_name"].as_str().unwrap_or("");
-                    let task = self.store.lock().unwrap().claim(id, agent_name)?;
-                    Ok(ToolResult::success(
-                        serde_json::to_string_pretty(&task).unwrap(),
-                    ))
+                    match self.store.lock().unwrap().claim(id, agent_name) {
+                        Ok(task) => Ok(ToolResult::success(
+                            serde_json::to_string_pretty(&task).unwrap(),
+                        )),
+                        Err(e) => route(e),
+                    }
                 }
                 "add_dependency" => {
                     let from = input["from"].as_str().unwrap_or("");
                     let to = input["to"].as_str().unwrap_or("");
-                    self.store.lock().unwrap().add_dependency(from, to)?;
-                    Ok(ToolResult::success(format!(
-                        "Dependency added: {from} blocks {to}"
-                    )))
+                    match self.store.lock().unwrap().add_dependency(from, to) {
+                        Ok(()) => Ok(ToolResult::success(format!(
+                            "Dependency added: {from} blocks {to}"
+                        ))),
+                        Err(e) => route(e),
+                    }
                 }
                 _ => Ok(ToolResult::error(format!("Unknown action: {action}"))),
             }

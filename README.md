@@ -31,7 +31,8 @@ cargo add agentwerk
 ## Quick Start
 
 ```rust
-use agentwerk::{Agent, GlobTool};
+use agentwerk::tools::GlobTool;
+use agentwerk::Agent;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -73,7 +74,7 @@ make use_case name=<name>    # run one
 - [Prompting](#prompting): identity, instruction, context, behavior
 - [Tools](#tools): built-in file, search, shell, and web tools
 - [Events](#events): agent and provider activity
-- [Guardrails](#guardrails): retries, token caps, and turn limits
+- [Policies](#policies): retries, token caps, and turn limits
 - [Output](#output): validated, schema-based responses
 - [Sub-agents](#sub-agents): nested workers
 - [Batches](#batches): parallel execution
@@ -84,7 +85,7 @@ make use_case name=<name>    # run one
 You can integrate your agentic application with the following providers:
 
 ```rust
-use agentwerk::{MistralProvider, AnthropicProvider, OpenAiProvider, LiteLlmProvider};
+use agentwerk::provider::{MistralProvider, AnthropicProvider, OpenAiProvider, LiteLlmProvider};
 
 let provider = MistralProvider::new(key);
 let provider = AnthropicProvider::new(key);
@@ -221,15 +222,18 @@ Agent::new()
 Give your agent access to simple tools for driving tasks:
 
 ```rust
-use agentwerk::{Tool, ToolResult};
+use agentwerk::tools::ToolResult;
+use agentwerk::Tool;
 
-let tool = Tool::new("greet", "Say hello")
+let greet = Tool::new("greet", "Say hello")
     .schema(json!({...}))
     .read_only(true)
     .handler(|input, ctx| Box::pin(async move {
         Ok(ToolResult::success("Hello!"))
     }));
 ```
+
+> For tools with state, implement the `ToolLike` trait on your own type.
 
 > Use `.read_only(true)` when a tool has no side effects. 
 > If set, the the execution loop will run tools in parallel.
@@ -252,7 +256,7 @@ let tool = Tool::new("greet", "Say hello")
 | | `ToolSearchTool` | Discover available tools by keyword |
 
 ```rust
-use agentwerk::{
+use agentwerk::tools::{
     ReadFileTool, WriteFileTool, EditFileTool,
     GlobTool, GrepTool, ListDirectoryTool,
     WebFetchTool, SpawnAgentTool, BashTool,
@@ -280,7 +284,8 @@ let agent = Agent::new()
 You can inspect what your agent is doing and how the LLM provider API is used:
 
 ```rust
-use agentwerk::{Event, EventKind};
+use agentwerk::event::EventKind;
+use agentwerk::Event;
 
 let handler = Arc::new(|event: Event| match &event.kind {
     EventKind::ToolCallStarted { tool_name, .. } => {
@@ -289,8 +294,8 @@ let handler = Arc::new(|event: Event| match &event.kind {
     EventKind::ToolCallFailed { tool_name, message, .. } => {
         eprintln!("[{}] ✗ {tool_name}: {message}", event.agent_name);
     }
-    EventKind::AgentFinished { turns, status } => {
-        eprintln!("[{}] done in {turns} turns ({status:?})", event.agent_name);
+    EventKind::AgentFinished { turns, outcome } => {
+        eprintln!("[{}] done in {turns} turns ({outcome:?})", event.agent_name);
     }
     _ => {}
 });
@@ -315,13 +320,13 @@ let handler = Arc::new(|event: Event| match &event.kind {
 | | `TokensReported` | Provider reported token counts for the last request |
 | **Context** | `OutputTruncated` | Response was cut off at the configured length cap |
 | | `ContextCompacted` | Conversation history was compacted to stay within the model's window |
-| | `InputBudgetExhausted` | Cumulative input tokens crossed `max_input_tokens` |
-| | `OutputBudgetExhausted` | Cumulative output tokens crossed `max_output_tokens` |
+| | `PolicyViolated` | A configured policy (`max_turns`, `max_input_tokens`, `max_output_tokens`, `max_schema_retries`) was exceeded |
+| | `SchemaRetried` | Structured-output validation failed and the loop is asking the model to retry |
 | **Tool** | `ToolCallStarted` | Tool invocation began |
 | | `ToolCallFinished` | Tool invocation succeeded |
-| | `ToolCallFailed` | Tool invocation failed (the model sees the error and continues; the run does not terminate) |
+| | `ToolCallFailed` | Tool invocation failed (carries `kind: ToolFailureKind` — `InBand` is model-fixable, `Infrastructure` is harness-level; the run continues either way) |
 
-### Guardrails
+### Policies
 
 For protecting your budget or data, you can define clear execution rules for typical LLM failures. You can configure the following on your `Agent`:
 
@@ -375,8 +380,8 @@ let output = Agent::new()
 
 ### Sub-agents
 
-Sub-agents allow orchestrator agents to launch her own workers. 
-Orchestrator agents automatically have access to the `SpawnAgentTool`.
+Sub-agents let an orchestrator launch its own workers.
+Orchestrator agents automatically have access to `SpawnAgentTool`.
 
 ```rust
 let researcher_base = Agent::new()
@@ -392,6 +397,9 @@ let output = Agent::new()
     .name("orchestrator")
     .identity_prompt("Coordinate research.")
     .sub_agents([r1, r2])
+    .instruction_prompt("Research the economic impact of quantum computing.")
+    .run()
+    .await?;
 ```
 
 #### Inheritance
@@ -413,7 +421,8 @@ Run many agents in parallel with `Batch`.
 Wait for the execution of all agents in a fixed sized pool. Results arrive in submission order:
 
 ```rust
-use agentwerk::{Agent, Batch, ReadFileTool};
+use agentwerk::tools::ReadFileTool;
+use agentwerk::{Agent, Batch};
 
 let template = Agent::new()
     .provider(provider)

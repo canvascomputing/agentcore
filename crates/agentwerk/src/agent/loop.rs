@@ -11,21 +11,19 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::error::{Error, Result};
+use crate::event::{PolicyKind, Event, EventKind};
+use crate::output::{Outcome, Output, OutputSchema, SchemaViolation, Statistics};
 use crate::persistence::session::{SessionStore, TranscriptEntry, TranscriptEntryType};
 use crate::provider::retry::compute_delay;
-
-use super::error::AgentError;
-use super::output::OutputError;
 use crate::provider::types::{
-    CompletionResponse, ContentBlock, Message, ResponseStatus, StreamEvent, TokenUsage,
+    ModelResponse, ContentBlock, Message, ResponseStatus, StreamEvent, TokenUsage,
 };
-use crate::provider::{CompletionRequest, Provider, ProviderError, RequestErrorKind};
+use crate::provider::{ModelRequest, Provider, ProviderError, RequestErrorKind};
 use crate::tools::{ToolCall, ToolContext, ToolRegistry, ToolResult};
 use crate::util::{cancellable_sleep, format_current_date, now_millis, wait_for_cancel};
 
 use super::compact;
-use super::event::{Event, EventKind};
-use super::output::{Output, OutputSchema, Statistics, Status};
+use super::error::AgentError;
 use super::prompts::{self as prompts};
 use super::queue::{CommandQueue, QueuePriority};
 use super::spec::AgentSpec;
@@ -78,6 +76,7 @@ pub(crate) struct LoopState {
     pub turn: u32,
     pub schema_retries: u32,
     pub is_idle: bool,
+    pub errors: Vec<Error>,
 }
 
 impl LoopState {
@@ -135,8 +134,8 @@ pub(crate) fn run_loop(
         emit_agent_started(&runtime, &spec, description);
 
         loop {
-            if let Some(status) = check_guards(&runtime, &spec, &state) {
-                return Ok(finish_early(&runtime, &spec, &mut state, status));
+            if let Some(outcome) = check_guards(&runtime, &spec, &mut state) {
+                return Ok(finish_early(&runtime, &spec, &mut state, outcome));
             }
 
             state.turn += 1;
@@ -145,17 +144,14 @@ pub(crate) fn run_loop(
             emit_turn_started(&runtime, &spec, turn);
             emit_request_started(&runtime, &spec);
 
-            let response = match call_provider_with_retry(&runtime, &spec, &mut state, turn).await {
-                Ok(r) => r,
-                Err(e) => {
-                    // A cancel landing during the HTTP call or backoff sleep
-                    // exits through this error path; return a clean Cancelled
-                    // status instead of bubbling the last provider error.
-                    if runtime.cancel_signal.load(Ordering::Relaxed) {
-                        return Ok(finish_early(&runtime, &spec, &mut state, Status::Cancelled));
-                    }
-                    return Err(e);
-                }
+            let Some(response) = call_provider_with_retry(&runtime, &spec, &mut state, turn).await
+            else {
+                let outcome = if runtime.cancel_signal.load(Ordering::Relaxed) {
+                    Outcome::Cancelled
+                } else {
+                    Outcome::Failed
+                };
+                return Ok(finish_early(&runtime, &spec, &mut state, outcome));
             };
 
             emit_request_finished(&runtime, &spec);
@@ -176,10 +172,16 @@ pub(crate) fn run_loop(
             if response.status == ResponseStatus::ContextWindowExceeded
                 && spec.model().context_window_size.is_some()
             {
-                compact::trigger_reactive(&runtime, &spec, &mut state, turn).await?;
+                if let Err(e) = compact::trigger_reactive(&runtime, &spec, &mut state, turn).await {
+                    state.errors.push(e);
+                    return Ok(finish_early(&runtime, &spec, &mut state, Outcome::Failed));
+                }
             }
 
-            compact::trigger_if_over_threshold(&runtime, &spec, &mut state).await?;
+            if let Err(e) = compact::trigger_if_over_threshold(&runtime, &spec, &mut state).await {
+                state.errors.push(e);
+                return Ok(finish_early(&runtime, &spec, &mut state, Outcome::Failed));
+            }
 
             let tool_use_ready =
                 response.status == ResponseStatus::ToolUse && !tool_calls.is_empty();
@@ -236,8 +238,28 @@ pub(crate) fn run_loop(
                     .max_schema_retries
                     .filter(|&limit| state.schema_retries > limit);
                 if let Some(limit) = retry_limit_exceeded {
-                    return Err(OutputError::SchemaRetryExhausted { retries: limit }.into());
+                    let usage = u64::from(state.schema_retries);
+                    record_policy_violated(
+                        &runtime,
+                        &spec,
+                        &mut state,
+                        PolicyKind::SchemaRetries,
+                        usage,
+                        u64::from(limit),
+                    );
+                    emit_turn_finished(&runtime, &spec, turn);
+                    return Ok(finish_early(&runtime, &spec, &mut state, Outcome::Failed));
                 }
+
+                let SchemaViolation { path, message } = detail;
+                emit_schema_retried(
+                    &runtime,
+                    &spec,
+                    state.schema_retries,
+                    spec.max_schema_retries.unwrap_or(u32::MAX),
+                    path.clone(),
+                    message.clone(),
+                );
 
                 let retry_prompt = OutputSchema::retry_message(detail);
                 state.messages.push(Message::user(retry_prompt));
@@ -246,19 +268,21 @@ pub(crate) fn run_loop(
             }
 
             let validated = output_validation.expect("Err handled above");
-            let agent_end = EventKind::AgentFinished {
-                turns: state.turn,
-                status: Status::Completed,
-            };
-
-            emit(&runtime, &spec, agent_end);
+            emit(
+                &runtime,
+                &spec,
+                EventKind::AgentFinished {
+                    turns: state.turn,
+                    outcome: Outcome::Completed,
+                },
+            );
             emit_turn_finished(&runtime, &spec, turn);
             return Ok(build_output(
                 &spec,
-                &state,
+                &mut state,
                 text,
                 validated,
-                Status::Completed,
+                Outcome::Completed,
             ));
         }
     })
@@ -268,76 +292,77 @@ fn finish_early(
     runtime: &LoopRuntime,
     spec: &AgentSpec,
     state: &mut LoopState,
-    status: Status,
+    outcome: Outcome,
 ) -> Output {
     let text = last_assistant_text(&state.messages);
-    match &status {
-        Status::InputBudgetExhausted { usage, limit } => emit(
-            runtime,
-            spec,
-            EventKind::InputBudgetExhausted {
-                usage: *usage,
-                limit: *limit,
-            },
-        ),
-        Status::OutputBudgetExhausted { usage, limit } => emit(
-            runtime,
-            spec,
-            EventKind::OutputBudgetExhausted {
-                usage: *usage,
-                limit: *limit,
-            },
-        ),
-        _ => {}
-    }
     emit(
         runtime,
         spec,
         EventKind::AgentFinished {
             turns: state.turn,
-            status: status.clone(),
+            outcome,
         },
     );
-    build_output(spec, state, text, None, status)
+    build_output(spec, state, text, None, outcome)
 }
 
-fn check_guards(runtime: &LoopRuntime, spec: &AgentSpec, state: &LoopState) -> Option<Status> {
+/// Check termination guards. Cancellation returns `Outcome::Cancelled` cleanly.
+/// Turn-limit and budget hits push the corresponding `AgentError` onto
+/// `state.errors`, emit `EventKind::PolicyViolated`, and return `Outcome::Failed`.
+fn check_guards(runtime: &LoopRuntime, spec: &AgentSpec, state: &mut LoopState) -> Option<Outcome> {
     if runtime.cancel_signal.load(Ordering::Relaxed) {
-        return Some(Status::Cancelled);
+        return Some(Outcome::Cancelled);
     }
     if let Some(limit) = spec.max_turns {
         if state.turn >= limit {
-            return Some(Status::TurnLimitReached { limit });
+            let usage = u64::from(state.turn);
+            let limit_u64 = u64::from(limit);
+            record_policy_violated(runtime, spec, state, PolicyKind::Turns, usage, limit_u64);
+            return Some(Outcome::Failed);
         }
     }
     if let Some(limit) = spec.max_input_tokens {
         if state.total_usage.input_tokens >= limit {
-            return Some(Status::InputBudgetExhausted {
-                usage: state.total_usage.input_tokens,
-                limit,
-            });
+            let usage = state.total_usage.input_tokens;
+            record_policy_violated(runtime, spec, state, PolicyKind::InputTokens, usage, limit);
+            return Some(Outcome::Failed);
         }
     }
     if let Some(limit) = spec.max_output_tokens {
         if state.total_usage.output_tokens >= limit {
-            return Some(Status::OutputBudgetExhausted {
-                usage: state.total_usage.output_tokens,
-                limit,
-            });
+            let usage = state.total_usage.output_tokens;
+            record_policy_violated(runtime, spec, state, PolicyKind::OutputTokens, usage, limit);
+            return Some(Outcome::Failed);
         }
     }
     None
 }
 
+fn record_policy_violated(
+    runtime: &LoopRuntime,
+    spec: &AgentSpec,
+    state: &mut LoopState,
+    kind: PolicyKind,
+    usage: u64,
+    limit: u64,
+) {
+    state
+        .errors
+        .push(AgentError::PolicyViolated { kind, usage, limit }.into());
+    emit_policy_violated(runtime, spec, kind, usage, limit);
+}
+
+/// Call the provider once. `None` means cancellation fired during the request;
+/// the caller detects it via `runtime.cancel_signal` and produces `Outcome::Cancelled`.
 async fn call_provider(
     runtime: &LoopRuntime,
     spec: &AgentSpec,
     state: &LoopState,
-) -> Result<CompletionResponse> {
+) -> Option<Result<ModelResponse>> {
     let tool_defs = runtime
         .tools
         .definitions(&runtime.discovered_tools.lock().unwrap());
-    let request = CompletionRequest {
+    let request = ModelRequest {
         model: spec.model().name.clone(),
         system_prompt: spec.system_prompt(&runtime.template_variables),
         messages: state.messages.clone(),
@@ -361,9 +386,9 @@ async fn call_provider(
 
     tokio::select! {
         biased;
-        _ = wait_for_cancel(&runtime.cancel_signal) => Err(AgentError::Cancelled.into()),
-        result = runtime.provider.complete_streaming(request, on_event) => {
-            result.map_err(Error::from)
+        _ = wait_for_cancel(&runtime.cancel_signal) => None,
+        result = runtime.provider.respond_streaming(request, on_event) => {
+            Some(result.map_err(Error::from))
         }
     }
 }
@@ -372,50 +397,73 @@ async fn call_provider(
 /// - transient errors (429, 529, 5xx) retry up to `spec.max_request_retries`
 /// - a provider-reported `ContextWindowExceeded` fires
 ///   [`compact::trigger_reactive`] before propagating the original error
+/// Call the provider, retrying transient failures. Returns `Some(response)`
+/// on success. Returns `None` when the call can't be completed — the terminal
+/// error (and any retried errors along the way) are pushed onto `state.errors`
+/// so the caller can finish the run with `Outcome::Failed` / `Outcome::Cancelled`.
 async fn call_provider_with_retry(
     runtime: &LoopRuntime,
     spec: &AgentSpec,
     state: &mut LoopState,
     turn: u32,
-) -> Result<CompletionResponse> {
-    let mut last_err = None;
+) -> Option<ModelResponse> {
     for attempt in 0..=spec.max_request_retries {
-        match call_provider(runtime, spec, state).await {
-            Ok(response) => return Ok(response),
+        let outcome = match call_provider(runtime, spec, state).await {
+            None => return None,
+            Some(result) => result,
+        };
+        match outcome {
+            Ok(response) => return Some(response),
             Err(Error::Provider(ProviderError::ContextWindowExceeded { message }))
                 if spec.model().context_window_size.is_some() =>
             {
-                compact::trigger_reactive(runtime, spec, state, turn).await?;
-                // compact::run returns NotImplemented today; once
-                // implemented this branch will retry the turn instead of
-                // surfacing the error.
-                return Err(Error::Provider(ProviderError::ContextWindowExceeded {
-                    message,
-                }));
+                if let Err(compact_err) =
+                    compact::trigger_reactive(runtime, spec, state, turn).await
+                {
+                    state.errors.push(compact_err);
+                }
+                state
+                    .errors
+                    .push(Error::Provider(ProviderError::ContextWindowExceeded {
+                        message,
+                    }));
+                return None;
             }
             Err(e) if e.is_retryable() && attempt < spec.max_request_retries => {
-                let delay =
-                    compute_delay(spec.request_retry_delay, attempt, e.request_retry_delay());
-                cancellable_sleep(delay, &runtime.cancel_signal).await?;
+                let delay = compute_delay(spec.request_retry_delay, attempt, e.retry_delay());
+                if !cancellable_sleep(delay, &runtime.cancel_signal).await {
+                    state.errors.push(e);
+                    return None;
+                }
                 emit_request_retried(runtime, spec, attempt + 1, spec.max_request_retries, &e);
-                last_err = Some(e);
+                state.errors.push(e);
             }
             Err(e) => {
+                // Cancellation mid-flight surfaces as `None` above, not an
+                // error here — so the signal check guards the rare race
+                // where the request itself errors out as cancel propagates.
+                if runtime.cancel_signal.load(Ordering::Relaxed) {
+                    return None;
+                }
                 emit_request_failed(runtime, spec, &e);
-                return Err(e);
+                state.errors.push(e);
+                return None;
             }
         }
     }
-    let e = last_err.expect("retry loop must record at least one error before exiting");
-    emit_request_failed(runtime, spec, &e);
-    Err(e)
+    // Retries exhausted. The last retried error was already pushed in the
+    // retry arm above; surface it as a terminal RequestFailed event.
+    if let Some(last) = state.errors.last() {
+        emit_request_failed(runtime, spec, last);
+    }
+    None
 }
 
 fn record_usage(
     runtime: &LoopRuntime,
     spec: &AgentSpec,
     state: &mut LoopState,
-    response: &CompletionResponse,
+    response: &ModelResponse,
 ) {
     state.total_usage += &response.usage;
     state.request_count += 1;
@@ -429,7 +477,7 @@ fn record_usage(
     );
 }
 
-fn parse_response(response: &CompletionResponse) -> (String, Vec<ToolCall>) {
+fn parse_response(response: &ModelResponse) -> (String, Vec<ToolCall>) {
     let mut text = String::new();
     let mut tool_calls = Vec::new();
     for block in &response.content {
@@ -472,7 +520,7 @@ async fn execute_tools(
 
     let raw = runtime.tools.execute(calls, &tool_ctx).await;
     let mut blocks = Vec::with_capacity(raw.len());
-    for (block, result) in raw {
+    for (block, result, failure_kind) in raw {
         if let ContentBlock::ToolResult { tool_use_id, .. } = &block {
             let tool_name = calls
                 .iter()
@@ -489,6 +537,7 @@ async fn execute_tools(
                     tool_name,
                     call_id: tool_use_id.clone(),
                     message,
+                    kind: failure_kind.expect("Error result must carry a ToolFailureKind"),
                 },
             };
             emit(runtime, spec, event);
@@ -631,6 +680,40 @@ fn emit_output_truncated(runtime: &LoopRuntime, spec: &AgentSpec, turn: u32) {
     emit(runtime, spec, EventKind::OutputTruncated { turn });
 }
 
+fn emit_policy_violated(
+    runtime: &LoopRuntime,
+    spec: &AgentSpec,
+    kind: PolicyKind,
+    usage: u64,
+    limit: u64,
+) {
+    emit(
+        runtime,
+        spec,
+        EventKind::PolicyViolated { kind, usage, limit },
+    );
+}
+
+fn emit_schema_retried(
+    runtime: &LoopRuntime,
+    spec: &AgentSpec,
+    attempt: u32,
+    max_attempts: u32,
+    path: String,
+    message: String,
+) {
+    emit(
+        runtime,
+        spec,
+        EventKind::SchemaRetried {
+            attempt,
+            max_attempts,
+            path,
+            message,
+        },
+    );
+}
+
 fn emit_agent_paused(runtime: &LoopRuntime, spec: &AgentSpec) {
     emit(runtime, spec, EventKind::AgentPaused);
 }
@@ -663,10 +746,10 @@ fn record_transcript(
 
 fn build_output(
     spec: &AgentSpec,
-    state: &LoopState,
+    state: &mut LoopState,
     text: String,
     response: Option<Value>,
-    status: Status,
+    outcome: Outcome,
 ) -> Output {
     Output {
         name: spec.name.clone(),
@@ -679,7 +762,8 @@ fn build_output(
             tool_calls: state.tool_call_count,
             turns: state.turn,
         },
-        status,
+        outcome,
+        errors: std::mem::take(&mut state.errors),
     }
 }
 
@@ -722,14 +806,14 @@ mod tests {
     fn assert_lifecycle_events(harness: &TestHarness, output: &Output) {
         let events = harness.events().all();
 
-        let agent_end_status = events.iter().find_map(|e| match &e.kind {
-            EventKind::AgentFinished { status, .. } => Some(status.clone()),
+        let agent_end_outcome = events.iter().find_map(|e| match &e.kind {
+            EventKind::AgentFinished { outcome, .. } => Some(outcome.clone()),
             _ => None,
         });
         assert_eq!(
-            agent_end_status.as_ref(),
-            Some(&output.status),
-            "AgentFinished status must match output.status"
+            agent_end_outcome.as_ref(),
+            Some(&output.outcome),
+            "AgentFinished outcome must match output.outcome"
         );
 
         let last_significant = events
@@ -825,8 +909,16 @@ mod tests {
 
         let harness = TestHarness::new(provider);
         let output = harness.run_agent(&agent, "go").await.unwrap();
-        assert_eq!(output.status, Status::TurnLimitReached { limit: 2 });
+        assert_eq!(output.outcome, Outcome::Failed);
         assert_eq!(output.statistics.turns, 2);
+        assert!(matches!(
+            output.errors.last(),
+            Some(Error::Agent(AgentError::PolicyViolated {
+                kind: PolicyKind::Turns,
+                usage: 2,
+                limit: 2
+            }))
+        ));
         assert_lifecycle_events(&harness, &output);
     }
 
@@ -845,7 +937,7 @@ mod tests {
         let harness = TestHarness::new(provider);
         harness.cancel();
         let output = harness.run_agent(&agent, "go").await.unwrap();
-        assert_eq!(output.status, Status::Cancelled);
+        assert_eq!(output.outcome, Outcome::Cancelled);
         assert_lifecycle_events(&harness, &output);
     }
 
@@ -1009,10 +1101,15 @@ mod tests {
             .max_schema_retries(3);
 
         let harness = TestHarness::new(provider);
-        let err = harness.run_agent(&agent, "go").await.unwrap_err();
+        let output = harness.run_agent(&agent, "go").await.unwrap();
+        assert_eq!(output.outcome, Outcome::Failed);
         assert!(matches!(
-            err,
-            Error::Output(OutputError::SchemaRetryExhausted { retries: 3 })
+            output.errors.last(),
+            Some(Error::Agent(AgentError::PolicyViolated {
+                kind: PolicyKind::SchemaRetries,
+                usage: 4,
+                limit: 3
+            }))
         ));
     }
 
@@ -1041,18 +1138,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_provider_fails_run() {
-        use crate::config::ConfigError;
+    #[should_panic(expected = ".provider()")]
+    async fn missing_provider_panics_on_run() {
         let agent = Agent::new()
             .name("test")
             .model_name("mock")
             .identity_prompt("x")
             .instruction_prompt("do");
-        let err = agent.run().await.unwrap_err();
-        match err {
-            Error::Config(ConfigError::ProviderNotConfigured) => {}
-            other => panic!("expected Config(ProviderNotConfigured), got {other:?}"),
-        }
+        let _ = agent.run().await;
     }
 
     #[allow(dead_code)]
@@ -1075,7 +1168,7 @@ mod tests {
     async fn simple_text_response_status_completed() {
         let harness = TestHarness::new(MockProvider::text("Hello!"));
         let output = harness.run_agent(&simple_agent(), "Hi").await.unwrap();
-        assert_eq!(output.status, Status::Completed);
+        assert_eq!(output.outcome, Outcome::Completed);
         assert_lifecycle_events(&harness, &output);
     }
 
@@ -1091,7 +1184,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(output.status, Status::Completed);
+        assert_eq!(output.outcome, Outcome::Completed);
         assert_eq!(output.response_raw, "...completed response");
         assert_eq!(harness.provider().request_count(), 2);
         assert_lifecycle_events(&harness, &output);
@@ -1146,32 +1239,16 @@ mod tests {
 
         let harness = TestHarness::new(provider);
         let output = harness.run_agent(&agent, "go").await.unwrap();
-        assert_eq!(
-            output.status,
-            Status::InputBudgetExhausted {
+        assert_eq!(output.outcome, Outcome::Failed);
+        assert!(matches!(
+            output.errors.last(),
+            Some(Error::Agent(AgentError::PolicyViolated {
+                kind: PolicyKind::InputTokens,
                 usage: 5000,
                 limit: 4000
-            }
-        );
-        assert_lifecycle_events(&harness, &output);
-
-        let events = harness.events().all();
-        let budget_index = events
-            .iter()
-            .position(|e| matches!(e.kind, EventKind::InputBudgetExhausted { .. }))
-            .expect("InputBudgetExhausted must fire before AgentFinished");
-        let finished_index = events
-            .iter()
-            .position(|e| matches!(e.kind, EventKind::AgentFinished { .. }))
-            .expect("AgentFinished must fire");
-        assert!(budget_index < finished_index);
-        assert!(matches!(
-            events[budget_index].kind,
-            EventKind::InputBudgetExhausted {
-                usage: 5000,
-                limit: 4000,
-            }
+            }))
         ));
+        assert_lifecycle_events(&harness, &output);
     }
 
     #[tokio::test]
@@ -1203,13 +1280,15 @@ mod tests {
 
         let harness = TestHarness::new(provider);
         let output = harness.run_agent(&agent, "go").await.unwrap();
-        assert_eq!(
-            output.status,
-            Status::InputBudgetExhausted {
+        assert_eq!(output.outcome, Outcome::Failed);
+        assert!(matches!(
+            output.errors.last(),
+            Some(Error::Agent(AgentError::PolicyViolated {
+                kind: PolicyKind::InputTokens,
                 usage: 4000,
                 limit: 4000
-            }
-        );
+            }))
+        ));
     }
 
     #[tokio::test]
@@ -1231,17 +1310,19 @@ mod tests {
 
         let harness = TestHarness::new(provider);
         let output = harness.run_agent(&agent, "go").await.unwrap();
-        assert_eq!(
-            output.status,
-            Status::OutputBudgetExhausted {
+        assert_eq!(output.outcome, Outcome::Failed);
+        assert!(matches!(
+            output.errors.last(),
+            Some(Error::Agent(AgentError::PolicyViolated {
+                kind: PolicyKind::OutputTokens,
                 usage: 4000,
                 limit: 4000
-            }
-        );
+            }))
+        ));
     }
 
     #[tokio::test]
-    async fn input_budget_event_not_emitted_when_budget_unset() {
+    async fn no_budget_error_when_budget_unset() {
         let mut response = text_response("done");
         response.usage = TokenUsage {
             input_tokens: 9_999_999,
@@ -1250,17 +1331,21 @@ mod tests {
         };
         let provider = MockProvider::new(vec![response]);
         let harness = TestHarness::new(provider);
-        harness.run_agent(&simple_agent(), "go").await.unwrap();
+        let output = harness.run_agent(&simple_agent(), "go").await.unwrap();
 
-        let saw_budget = harness.events().all().iter().any(|e| {
+        assert_eq!(output.outcome, Outcome::Completed);
+        let saw_budget = output.errors.iter().any(|e| {
             matches!(
-                e.kind,
-                EventKind::InputBudgetExhausted { .. } | EventKind::OutputBudgetExhausted { .. }
+                e,
+                Error::Agent(AgentError::PolicyViolated {
+                    kind: PolicyKind::InputTokens | PolicyKind::OutputTokens,
+                    ..
+                })
             )
         });
         assert!(
             !saw_budget,
-            "budget events must not fire when no budget is configured"
+            "budget errors must not fire when no budget is configured"
         );
     }
 
@@ -1284,13 +1369,15 @@ mod tests {
 
         let harness = TestHarness::new(provider);
         let output = harness.run_agent(&agent, "go").await.unwrap();
-        assert_eq!(
-            output.status,
-            Status::OutputBudgetExhausted {
+        assert_eq!(output.outcome, Outcome::Failed);
+        assert!(matches!(
+            output.errors.last(),
+            Some(Error::Agent(AgentError::PolicyViolated {
+                kind: PolicyKind::OutputTokens,
                 usage: 5000,
                 limit: 4000
-            }
-        );
+            }))
+        ));
     }
 
     #[tokio::test]
@@ -1312,32 +1399,16 @@ mod tests {
 
         let harness = TestHarness::new(provider);
         let output = harness.run_agent(&agent, "go").await.unwrap();
-        assert_eq!(
-            output.status,
-            Status::OutputBudgetExhausted {
+        assert_eq!(output.outcome, Outcome::Failed);
+        assert!(matches!(
+            output.errors.last(),
+            Some(Error::Agent(AgentError::PolicyViolated {
+                kind: PolicyKind::OutputTokens,
                 usage: 5000,
                 limit: 4000
-            }
-        );
-        assert_lifecycle_events(&harness, &output);
-
-        let events = harness.events().all();
-        let budget_index = events
-            .iter()
-            .position(|e| matches!(e.kind, EventKind::OutputBudgetExhausted { .. }))
-            .expect("OutputBudgetExhausted must fire before AgentFinished");
-        let finished_index = events
-            .iter()
-            .position(|e| matches!(e.kind, EventKind::AgentFinished { .. }))
-            .expect("AgentFinished must fire");
-        assert!(budget_index < finished_index);
-        assert!(matches!(
-            events[budget_index].kind,
-            EventKind::OutputBudgetExhausted {
-                usage: 5000,
-                limit: 4000,
-            }
+            }))
         ));
+        assert_lifecycle_events(&harness, &output);
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -1482,7 +1553,7 @@ mod tests {
         let agent = simple_agent();
         let output = harness.run_agent(&agent, "hi").await.unwrap();
 
-        assert_eq!(output.status, Status::Completed);
+        assert_eq!(output.outcome, Outcome::Completed);
         assert_eq!(output.statistics.turns, 1);
     }
 
@@ -1586,7 +1657,7 @@ mod tests {
             .cancel_signal(cancel.clone())
             .command_queue(queue.clone());
 
-        let (_spec, rt) = agent.compile(None).unwrap();
+        let (_spec, rt) = agent.compile(None);
 
         assert!(
             Arc::ptr_eq(rt.command_queue.as_ref().unwrap(), &queue),
@@ -1605,7 +1676,7 @@ mod tests {
             .provider(Arc::new(MockProvider::text("x")))
             .instruction_prompt("");
 
-        let (_spec, rt) = agent.compile(None).unwrap();
+        let (_spec, rt) = agent.compile(None);
         assert!(
             rt.command_queue.is_some(),
             "default queue must be allocated so peer messaging still works"
@@ -1627,7 +1698,7 @@ mod retry_and_events_tests {
         ProviderError::RateLimited {
             message: "rate limited".into(),
             status: 429,
-            request_retry_delay: None,
+            retry_delay: None,
         }
     }
 
@@ -1689,10 +1760,11 @@ mod retry_and_events_tests {
             .request_retry_delay(Duration::from_millis(10));
 
         let harness = TestHarness::new(provider);
-        let err = harness.run_agent(&agent, "go").await.unwrap_err();
+        let output = harness.run_agent(&agent, "go").await.unwrap();
+        assert_eq!(output.outcome, Outcome::Failed);
         assert!(matches!(
-            err,
-            Error::Provider(ProviderError::AuthenticationFailed { .. })
+            output.errors.last(),
+            Some(Error::Provider(ProviderError::AuthenticationFailed { .. }))
         ));
         assert_eq!(harness.provider().request_count(), 1);
     }
@@ -1750,8 +1822,8 @@ mod retry_and_events_tests {
             EventKind::TokensReported { .. } => "TokensReported",
             EventKind::OutputTruncated { .. } => "OutputTruncated",
             EventKind::ContextCompacted { .. } => "ContextCompacted",
-            EventKind::InputBudgetExhausted { .. } => "InputBudgetExhausted",
-            EventKind::OutputBudgetExhausted { .. } => "OutputBudgetExhausted",
+            EventKind::PolicyViolated { .. } => "PolicyViolated",
+            EventKind::SchemaRetried { .. } => "SchemaRetried",
             EventKind::AgentPaused => "AgentPaused",
             EventKind::AgentResumed => "AgentResumed",
         }
@@ -1810,10 +1882,11 @@ mod retry_and_events_tests {
             .request_retry_delay(Duration::from_millis(1));
 
         let harness = TestHarness::new(provider);
-        let err = harness.run_agent(&agent, "go").await.unwrap_err();
+        let output = harness.run_agent(&agent, "go").await.unwrap();
+        assert_eq!(output.outcome, Outcome::Failed);
         assert!(matches!(
-            err,
-            Error::Provider(ProviderError::AuthenticationFailed { .. })
+            output.errors.last(),
+            Some(Error::Provider(ProviderError::AuthenticationFailed { .. }))
         ));
 
         let events = harness.events().all();
@@ -1846,7 +1919,8 @@ mod retry_and_events_tests {
             .request_retry_delay(Duration::from_millis(1));
 
         let harness = TestHarness::new(provider);
-        harness.run_agent(&agent, "go").await.unwrap_err();
+        let output = harness.run_agent(&agent, "go").await.unwrap();
+        assert_eq!(output.outcome, Outcome::Failed);
 
         let events = harness.events().all();
         let retries: Vec<(u32, u32)> = retries_in(&events)
@@ -1886,7 +1960,8 @@ mod retry_and_events_tests {
                 .request_retry_delay(Duration::from_millis(1));
 
             let harness = TestHarness::new(provider);
-            harness.run_agent(&agent, "go").await.unwrap_err();
+            let output = harness.run_agent(&agent, "go").await.unwrap();
+            assert_eq!(output.outcome, Outcome::Failed);
 
             let events = harness.events().all();
             let retries = retries_in(&events);
@@ -1915,7 +1990,8 @@ mod retry_and_events_tests {
             .request_retry_delay(Duration::from_millis(1));
 
         let harness = TestHarness::new(provider);
-        harness.run_agent(&agent, "go").await.unwrap_err();
+        let output = harness.run_agent(&agent, "go").await.unwrap();
+        assert_eq!(output.outcome, Outcome::Failed);
 
         let events = harness.events().all();
         assert!(retries_in(&events).is_empty());
@@ -1995,7 +2071,8 @@ mod retry_and_events_tests {
                 .request_retry_delay(Duration::from_millis(1));
 
             let harness = TestHarness::new(provider);
-            harness.run_agent(&agent, "go").await.unwrap_err();
+            let output = harness.run_agent(&agent, "go").await.unwrap();
+            assert_eq!(output.outcome, Outcome::Failed);
 
             let events = harness.events().all();
             let failures = failures_in(&events);
@@ -2023,7 +2100,8 @@ mod retry_and_events_tests {
             .request_retry_delay(Duration::from_millis(1));
 
         let harness = TestHarness::new(provider);
-        harness.run_agent(&agent, "go").await.unwrap_err();
+        let output = harness.run_agent(&agent, "go").await.unwrap();
+        assert_eq!(output.outcome, Outcome::Failed);
 
         let events = harness.events().all();
         let compact_count = events
@@ -2048,7 +2126,8 @@ mod retry_and_events_tests {
             .request_retry_delay(Duration::from_millis(1));
 
         let harness = TestHarness::new(provider);
-        harness.run_agent(&agent, "go").await.unwrap_err();
+        let output = harness.run_agent(&agent, "go").await.unwrap();
+        assert_eq!(output.outcome, Outcome::Failed);
 
         let events = harness.events().all();
         let failures = failures_in(&events);
@@ -2062,7 +2141,7 @@ mod retry_and_events_tests {
             Err(ProviderError::RateLimited {
                 message: "rl".into(),
                 status: 429,
-                request_retry_delay: Some(Duration::from_millis(1_000)),
+                retry_delay: Some(Duration::from_millis(1_000)),
             }),
             Ok(text_response("ok")),
         ]);
@@ -2190,7 +2269,8 @@ mod retry_and_events_tests {
         };
 
         let (run_result, _) = tokio::join!(run_fut, check_fut);
-        run_result.unwrap_err();
+        let output = run_result.unwrap();
+        assert_eq!(output.outcome, Outcome::Failed);
 
         let failures = collected
             .lock()
@@ -2234,7 +2314,7 @@ mod retry_and_events_tests {
         let elapsed = start.elapsed();
 
         let output = run_result.unwrap();
-        assert_eq!(output.status, Status::Cancelled);
+        assert_eq!(output.outcome, Outcome::Cancelled);
         assert!(
             elapsed < std::time::Duration::from_secs(2),
             "cancel during a 30s backoff must exit within 2s (took {:?})",
@@ -2266,7 +2346,8 @@ mod retry_and_events_tests {
             .event_handler(handler)
             .instruction_prompt("go");
 
-        agent.run().await.unwrap_err();
+        let output = agent.run().await.unwrap();
+        assert_eq!(output.outcome, Outcome::Failed);
 
         let events = collected.lock().unwrap().clone();
         assert_eq!(

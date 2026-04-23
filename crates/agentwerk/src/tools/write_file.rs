@@ -6,7 +6,7 @@ use std::pin::Pin;
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::tools::tool::{ToolContext, ToolResult, Toolable};
+use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
 
 /// Create or overwrite a file. Destructive: existing content is replaced.
 /// Not read-only, so the loop runs it serially.
@@ -18,7 +18,7 @@ Write content to a file, creating parent directories if needed.
 - If this is an existing file, you MUST use read_file first to read its contents.
 - Prefer edit_file for modifying existing files — it only sends the diff. Use write_file for new files or complete rewrites.";
 
-impl Toolable for WriteFileTool {
+impl ToolLike for WriteFileTool {
     fn name(&self) -> &str {
         "write_file"
     }

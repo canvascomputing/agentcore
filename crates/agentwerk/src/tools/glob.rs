@@ -8,7 +8,7 @@ use std::time::SystemTime;
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::tools::tool::{ToolContext, ToolResult, Toolable};
+use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
 
 /// Find files matching a glob pattern under the working directory. Read-only.
 /// Sorted by modification time (newest first); capped at 200 results.
@@ -23,7 +23,7 @@ Fast file pattern matching tool that works with any codebase size.
 - Use this when you need to find files by name or extension patterns.
 - For open-ended searches that may require multiple rounds, use spawn_agent instead.";
 
-impl Toolable for GlobTool {
+impl ToolLike for GlobTool {
     fn name(&self) -> &str {
         "glob"
     }

@@ -2,7 +2,8 @@
 
 use super::common;
 
-use agentwerk::{Agent, Batch, ReadFileTool};
+use agentwerk::tools::ReadFileTool;
+use agentwerk::{Agent, Batch};
 
 #[tokio::test]
 async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {

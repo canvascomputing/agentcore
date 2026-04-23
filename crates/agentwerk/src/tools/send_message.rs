@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::agent::queue::{CommandSource, QueuePriority, QueuedCommand};
 use crate::error::Result;
 use crate::tools::error::ToolError;
-use crate::tools::tool::{ToolContext, ToolResult, Toolable};
+use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
 
 const NAME: &str = "send_message";
 
@@ -38,7 +38,7 @@ struct SendArgs {
     summary: Option<String>,
 }
 
-impl Toolable for SendMessageTool {
+impl ToolLike for SendMessageTool {
     fn name(&self) -> &str {
         NAME
     }
@@ -116,10 +116,7 @@ impl Toolable for SendMessageTool {
 }
 
 fn tool_err(message: impl Into<String>) -> ToolError {
-    ToolError::ContextUnavailable {
-        tool_name: NAME.into(),
-        message: message.into(),
-    }
+    ToolError::new(NAME, message)
 }
 
 #[cfg(test)]
@@ -139,7 +136,7 @@ mod tests {
             .identity_prompt("")
             .provider(Arc::new(MockProvider::text("unused")))
             .command_queue(queue.clone());
-        let (spec, runtime) = caller.compile(None).unwrap();
+        let (spec, runtime) = caller.compile(None);
         let ctx = ToolContext::new(PathBuf::from("."))
             .runtime(Arc::new(runtime))
             .caller_spec(spec.clone());
