@@ -18,10 +18,10 @@ use crate::error::Result;
 use crate::event::{Event, EventKind};
 use crate::output::{Outcome, Output};
 use crate::provider::types::{
-    ModelResponse, ContentBlock, ResponseStatus, StreamEvent, TokenUsage,
+    ContentBlock, ModelResponse, ResponseStatus, StreamEvent, TokenUsage,
 };
 use crate::provider::{ModelRequest, Provider, ProviderError, ProviderResult};
-use crate::tools::{ToolLike, ToolContext, ToolResult};
+use crate::tools::{ToolContext, ToolLike, ToolResult};
 
 /// A mock provider that returns pre-configured responses in order.
 ///
@@ -86,11 +86,16 @@ impl Provider for MockProvider {
         self.requests.lock().unwrap().push(request);
 
         Box::pin(async move {
-            let response = self.results.lock().unwrap().pop_front().unwrap_or_else(|| {
-                Err(ProviderError::ResponseMalformed {
-                    message: "no more mock responses".into(),
-                })
-            })?;
+            let response = self
+                .results
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| {
+                    Err(ProviderError::ResponseMalformed {
+                        message: "no more mock responses".into(),
+                    })
+                })?;
             for block in &response.content {
                 if let ContentBlock::Text { text } = block {
                     on_event(StreamEvent::TextDelta {

@@ -7,7 +7,7 @@ use std::pin::Pin;
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
+use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
 
 /// List the entries of a directory with type and size. Read-only. Pair with
 /// [`GlobTool`](crate::tools::GlobTool) when you need pattern-based file discovery.

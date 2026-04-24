@@ -22,9 +22,7 @@ pub use openai::OpenAiProvider;
 pub use r#trait::{ModelRequest, Provider, ToolChoice};
 pub use types::{ContentBlock, Message, TokenUsage};
 
-pub(crate) fn retry_delay_from_headers(
-    resp: &reqwest::Response,
-) -> Option<std::time::Duration> {
+pub(crate) fn retry_delay_from_headers(resp: &reqwest::Response) -> Option<std::time::Duration> {
     let value = resp.headers().get("retry-after")?.to_str().ok()?;
     value
         .parse::<u64>()

@@ -106,10 +106,7 @@ mod tests {
             message: String::new(),
         });
         assert!(retryable.is_retryable());
-        assert_eq!(
-            retryable.retry_delay(),
-            Some(Duration::from_millis(500))
-        );
+        assert_eq!(retryable.retry_delay(), Some(Duration::from_millis(500)));
         assert!(!terminal.is_retryable());
         assert_eq!(terminal.retry_delay(), None);
     }

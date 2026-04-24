@@ -11,7 +11,7 @@ use crate::error::Result;
 use crate::persistence::error::PersistenceError;
 use crate::persistence::task::{TaskStatus, TaskStore, TaskUpdate};
 use crate::tools::error::ToolError;
-use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
+use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
 
 /// Routes a task-store failure: in-band problems (not found, already
 /// completed, blocked) become `ToolResult::Error` so the model can retry;

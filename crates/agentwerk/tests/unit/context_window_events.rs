@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use agentwerk::event::{CompactReason, EventKind};
 use agentwerk::provider::types::ResponseStatus;
-use agentwerk::provider::{ModelRequest, ContentBlock, Message, ProviderError, TokenUsage};
+use agentwerk::provider::{ContentBlock, Message, ModelRequest, ProviderError, TokenUsage};
 use agentwerk::testutil::{text_response, tool_response, MockProvider, MockTool, TestHarness};
 use agentwerk::{Agent, Error, Event, Model};
 

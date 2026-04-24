@@ -6,7 +6,7 @@ use std::pin::Pin;
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
+use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
 
 /// Read a file with optional line offset and limit. Returns line-numbered
 /// text so the model can reference specific lines in subsequent edits.

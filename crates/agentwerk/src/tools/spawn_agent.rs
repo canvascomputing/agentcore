@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::agent::Agent;
 use crate::error::Result;
 use crate::tools::error::ToolError;
-use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
+use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
 use crate::util::generate_agent_name;
 
 /// Default identity for ad-hoc sub-agents (when the model doesn't supply one).
@@ -155,7 +155,10 @@ impl ToolLike for SpawnAgentTool {
                 .caller_spec
                 .as_ref()
                 .ok_or_else(|| {
-                    ToolError::new("spawn_agent", "caller LoopSpec not available in ToolContext")
+                    ToolError::new(
+                        "spawn_agent",
+                        "caller LoopSpec not available in ToolContext",
+                    )
                 })?
                 .clone();
 

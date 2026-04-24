@@ -16,10 +16,7 @@ pub enum AgentError {
     /// A configured policy (`max_turns`, `max_input_tokens`, `max_output_tokens`,
     /// `max_schema_retries`) was exceeded and the run terminated. `kind` says
     /// which policy tripped.
-    PolicyViolated {
-        kind: PolicyKind,
-        limit: u64,
-    },
+    PolicyViolated { kind: PolicyKind, limit: u64 },
 }
 
 impl fmt::Display for AgentError {

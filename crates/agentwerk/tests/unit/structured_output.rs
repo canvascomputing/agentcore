@@ -33,7 +33,7 @@
 //! - **C. Tools and end-conditions** — tools run first, truncation defers, guards skip.
 //! - **D. Sub-agent boundary** — the propagation bug: registered, ad-hoc, and background.
 
-use agentwerk::provider::{ModelRequest, ContentBlock, Message};
+use agentwerk::provider::{ContentBlock, Message, ModelRequest};
 use agentwerk::testutil::{
     text_response, tool_response, truncated_response, MockProvider, MockTool, TestHarness,
 };
@@ -707,7 +707,7 @@ async fn output_truncation_emits_event_and_keeps_outcome_completed() {
 
 #[tokio::test]
 async fn turn_limit_emits_policy_violated_event() {
-    use agentwerk::event::{PolicyKind, EventKind};
+    use agentwerk::event::{EventKind, PolicyKind};
 
     // Turn 1 is truncated so the loop must enter turn 2, where the guard
     // trips. max_turns(1) means state.turns >= 1 at the top of turn 2.

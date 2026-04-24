@@ -6,7 +6,7 @@ use std::pin::Pin;
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
+use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
 
 const MAX_URL_LENGTH: usize = 2000;
 const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;

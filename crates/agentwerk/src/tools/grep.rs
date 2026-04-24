@@ -7,7 +7,7 @@ use std::pin::Pin;
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
+use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
 use crate::tools::util::glob_match;
 
 /// Search file contents by substring under the working directory. Read-only.

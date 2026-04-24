@@ -8,7 +8,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use super::error::ProviderResult;
-use super::types::{ModelResponse, Message, StreamEvent};
+use super::types::{Message, ModelResponse, StreamEvent};
 use crate::tools::ToolDefinition;
 
 /// One request to a provider. Built by the agent loop from the agent's

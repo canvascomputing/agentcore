@@ -26,7 +26,7 @@ use agentwerk::agent::{AgentHandle, OutputFuture};
 use agentwerk::event::EventKind;
 use agentwerk::output::Outcome;
 use agentwerk::provider::types::ModelResponse;
-use agentwerk::provider::{ModelRequest, ContentBlock, Message};
+use agentwerk::provider::{ContentBlock, Message, ModelRequest};
 use agentwerk::testutil::{text_response, MockProvider};
 use agentwerk::{Agent, Event};
 

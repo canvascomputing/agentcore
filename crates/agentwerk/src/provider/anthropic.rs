@@ -10,12 +10,8 @@ use serde_json::Value;
 use crate::error::Result;
 
 use super::error::{ProviderError, ProviderResult};
-use super::r#trait::{
-    build_client, ModelRequest, Provider, ToolChoice, DEFAULT_REQUEST_TIMEOUT,
-};
-use super::types::{
-    ModelResponse, ContentBlock, Message, ResponseStatus, StreamEvent, TokenUsage,
-};
+use super::r#trait::{build_client, ModelRequest, Provider, ToolChoice, DEFAULT_REQUEST_TIMEOUT};
+use super::types::{ContentBlock, Message, ModelResponse, ResponseStatus, StreamEvent, TokenUsage};
 
 pub struct AnthropicProvider {
     api_key: String,

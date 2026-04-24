@@ -6,7 +6,7 @@ use std::pin::Pin;
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
+use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
 
 /// Search the tool registry by query string. Pair with tools that set
 /// [`Tool::should_defer`](crate::Tool::should_defer) to `true`: the

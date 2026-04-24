@@ -11,13 +11,9 @@ use serde_json::Value;
 use crate::error::Result;
 
 use super::error::{ProviderError, ProviderResult};
-use super::r#trait::{
-    build_client, ModelRequest, Provider, ToolChoice, DEFAULT_REQUEST_TIMEOUT,
-};
+use super::r#trait::{build_client, ModelRequest, Provider, ToolChoice, DEFAULT_REQUEST_TIMEOUT};
 use super::stream::{SseEvent, StreamParser};
-use super::types::{
-    ModelResponse, ContentBlock, Message, ResponseStatus, StreamEvent, TokenUsage,
-};
+use super::types::{ContentBlock, Message, ModelResponse, ResponseStatus, StreamEvent, TokenUsage};
 
 /// OpenAI-compatible LLM provider.
 pub struct OpenAiProvider {

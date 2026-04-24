@@ -64,14 +64,8 @@ impl ProviderError {
 
     pub fn retry_delay(&self) -> Option<Duration> {
         match self {
-            ProviderError::RateLimited {
-                retry_delay,
-                ..
-            } => *retry_delay,
-            ProviderError::StatusUnclassified {
-                retry_delay,
-                ..
-            } => *retry_delay,
+            ProviderError::RateLimited { retry_delay, .. } => *retry_delay,
+            ProviderError::StatusUnclassified { retry_delay, .. } => *retry_delay,
             _ => None,
         }
     }

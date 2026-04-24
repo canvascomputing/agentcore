@@ -11,13 +11,11 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::error::{Error, Result};
-use crate::event::{PolicyKind, Event, EventKind};
+use crate::event::{Event, EventKind, PolicyKind};
 use crate::output::{Outcome, Output, OutputSchema, SchemaViolation, Statistics};
 use crate::persistence::session::{SessionStore, TranscriptEntry, TranscriptEntryType};
 use crate::provider::retry::compute_delay;
-use crate::provider::types::{
-    ContentBlock, Message, ResponseStatus, StreamEvent, TokenUsage,
-};
+use crate::provider::types::{ContentBlock, Message, ResponseStatus, StreamEvent, TokenUsage};
 use crate::provider::{ModelRequest, Provider, ProviderError, RequestErrorKind};
 use crate::tools::{ToolCall, ToolContext, ToolRegistry, ToolResult};
 use crate::util::{cancellable_sleep, format_current_date, now_millis, wait_for_cancel};
@@ -212,17 +210,19 @@ pub(crate) fn run_loop(
                 match call {
                     None => break 'run Outcome::Cancelled,
                     Some(Ok(response)) => break 'fetch response,
-                    Some(Err(Error::Provider(ProviderError::ContextWindowExceeded { message })))
-                        if spec.model().context_window_size.is_some() =>
-                    {
+                    Some(Err(Error::Provider(ProviderError::ContextWindowExceeded {
+                        message,
+                    }))) if spec.model().context_window_size.is_some() => {
                         if let Err(compact_err) =
                             compact::trigger_reactive(&runtime, &spec, &mut state, turn).await
                         {
                             state.errors.push(compact_err);
                         }
-                        state.errors.push(Error::Provider(
-                            ProviderError::ContextWindowExceeded { message },
-                        ));
+                        state
+                            .errors
+                            .push(Error::Provider(ProviderError::ContextWindowExceeded {
+                                message,
+                            }));
                         break 'run Outcome::Failed;
                     }
                     Some(Err(e)) if e.is_retryable() && attempt < spec.max_request_retries => {
@@ -360,8 +360,8 @@ pub(crate) fn run_loop(
                     None,
                 );
                 if let Some(queue) = runtime.command_queue.as_ref() {
-                    while let Some(cmd) = queue
-                        .dequeue_if(Some(&spec.name), |c| c.priority != QueuePriority::Later)
+                    while let Some(cmd) =
+                        queue.dequeue_if(Some(&spec.name), |c| c.priority != QueuePriority::Later)
                     {
                         state.messages.push(Message::user(cmd.as_user_message()));
                     }

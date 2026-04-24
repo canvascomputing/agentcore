@@ -6,7 +6,7 @@ use std::pin::Pin;
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
+use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
 
 /// In-place string replacement in an existing file. The model supplies the
 /// old and new strings; the tool fails if the old string is absent or

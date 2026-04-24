@@ -25,7 +25,7 @@ pub(crate) struct AgentSpec {
     pub model: Option<Model>,
     pub identity_prompt: String,
     pub behavior_prompt: String,
-    pub context_prompts: Vec<String>,
+    pub context_prompt: String,
     pub tool_registry: ToolRegistry,
     pub sub_agents: Vec<Agent>,
     pub output_schema: Option<OutputSchema>,
@@ -46,7 +46,7 @@ impl Default for AgentSpec {
             model: None,
             identity_prompt: String::new(),
             behavior_prompt: prompts::DEFAULT_BEHAVIOR_PROMPT.to_string(),
-            context_prompts: Vec::new(),
+            context_prompt: String::new(),
             tool_registry: ToolRegistry::new(),
             sub_agents: Vec::new(),
             output_schema: None,
@@ -79,11 +79,11 @@ impl AgentSpec {
             .expect("AgentSpec::model() called on unresolved spec; Agent::compile must run first")
     }
 
-    /// Compose the system prompt: interpolated `identity_prompt`
-    /// + `\n\n` + `behavior_prompt` + structured-output instruction when
+    /// Build the provider's `system` field from `identity_prompt` (with `vars`
+    /// interpolated), `behavior_prompt`, and a JSON-output directive when
     /// `output_schema` is set.
     pub(crate) fn system_prompt(&self, vars: &HashMap<String, Value>) -> String {
-        let mut s = interpolate(&self.identity_prompt, vars);
+        let mut s = Self::interpolate(&self.identity_prompt, vars);
         if !self.behavior_prompt.is_empty() {
             s.push_str("\n\n");
             s.push_str(&self.behavior_prompt);
@@ -93,40 +93,37 @@ impl AgentSpec {
         }
         s
     }
-}
 
-/// Replace `{key}` placeholders in `template` with stringified values.
-pub(crate) fn interpolate(template: &str, vars: &HashMap<String, Value>) -> String {
-    let mut result = template.to_string();
-    for (key, value) in vars {
-        let replacement = match value {
-            Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
-        result = result.replace(&format!("{{{key}}}"), &replacement);
+    /// Build the first user message's context prefix: the runtime's
+    /// `environment` block (when present) followed by the user-supplied
+    /// `context_prompt` field. Returns `None` when both are empty so the
+    /// caller can skip pushing a message altogether.
+    pub(crate) fn context_prompt(&self, environment: Option<&str>) -> Option<String> {
+        let mut parts: Vec<&str> = Vec::new();
+        if let Some(env) = environment {
+            parts.push(env);
+        }
+        if !self.context_prompt.is_empty() {
+            parts.push(&self.context_prompt);
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("\n\n"))
+        }
     }
-    result
-}
 
-/// Compose the optional initial "context" user message: the environment block
-/// (when present) followed by each user-supplied `context_prompts` entry
-/// wrapped in `<context>…</context>` tags. Returns `None` if both inputs are
-/// empty — caller shouldn't push a message at all in that case.
-pub(crate) fn build_context_prompt(
-    context_prompts: &[String],
-    environment: Option<&str>,
-) -> Option<String> {
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(env) = environment {
-        parts.push(env.to_string());
-    }
-    for block in context_prompts {
-        parts.push(format!("<context>\n{block}\n</context>"));
-    }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join("\n\n"))
+    /// Replace `{key}` placeholders in `template` with stringified values.
+    pub(crate) fn interpolate(template: &str, vars: &HashMap<String, Value>) -> String {
+        let mut result = template.to_string();
+        for (key, value) in vars {
+            let replacement = match value {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            result = result.replace(&format!("{{{key}}}"), &replacement);
+        }
+        result
     }
 }
 
@@ -136,35 +133,18 @@ mod tests {
 
     #[test]
     fn context_prompt_appended_after_environment() {
-        let blocks = ["user-provided context".to_string()];
-        let ctx = build_context_prompt(
-            &blocks,
-            Some("<environment>\ntest environment\n</environment>"),
-        )
-        .expect("context_prompt should be composed");
+        let block = "<context>\nuser-provided context\n</context>";
+        let mut spec = AgentSpec::default();
+        spec.context_prompt = block.to_string();
+        let ctx = spec
+            .context_prompt(Some("<environment>\ntest environment\n</environment>"))
+            .expect("context_prompt should be composed");
 
         let env_pos = ctx.find("<environment>").expect("environment missing");
-        let user_pos = ctx
-            .find("<context>\nuser-provided context\n</context>")
-            .expect("context_prompt missing");
+        let user_pos = ctx.find(block).expect("context_prompt missing");
         assert!(
             env_pos < user_pos,
             "environment should appear before context_prompt:\n{ctx}"
-        );
-    }
-
-    #[test]
-    fn multiple_context_prompts_stacked() {
-        let blocks = ["first block".to_string(), "second block".to_string()];
-        let ctx = build_context_prompt(&blocks, Some("<environment>\nenv\n</environment>"))
-            .expect("context_prompt should be composed");
-        let env_pos = ctx.find("<environment>").unwrap();
-        let first_pos = ctx.find("<context>\nfirst block\n</context>").unwrap();
-        let second_pos = ctx.find("<context>\nsecond block\n</context>").unwrap();
-        assert!(env_pos < first_pos, "environment before first context");
-        assert!(
-            first_pos < second_pos,
-            "first context before second context"
         );
     }
 }

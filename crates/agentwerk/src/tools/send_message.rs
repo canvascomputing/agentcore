@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::agent::queue::{CommandSource, QueuePriority, QueuedCommand};
 use crate::error::Result;
 use crate::tools::error::ToolError;
-use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
+use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
 
 const NAME: &str = "send_message";
 

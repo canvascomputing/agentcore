@@ -167,7 +167,7 @@ mod tests {
     use crate::agent::Agent;
     use crate::event::{Event, EventKind};
     use crate::output::Outcome;
-    use crate::provider::types::{ModelResponse, ContentBlock, Message};
+    use crate::provider::types::{ContentBlock, Message, ModelResponse};
     use crate::provider::ModelRequest;
     use crate::testutil::{text_response, MockProvider};
 

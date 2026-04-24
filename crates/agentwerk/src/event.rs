@@ -219,10 +219,7 @@ pub enum EventKind {
     /// A configured policy (`max_turns`, `max_input_tokens`, `max_output_tokens`,
     /// `max_schema_retries`) was exceeded; the run is about to terminate with
     /// `Outcome::Failed`.
-    PolicyViolated {
-        kind: PolicyKind,
-        limit: u64,
-    },
+    PolicyViolated { kind: PolicyKind, limit: u64 },
     /// The model's terminal reply failed output-schema validation and the loop
     /// is sending a corrective message. `attempt` is the upcoming attempt
     /// number out of `max_attempts`; `path` and `message` come from the

@@ -7,7 +7,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::tools::tool::{ToolLike, ToolContext, ToolResult};
+use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
 use crate::tools::util::{glob_match, run_shell_command};
 
 /// Execute shell commands. Two constructors:

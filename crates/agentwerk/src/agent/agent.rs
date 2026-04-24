@@ -20,7 +20,7 @@ use crate::output::{Output, OutputSchema};
 
 use super::queue::CommandQueue;
 use super::r#loop::{run_loop, LoopRuntime, LoopState};
-use super::spec::{build_context_prompt, AgentSpec};
+use super::spec::AgentSpec;
 
 /// An agent. Cheap to clone: the static template is shared, per-run fields are not.
 ///
@@ -73,6 +73,15 @@ impl Default for Agent {
 fn load_prompt_file(path: PathBuf) -> String {
     std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read prompt file {}: {e}", path.display()))
+}
+
+fn append_context_block(context_prompt: &mut String, content: &str) {
+    if !context_prompt.is_empty() {
+        context_prompt.push_str("\n\n");
+    }
+    context_prompt.push_str("<context>\n");
+    context_prompt.push_str(content);
+    context_prompt.push_str("\n</context>");
 }
 
 fn load_json_file(path: PathBuf) -> Value {
@@ -213,13 +222,13 @@ impl Agent {
     /// Append additional context alongside the instruction prompt.
     pub fn context_prompt(self, content: impl Into<String>) -> Self {
         let content = content.into();
-        self.with_spec(|c| c.context_prompts.push(content))
+        self.with_spec(|c| append_context_block(&mut c.context_prompt, &content))
     }
 
     /// Append additional context from a file.
     pub fn context_prompt_file(self, path: impl Into<PathBuf>) -> Self {
         let content = load_prompt_file(path.into());
-        self.with_spec(|c| c.context_prompts.push(content))
+        self.with_spec(|c| append_context_block(&mut c.context_prompt, &content))
     }
 
     /// Register agents callable by name as sub-agents.
@@ -313,8 +322,7 @@ impl Agent {
         let (spec, runtime) = self.compile(None);
         let runtime = Arc::new(runtime);
         let instruction = self.interpolate(&self.instruction_prompt);
-        let context_prompt =
-            build_context_prompt(&spec.context_prompts, runtime.environment.as_deref());
+        let context_prompt = spec.context_prompt(runtime.environment.as_deref());
         let state = LoopState::initial(context_prompt, instruction);
         run_loop(runtime, spec, state).await
     }
@@ -328,8 +336,7 @@ impl Agent {
         let (spec, runtime) = self.compile(Some((parent_spec, parent_runtime)));
         let runtime = Arc::new(runtime);
         let instruction = self.interpolate(&self.instruction_prompt);
-        let context_prompt =
-            build_context_prompt(&spec.context_prompts, runtime.environment.as_deref());
+        let context_prompt = spec.context_prompt(runtime.environment.as_deref());
         let state = LoopState::initial(context_prompt, instruction);
         run_loop(runtime, spec, state).await
     }
