@@ -26,7 +26,7 @@ pub(crate) struct AgentSpec {
     pub identity_prompt: String,
     pub behavior_prompt: String,
     pub context_prompts: Vec<String>,
-    pub tools: ToolRegistry,
+    pub tool_registry: ToolRegistry,
     pub sub_agents: Vec<Agent>,
     pub output_schema: Option<OutputSchema>,
     pub max_request_tokens: Option<u32>,
@@ -47,7 +47,7 @@ impl Default for AgentSpec {
             identity_prompt: String::new(),
             behavior_prompt: prompts::DEFAULT_BEHAVIOR_PROMPT.to_string(),
             context_prompts: Vec::new(),
-            tools: ToolRegistry::new(),
+            tool_registry: ToolRegistry::new(),
             sub_agents: Vec::new(),
             output_schema: None,
             max_request_tokens: None,
@@ -135,33 +135,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn context_prompt_appended_after_metadata() {
+    fn context_prompt_appended_after_environment() {
         let blocks = ["user-provided context".to_string()];
         let ctx = build_context_prompt(
             &blocks,
-            Some("<environment>\ntest metadata\n</environment>"),
+            Some("<environment>\ntest environment\n</environment>"),
         )
         .expect("context_prompt should be composed");
 
-        let meta_pos = ctx.find("<environment>").expect("metadata missing");
+        let env_pos = ctx.find("<environment>").expect("environment missing");
         let user_pos = ctx
             .find("<context>\nuser-provided context\n</context>")
             .expect("context_prompt missing");
         assert!(
-            meta_pos < user_pos,
-            "metadata should appear before context_prompt:\n{ctx}"
+            env_pos < user_pos,
+            "environment should appear before context_prompt:\n{ctx}"
         );
     }
 
     #[test]
     fn multiple_context_prompts_stacked() {
         let blocks = ["first block".to_string(), "second block".to_string()];
-        let ctx = build_context_prompt(&blocks, Some("<environment>\nmetadata\n</environment>"))
+        let ctx = build_context_prompt(&blocks, Some("<environment>\nenv\n</environment>"))
             .expect("context_prompt should be composed");
-        let meta_pos = ctx.find("<environment>").unwrap();
+        let env_pos = ctx.find("<environment>").unwrap();
         let first_pos = ctx.find("<context>\nfirst block\n</context>").unwrap();
         let second_pos = ctx.find("<context>\nsecond block\n</context>").unwrap();
-        assert!(meta_pos < first_pos, "metadata before first context");
+        assert!(env_pos < first_pos, "environment before first context");
         assert!(
             first_pos < second_pos,
             "first context before second context"

@@ -22,15 +22,7 @@ use super::queue::CommandQueue;
 use super::r#loop::{run_loop, LoopRuntime, LoopState};
 use super::spec::{build_context_prompt, AgentSpec};
 
-/// An agent. Cheap to clone: internally an `Arc`-wrapped spec plus a handful
-/// of small per-run fields.
-///
-/// Build with `Agent::new()`, chain configurations, then call `.run()`. The
-/// same agent can be cloned and run again with a new instruction; the static
-/// template (tools, sub-agents, behavior prompts) is shared, the per-run
-/// fields are not.
-///
-/// # Examples
+/// An agent. Cheap to clone: the static template is shared, per-run fields are not.
 ///
 /// ```
 /// use std::sync::Arc;
@@ -59,7 +51,7 @@ pub struct Agent {
     pub(crate) event_handler: Option<Arc<dyn Fn(Event) + Send + Sync>>,
     pub(crate) cancel_signal: Option<Arc<AtomicBool>>,
     pub(crate) command_queue: Option<Arc<CommandQueue>>,
-    pub(crate) session_dir: Option<PathBuf>,
+    pub(crate) session_directory: Option<PathBuf>,
 }
 
 impl Default for Agent {
@@ -68,12 +60,12 @@ impl Default for Agent {
             spec: Arc::new(AgentSpec::default()),
             provider: None,
             instruction_prompt: String::new(),
-            template_variables: HashMap::new(),
-            working_directory: None,
             event_handler: None,
-            cancel_signal: None,
             command_queue: None,
-            session_dir: None,
+            cancel_signal: None,
+            working_directory: None,
+            session_directory: None,
+            template_variables: HashMap::new(),
         }
     }
 }
@@ -96,21 +88,18 @@ impl Agent {
     /// Default base delay for the exponential-backoff retry policy.
     pub const DEFAULT_REQUEST_RETRY_DELAY: Duration = AgentSpec::DEFAULT_REQUEST_RETRY_DELAY;
 
-    /// A fresh agent with a generated `name`, no provider, no tools, and no
-    /// prompts. Chain builder methods to configure, then call `.run()`.
+    /// A fresh agent with a generated `name`, no provider, no tools, and no prompts.
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Mutate the shared `AgentSpec` via copy-on-write (`Arc::make_mut`).
-    /// Per-run fields are owned and mutate directly at their call sites.
     fn with_spec<F: FnOnce(&mut AgentSpec)>(mut self, f: F) -> Self {
         f(Arc::make_mut(&mut self.spec));
         self
     }
 
-    /// Replace `{key}` placeholders in `template` with this agent's template
-    /// variables.
+    /// Replace `{key}` placeholders in `template` with this agent's template variables.
     pub(crate) fn interpolate(&self, template: &str) -> String {
         let mut result = template.to_string();
         for (key, value) in &self.template_variables {
@@ -123,23 +112,17 @@ impl Agent {
         result
     }
 
-    /// Set the agent's name. `Agent::new()` pre-fills it with a generated
-    /// value like `agent_<nanos>`; this method overwrites.
+    /// Override the generated name.
     pub fn name(self, n: impl Into<String>) -> Self {
         self.with_spec(|c| c.name = n.into())
     }
 
-    /// Set the model by name. Sugar for `.model(Model::from_name(name))`. If
-    /// not called, the agent inherits the parent's model. The context window
-    /// size is auto-detected from the built-in registry (see
-    /// [`Model::from_name`]); use `.model(Model::from_name(name).context_window_size(n))`
-    /// to override.
+    /// Set the model by name. Context window size is auto-detected; use [`Agent::model`] to override.
     pub fn model_name(self, name: impl Into<String>) -> Self {
         self.with_spec(|c| c.model = Some(Model::from_name(name)))
     }
 
-    /// Set the full [`Model`] — name plus any capability overrides (e.g.
-    /// explicit context window size for local proxies or private deployments).
+    /// Set the full [`Model`] — name plus capability overrides.
     pub fn model(self, model: Model) -> Self {
         self.with_spec(|c| c.model = Some(model))
     }
@@ -155,30 +138,29 @@ impl Agent {
         self.with_spec(|c| c.identity_prompt = s)
     }
 
-    /// Maximum output tokens per request (serialized as `max_tokens` on the
-    /// wire). Omit to use the provider default.
+    /// Maximum output tokens per request (`max_tokens` on the wire).
     pub fn max_request_tokens(self, n: u32) -> Self {
         self.with_spec(|c| c.max_request_tokens = Some(n))
     }
 
-    /// Maximum agentic loop iterations. Omit for no limit.
+    /// Maximum agentic loop iterations.
     pub fn max_turns(self, n: u32) -> Self {
         self.with_spec(|c| c.max_turns = Some(n))
     }
 
-    /// Maximum cumulative input tokens across the whole run before the agent stops.
+    /// Maximum cumulative input tokens across the run.
     pub fn max_input_tokens(self, n: u64) -> Self {
         self.with_spec(|c| c.max_input_tokens = Some(n))
     }
 
-    /// Maximum cumulative output tokens across the whole run before the agent stops.
+    /// Maximum cumulative output tokens across the run.
     pub fn max_output_tokens(self, n: u64) -> Self {
         self.with_spec(|c| c.max_output_tokens = Some(n))
     }
 
     /// Register a tool.
     pub fn tool(self, tool: impl ToolLike + 'static) -> Self {
-        self.with_spec(|c| c.tools.register(tool))
+        self.with_spec(|c| c.tool_registry.register(tool))
     }
 
     /// Register a structured output schema. Panics if the schema is invalid.
@@ -208,13 +190,10 @@ impl Agent {
         self.with_spec(|c| c.request_retry_delay = delay)
     }
 
-    /// Keep the agent alive after a terminal output, parking it idle until a
-    /// peer message arrives or `cancel_signal` fires.
+    /// Park the agent idle after a terminal output until a peer message arrives or `cancel_signal` fires.
     ///
-    /// Most users won't call this directly: [`Agent::spawn`] sets it
-    /// implicitly. You only need it when declaring a sub-agent *template*
-    /// (via `.sub_agents([...])`) that should idle while waiting for peer
-    /// messages after the orchestrator spawns it in the background.
+    /// [`Agent::spawn`] sets this implicitly. Call it only on a sub-agent template
+    /// that should idle in the background after the orchestrator spawns it.
     pub fn keep_alive(self) -> Self {
         self.with_spec(|c| c.keep_alive = true)
     }
@@ -243,33 +222,26 @@ impl Agent {
         self.with_spec(|c| c.context_prompts.push(content))
     }
 
-    /// Register one or more agents as sub-agents. The model can call them by
-    /// name once this agent runs.
+    /// Register agents callable by name as sub-agents.
     pub fn sub_agents(self, agents: impl IntoIterator<Item = Agent>) -> Self {
         let agents: Vec<_> = agents.into_iter().collect();
         self.with_spec(|c| c.sub_agents.extend(agents))
     }
 
-    /// Install the provider this agent calls out to. See
-    /// [`Agent::provider_from_env`] for detection from environment variables.
+    /// Install the provider this agent calls out to.
     pub fn provider(mut self, p: Arc<dyn Provider>) -> Self {
         self.provider = Some(p);
         self
     }
 
-    /// Resolve the provider from environment variables (`*_API_KEY` +
-    /// `*_BASE_URL`). See [`crate::provider::from_env`] for the detection
-    /// matrix. Pair with [`Agent::model_from_env`] to also pick a model, or
-    /// call [`Agent::model_name`] / [`Agent::model`] explicitly.
+    /// Resolve the provider from environment variables. See [`crate::provider::from_env`].
     pub fn provider_from_env(self) -> Result<Self> {
         Ok(self.provider(crate::provider::from_env()?))
     }
 
     /// Resolve the model from environment variables.
     ///
-    /// Priority: `MODEL` (generic override) → `*_MODEL` (provider-prefixed,
-    /// same detection matrix as [`Agent::provider_from_env`]) → hosted
-    /// default for the detected provider.
+    /// Priority: `MODEL` → `*_MODEL` (provider-prefixed) → hosted default.
     pub fn model_from_env(self) -> Result<Self> {
         Ok(self.model_name(crate::provider::environment::model_from_env()?))
     }
@@ -286,66 +258,57 @@ impl Agent {
         self
     }
 
-    /// Bind `{key}` to `value`; every `{key}` placeholder in the identity,
-    /// instruction, context, and behavior prompts is replaced before the run.
+    /// Bind `{key}` to `value` for placeholder substitution in all prompts before the run.
     pub fn template_variable(mut self, key: impl Into<String>, value: Value) -> Self {
         self.template_variables.insert(key.into(), value);
         self
     }
 
-    /// Working directory surfaced to tools via [`crate::tools::ToolContext`] and to
-    /// the environment prompt. Defaults to the process's current directory.
+    /// Working directory surfaced to tools and the environment prompt. Defaults to the process cwd.
     pub fn working_directory(mut self, d: impl Into<PathBuf>) -> Self {
         self.working_directory = Some(d.into());
         self
     }
 
-    /// Observe loop activity. The handler is called once per [`Event`]; it
-    /// should be cheap and non-blocking. Without a handler the default stderr
-    /// logger is installed; use [`Agent::silent`] to drop events entirely.
+    /// Observe loop activity. The handler must be cheap and non-blocking.
     pub fn event_handler(mut self, h: Arc<dyn Fn(Event) + Send + Sync>) -> Self {
         self.event_handler = Some(h);
         self
     }
 
-    /// Drop every event. Opts out of the default stderr logger installed when no
-    /// handler is set.
+    /// Drop every event, opting out of the default stderr logger.
     pub fn silent(mut self) -> Self {
         self.event_handler = Some(Arc::new(|_| {}));
         self
     }
 
-    /// Share a cancel flag. Set it to `true` to stop the loop at the next
-    /// safe point; the run returns with [`crate::output::Outcome::Cancelled`].
+    /// Share a cancel flag. Setting it to `true` stops the loop at the next safe point.
     pub fn cancel_signal(mut self, s: Arc<AtomicBool>) -> Self {
         self.cancel_signal = Some(s);
         self
     }
 
-    /// Install an externally-owned command queue. Only used by `Agent::spawn`
-    /// so the returned `AgentHandle` can inject instructions into the loop.
+    /// Install an externally-owned command queue so an `AgentHandle` can inject instructions.
     pub(crate) fn command_queue(mut self, q: Arc<CommandQueue>) -> Self {
         self.command_queue = Some(q);
         self
     }
 
     /// Enable session transcript persistence to the given directory.
-    pub fn session_dir(mut self, d: impl Into<PathBuf>) -> Self {
-        self.session_dir = Some(d.into());
+    pub fn session_directory(mut self, d: impl Into<PathBuf>) -> Self {
+        self.session_directory = Some(d.into());
         self
     }
 
-    /// Returns the agent's name (always set — eagerly generated by `Agent::new()`
-    /// and overwritten by `.name(...)`).
+    /// The agent's name.
     pub fn get_name(&self) -> &str {
         &self.spec.name
     }
 
-    /// Drive the agentic loop to completion and return the agent's output.
+    /// Drive the loop to completion and return the agent's output.
     ///
     /// Requires `.provider()` (or [`Agent::provider_from_env`]), `.model_name()`
-    /// (or [`Agent::model_from_env`]), and `.instruction_prompt()`. The agent
-    /// may be run again after this returns: the static template is preserved.
+    /// (or [`Agent::model_from_env`]), and `.instruction_prompt()`.
     pub async fn run(&self) -> Result<Output> {
         let (spec, runtime) = self.compile(None);
         let runtime = Arc::new(runtime);
@@ -356,9 +319,7 @@ impl Agent {
         run_loop(runtime, spec, state).await
     }
 
-    /// Crate-internal: run this agent as a child under a parent's run-tree.
-    /// The `parent_spec` supplies the model fallback for `model: None`
-    /// (id *and* context window size both inherit).
+    /// Run as a child under a parent's run-tree. `parent_spec` supplies the model fallback.
     pub(crate) async fn run_child(
         &self,
         parent_spec: &AgentSpec,
@@ -373,9 +334,7 @@ impl Agent {
         run_loop(runtime, spec, state).await
     }
 
-    /// Apply LLM-supplied JSON overrides for any Agent field a tool can
-    /// legitimately set. Missing keys are left alone; unknown keys are
-    /// silently ignored. Single source of truth for tool-driven config updates.
+    /// Apply LLM-supplied JSON overrides. Missing keys are left alone, unknown keys ignored.
     pub(crate) fn apply_overrides(mut self, overrides: &Value) -> Self {
         if let Some(m) = overrides.get("model").and_then(Value::as_str) {
             self = self.model_name(m);
@@ -410,24 +369,14 @@ impl Agent {
         self
     }
 
-    /// Compile this agent into the pair of inputs the loop consumes.
+    /// Compile into the `(spec, runtime)` pair the loop consumes.
     ///
-    /// `parent = None` starts a root run — requires an explicit `.model()` /
-    /// `.model_name()` and uses the agent's own per-run fields (provider,
-    /// cancel signal, etc.) falling back to sensible defaults.
-    ///
-    /// `parent = Some((parent_spec, parent_runtime))` spawns a sub-agent —
-    /// externals inherit from `parent_runtime` (child's own per-run fields
-    /// override on a per-field basis), and `self.spec.model = None` resolves
-    /// against `parent_spec.model()`.
-    ///
-    /// The returned `AgentSpec` is a CoW clone of `self.spec` with
-    /// `model: Some(resolved)` filled in. `self.spec` itself is untouched.
+    /// Root runs (`parent = None`) require an explicit model. Sub-agents
+    /// (`parent = Some(...)`) inherit the model and externals from the parent.
     pub(crate) fn compile(
         &self,
         parent: Option<(&AgentSpec, &LoopRuntime)>,
     ) -> (Arc<AgentSpec>, LoopRuntime) {
-        // Resolve the model first — root runs require an explicit model.
         let resolved_model = match (self.spec.model.as_ref(), parent) {
             (Some(m), _) => m.clone(),
             (None, Some((parent_spec, _))) => parent_spec.model().clone(),
@@ -436,11 +385,9 @@ impl Agent {
             ),
         };
 
-        // CoW-clone the spec and fill in the resolved model.
         let mut spec = Arc::clone(&self.spec);
         Arc::make_mut(&mut spec).model = Some(resolved_model);
 
-        // Build the runtime: inherit from parent or build fresh externals.
         let runtime = match parent {
             Some((_, parent_runtime)) => self.inherit_runtime(parent_runtime, &spec),
             None => self.build_runtime(&spec),
@@ -449,8 +396,7 @@ impl Agent {
         (spec, runtime)
     }
 
-    /// Build the root `LoopRuntime` from this agent's per-run fields plus
-    /// reasonable defaults. Requires `self.provider` to be set.
+    /// Build the root `LoopRuntime`. Requires `self.provider` to be set.
     fn build_runtime(&self, spec: &AgentSpec) -> LoopRuntime {
         let provider = self.provider.clone().unwrap_or_else(|| {
             panic!("Agent::run() requires .provider() (or .provider_from_env()) on root agents")
@@ -471,16 +417,15 @@ impl Agent {
             .clone()
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
 
-        // Every root run gets a command queue so background sub-agents can post
-        // notifications back to the parent. An externally supplied queue
-        // (e.g. from `Agent::spawn`) wins so the handle can reach the loop.
+        // Every root run carries a command queue so background sub-agents can post
+        // notifications back. An externally supplied queue wins so a handle can reach the loop.
         let command_queue = Some(
             self.command_queue
                 .clone()
                 .unwrap_or_else(|| Arc::new(CommandQueue::new())),
         );
 
-        let session_store = self.session_dir.as_ref().map(|dir| {
+        let session_store = self.session_directory.as_ref().map(|dir| {
             let store = SessionStore::new(dir, &generate_agent_name("session"));
             Arc::new(Mutex::new(store))
         });
@@ -500,8 +445,7 @@ impl Agent {
         }
     }
 
-    /// Build a child `LoopRuntime`: inherit externals from the parent, let this
-    /// agent's own per-run fields override any that it set explicitly.
+    /// Build a child `LoopRuntime`: parent externals, with this agent's per-run fields overriding.
     fn inherit_runtime(&self, parent: &LoopRuntime, spec: &AgentSpec) -> LoopRuntime {
         LoopRuntime {
             provider: self
@@ -529,11 +473,9 @@ impl Agent {
     }
 }
 
-/// Build the runtime's `Arc<ToolRegistry>`: a clone of `spec.tools` with
-/// `SpawnAgentTool` auto-wired when `sub_agents` is non-empty and the user
-/// hasn't registered a conflicting tool.
+/// Clone `spec.tools`, auto-wiring `SpawnAgentTool` when sub-agents exist and the slot is free.
 fn build_tools(spec: &AgentSpec) -> Arc<ToolRegistry> {
-    let mut tools = spec.tools.clone();
+    let mut tools = spec.tool_registry.clone();
     if !spec.sub_agents.is_empty() && tools.get("spawn_agent").is_none() {
         tools.register(SpawnAgentTool);
     }
@@ -554,8 +496,6 @@ mod tests {
             .as_ref()
             .expect(".silent() must install a handler")
             .clone();
-        // Every variant passes through without panicking; no output is asserted —
-        // the point is that a handler is present and benign.
         handler(Event::new(
             "t",
             EventKind::AgentFinished {
@@ -567,10 +507,6 @@ mod tests {
 
     #[test]
     fn default_logger_is_used_when_no_handler_is_set() {
-        // No `.event_handler(...)` call — the runtime built by `compile` must
-        // carry the default logger, not a no-op. We can't compare function
-        // pointers across clones, so we assert the default is present by
-        // exercising the build path.
         let agent = Agent::new()
             .name("t")
             .model_name("mock")
@@ -579,8 +515,6 @@ mod tests {
                 "ok",
             )));
         assert!(agent.event_handler.is_none());
-        // `compile` must succeed without a user-set handler — proves the
-        // default path is wired up.
         let _ = agent.compile(None);
     }
 
