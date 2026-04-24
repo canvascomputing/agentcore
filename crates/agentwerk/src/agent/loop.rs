@@ -214,7 +214,7 @@ pub(crate) fn run_loop(
                         message,
                     }))) if spec.model().context_window_size.is_some() => {
                         if let Err(compact_err) =
-                            compact::trigger_reactive(&runtime, &spec, &mut state, turn).await
+                            compact::trigger_reactive(&runtime, &spec, turn).await
                         {
                             state.errors.push(compact_err);
                         }
@@ -303,12 +303,12 @@ pub(crate) fn run_loop(
             if response.status == ResponseStatus::ContextWindowExceeded
                 && spec.model().context_window_size.is_some()
             {
-                if let Err(e) = compact::trigger_reactive(&runtime, &spec, &mut state, turn).await {
+                if let Err(e) = compact::trigger_reactive(&runtime, &spec, turn).await {
                     state.errors.push(e);
                     break 'run Outcome::Failed;
                 }
             }
-            if let Err(e) = compact::trigger_if_over_threshold(&runtime, &spec, &mut state).await {
+            if let Err(e) = compact::trigger_if_over_threshold(&runtime, &spec, &state).await {
                 state.errors.push(e);
                 break 'run Outcome::Failed;
             }
