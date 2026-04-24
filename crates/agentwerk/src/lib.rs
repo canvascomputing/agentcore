@@ -61,7 +61,7 @@ pub use error::{Error, Result};
 
 pub use provider::{Model, Provider};
 
-pub use tools::{Tool, ToolContext, ToolLike};
+pub use tools::Tool;
 
 pub use agent::Agent;
 pub use batch::Batch;
