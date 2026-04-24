@@ -194,14 +194,21 @@ The following methods on `Agent` configure prompts:
 |--------|-------------|
 | `.identity_prompt(_file)` | Persistent identity of the agent |
 | `.instruction_prompt(_file)` | Task for the current run |
-| `.context_prompt(_file)` | Context information relevant for a task (defaults to working directory, platform, OS version, date) |
+| `.context_prompt(_file)` | Override the context prompt (default: `Agent::default_context_prompt()`, containing working directory, platform, OS version, date) |
 | `.behavior_prompt(_file)` | Override the default behavioral directives (`DEFAULT_BEHAVIOR_PROMPT`) |
+
+Compose a custom context prompt:
+
+```rust
+let default = Agent::default_context_prompt();
+Agent::new().context_prompt(format!("{default}\n\nExtra notes."));
+```
+
+Read identity prompt from a file:
 
 ```rust
 Agent::new()
     .identity_prompt_file("prompts/identity.md")
-    .instruction_prompt("Summarize the project.")
-    .behavior_prompt_file("prompts/behavior.md")
 ```
 
 Use `{key}` placeholders in the identity prompt and fill them with template variables:

@@ -36,16 +36,7 @@ You are Ada, a concise assistant.
 Be terse.
 
 === messages[0] user ===
-<environment>
-Working directory: <WORKING_DIRECTORY>
-Platform: <PLATFORM>
-OS version: <OS_VERSION>
-Date: <DATE>
-</environment>
-
-<context>
 Working directory: /tmp/demo
-</context>
 
 === messages[1] user ===
 What is the answer?
@@ -58,16 +49,7 @@ You are Ada, a concise assistant.
 Be terse.
 
 === messages[0] user ===
-<environment>
-Working directory: <WORKING_DIRECTORY>
-Platform: <PLATFORM>
-OS version: <OS_VERSION>
-Date: <DATE>
-</environment>
-
-<context>
 Working directory: /tmp/demo
-</context>
 
 === messages[1] user ===
 What is the answer?
@@ -86,16 +68,7 @@ You are Ada, a concise assistant.
 Be terse.
 
 === messages[0] user ===
-<environment>
-Working directory: <WORKING_DIRECTORY>
-Platform: <PLATFORM>
-OS version: <OS_VERSION>
-Date: <DATE>
-</environment>
-
-<context>
 Working directory: /tmp/demo
-</context>
 
 === messages[1] user ===
 What is the answer?

@@ -25,7 +25,7 @@ pub(crate) struct AgentSpec {
     pub model: Option<Model>,
     pub identity_prompt: String,
     pub behavior_prompt: String,
-    pub context_prompt: String,
+    pub context_prompt: Option<String>,
     pub tool_registry: ToolRegistry,
     pub sub_agents: Vec<Agent>,
     pub output_schema: Option<OutputSchema>,
@@ -46,7 +46,7 @@ impl Default for AgentSpec {
             model: None,
             identity_prompt: String::new(),
             behavior_prompt: prompts::DEFAULT_BEHAVIOR_PROMPT.to_string(),
-            context_prompt: String::new(),
+            context_prompt: None,
             tool_registry: ToolRegistry::new(),
             sub_agents: Vec::new(),
             output_schema: None,
@@ -94,22 +94,15 @@ impl AgentSpec {
         s
     }
 
-    /// Build the first user message's context prefix: the runtime's
-    /// `environment` block (when present) followed by the user-supplied
-    /// `context_prompt` field. Returns `None` when both are empty so the
-    /// caller can skip pushing a message altogether.
-    pub(crate) fn context_prompt(&self, environment: Option<&str>) -> Option<String> {
-        let mut parts: Vec<&str> = Vec::new();
-        if let Some(env) = environment {
-            parts.push(env);
-        }
-        if !self.context_prompt.is_empty() {
-            parts.push(&self.context_prompt);
-        }
-        if parts.is_empty() {
-            None
-        } else {
-            Some(parts.join("\n\n"))
+    /// Resolve the first user message's context payload. `None` at the field
+    /// means "use the runtime default"; `Some("")` is an explicit opt-out
+    /// (returns `None` here so the loop skips the message); `Some(s)` is a
+    /// full override sent verbatim.
+    pub(crate) fn context_prompt(&self, default: &str) -> Option<String> {
+        match self.context_prompt.as_deref() {
+            None => Some(default.to_string()),
+            Some("") => None,
+            Some(s) => Some(s.to_string()),
         }
     }
 
@@ -131,20 +124,25 @@ impl AgentSpec {
 mod tests {
     use super::*;
 
-    #[test]
-    fn context_prompt_appended_after_environment() {
-        let block = "<context>\nuser-provided context\n</context>";
-        let mut spec = AgentSpec::default();
-        spec.context_prompt = block.to_string();
-        let ctx = spec
-            .context_prompt(Some("<environment>\ntest environment\n</environment>"))
-            .expect("context_prompt should be composed");
+    const DEFAULT: &str = "<environment>\ndefault\n</environment>";
 
-        let env_pos = ctx.find("<environment>").expect("environment missing");
-        let user_pos = ctx.find(block).expect("context_prompt missing");
-        assert!(
-            env_pos < user_pos,
-            "environment should appear before context_prompt:\n{ctx}"
-        );
+    #[test]
+    fn unset_context_prompt_uses_runtime_default() {
+        let spec = AgentSpec::default();
+        assert_eq!(spec.context_prompt(DEFAULT), Some(DEFAULT.to_string()));
+    }
+
+    #[test]
+    fn custom_context_prompt_replaces_default() {
+        let mut spec = AgentSpec::default();
+        spec.context_prompt = Some("only this".to_string());
+        assert_eq!(spec.context_prompt(DEFAULT), Some("only this".to_string()));
+    }
+
+    #[test]
+    fn empty_context_prompt_opts_out() {
+        let mut spec = AgentSpec::default();
+        spec.context_prompt = Some(String::new());
+        assert_eq!(spec.context_prompt(DEFAULT), None);
     }
 }

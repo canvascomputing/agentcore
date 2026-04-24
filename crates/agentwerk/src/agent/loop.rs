@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,8 +18,7 @@ use crate::provider::types::{ContentBlock, Message, ResponseStatus, StreamEvent,
 use crate::provider::{ModelRequest, Provider, ProviderError, RequestErrorKind};
 use crate::tools::{ToolCall, ToolContext, ToolRegistry};
 use crate::util::{
-    cancellable_sleep, format_current_date, now_millis, wait_for_cancel, ExponentialRetry, Retry,
-    Retryable,
+    cancellable_sleep, now_millis, wait_for_cancel, ExponentialRetry, Retry, Retryable,
 };
 
 use super::compact;
@@ -37,28 +36,11 @@ pub(crate) struct LoopRuntime {
     pub event_handler: Arc<dyn Fn(Event) + Send + Sync>,
     pub cancel_signal: Arc<AtomicBool>,
     pub working_dir: PathBuf,
-    pub environment: Option<String>,
+    pub default_context_prompt: String,
     pub command_queue: Option<Arc<CommandQueue>>,
     pub session_store: Option<Arc<Mutex<SessionStore>>>,
     pub tool_registry: Arc<ToolRegistry>,
     pub template_variables: HashMap<String, Value>,
-}
-
-impl LoopRuntime {
-    /// Build the environment block prepended to the first user message.
-    pub(crate) fn environment(working_dir: &Path) -> String {
-        let working_dir = working_dir.display();
-        let platform = std::env::consts::OS;
-        let os_version = std::process::Command::new("uname")
-            .arg("-r")
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_default();
-        let date = format_current_date();
-        format!(
-            "<environment>\nWorking directory: {working_dir}\nPlatform: {platform}\nOS version: {os_version}\nDate: {date}\n</environment>"
-        )
-    }
 }
 
 /// Per-run mutable state of the loop. Created fresh for each agent run.
@@ -878,7 +860,7 @@ mod tests {
             working_dir: PathBuf::from("/tmp"),
             command_queue: None,
             session_store: None,
-            environment: Some(env.to_string()),
+            default_context_prompt: env.to_string(),
             tool_registry: Arc::new(ToolRegistry::new()),
             template_variables: HashMap::new(),
         }

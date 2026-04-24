@@ -1,5 +1,27 @@
 //! Default behavior prompt and structured-output instructions the loop appends to user-supplied system prompts.
 
+use std::path::Path;
+
+use crate::util::format_current_date;
+
+/// Build the default context prompt: an `<environment>` block with the
+/// working directory, platform, OS version, and date. Sent as the first
+/// user message when `.context_prompt(...)` is not set. Override with
+/// `Agent::context_prompt()`; inspect with `Agent::default_context_prompt()`.
+pub(crate) fn default_context_prompt(working_dir: &Path) -> String {
+    let working_dir = working_dir.display();
+    let platform = std::env::consts::OS;
+    let os_version = std::process::Command::new("uname")
+        .arg("-r")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    let date = format_current_date();
+    format!(
+        "<environment>\nWorking directory: {working_dir}\nPlatform: {platform}\nOS version: {os_version}\nDate: {date}\n</environment>"
+    )
+}
+
 /// Default behavioral directives appended to the system prompt after the
 /// identity prompt. Override with `Agent::behavior_prompt()`.
 pub const DEFAULT_BEHAVIOR_PROMPT: &str = "\

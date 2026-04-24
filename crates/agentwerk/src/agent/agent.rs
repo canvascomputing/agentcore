@@ -18,6 +18,7 @@ use crate::util::generate_agent_name;
 use crate::event::{default_logger, Event};
 use crate::output::{Output, OutputSchema};
 
+use super::prompts;
 use super::queue::CommandQueue;
 use super::r#loop::{run_loop, LoopRuntime, LoopState};
 use super::spec::AgentSpec;
@@ -73,15 +74,6 @@ impl Default for Agent {
 fn load_prompt_file(path: PathBuf) -> String {
     std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read prompt file {}: {e}", path.display()))
-}
-
-fn append_context_block(context_prompt: &mut String, content: &str) {
-    if !context_prompt.is_empty() {
-        context_prompt.push_str("\n\n");
-    }
-    context_prompt.push_str("<context>\n");
-    context_prompt.push_str(content);
-    context_prompt.push_str("\n</context>");
 }
 
 fn load_json_file(path: PathBuf) -> Value {
@@ -219,16 +211,27 @@ impl Agent {
         self.with_spec(|c| c.behavior_prompt = content)
     }
 
-    /// Append additional context alongside the instruction prompt.
+    /// Override the context prompt sent as the first user message.
+    ///
+    /// Passing a non-empty string replaces the default environment block verbatim;
+    /// passing `""` opts out of the context message entirely. Compose on top of
+    /// the default via [`Agent::default_context_prompt`].
     pub fn context_prompt(self, content: impl Into<String>) -> Self {
-        let content = content.into();
-        self.with_spec(|c| append_context_block(&mut c.context_prompt, &content))
+        self.with_spec(|c| c.context_prompt = Some(content.into()))
     }
 
-    /// Append additional context from a file.
+    /// Load a context prompt override from a file.
     pub fn context_prompt_file(self, path: impl Into<PathBuf>) -> Self {
         let content = load_prompt_file(path.into());
-        self.with_spec(|c| append_context_block(&mut c.context_prompt, &content))
+        self.with_spec(|c| c.context_prompt = Some(content))
+    }
+
+    /// The default context prompt: environment metadata (working directory,
+    /// platform, OS version, date) wrapped in an `<environment>` block.
+    /// Uses the process cwd. Override with [`Agent::context_prompt`].
+    pub fn default_context_prompt() -> String {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        prompts::default_context_prompt(&cwd)
     }
 
     /// Register agents callable by name as sub-agents.
@@ -322,7 +325,7 @@ impl Agent {
         let (spec, runtime) = self.compile(None);
         let runtime = Arc::new(runtime);
         let instruction = self.interpolate(&self.instruction_prompt);
-        let context_prompt = spec.context_prompt(runtime.environment.as_deref());
+        let context_prompt = spec.context_prompt(&runtime.default_context_prompt);
         let state = LoopState::initial(context_prompt, instruction);
         run_loop(runtime, spec, state).await
     }
@@ -336,7 +339,7 @@ impl Agent {
         let (spec, runtime) = self.compile(Some((parent_spec, parent_runtime)));
         let runtime = Arc::new(runtime);
         let instruction = self.interpolate(&self.instruction_prompt);
-        let context_prompt = spec.context_prompt(runtime.environment.as_deref());
+        let context_prompt = spec.context_prompt(&runtime.default_context_prompt);
         let state = LoopState::initial(context_prompt, instruction);
         run_loop(runtime, spec, state).await
     }
@@ -414,10 +417,8 @@ impl Agent {
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-        let event_handler: Arc<dyn Fn(Event) + Send + Sync> = self
-            .event_handler
-            .clone()
-            .unwrap_or_else(default_logger);
+        let event_handler: Arc<dyn Fn(Event) + Send + Sync> =
+            self.event_handler.clone().unwrap_or_else(default_logger);
 
         let cancel_signal = self
             .cancel_signal
@@ -437,7 +438,7 @@ impl Agent {
             Arc::new(Mutex::new(store))
         });
 
-        let environment = Some(LoopRuntime::environment(&working_dir));
+        let default_context_prompt = prompts::default_context_prompt(&working_dir);
 
         LoopRuntime {
             provider,
@@ -446,7 +447,7 @@ impl Agent {
             working_dir,
             command_queue,
             session_store,
-            environment,
+            default_context_prompt,
             tool_registry: build_tools(spec),
             template_variables: self.template_variables.clone(),
         }
@@ -473,7 +474,7 @@ impl Agent {
                 .unwrap_or_else(|| parent.working_dir.clone()),
             command_queue: parent.command_queue.clone(),
             session_store: parent.session_store.clone(),
-            environment: parent.environment.clone(),
+            default_context_prompt: parent.default_context_prompt.clone(),
             tool_registry: build_tools(spec),
             template_variables: self.template_variables.clone(),
         }
