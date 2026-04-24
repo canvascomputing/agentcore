@@ -13,27 +13,14 @@ use crate::agent::queue::{CommandQueue, CommandSource, QueuePriority, QueuedComm
 use crate::error::Result;
 use crate::output::Output;
 
-/// Shared atomic state between every [`AgentHandle`] clone, the
-/// [`OutputFuture`], and the running loop.
-pub(crate) struct HandleState {
-    pub(crate) queue: Arc<CommandQueue>,
-    pub(crate) cancel: Arc<AtomicBool>,
-}
-
-/// Drop-detection token: every handle and the future own a clone. When the
-/// last one drops, `Drop::drop` sets the shared cancel flag, so the loop
-/// exits on its next poll.
-pub(crate) struct LifeToken {
+/// RAII token: flips the shared cancel flag when its last clone drops, so
+/// abandoning the handle without an explicit `.cancel()` still unblocks
+/// the loop.
+struct CancelGuard {
     cancel: Arc<AtomicBool>,
 }
 
-impl LifeToken {
-    pub(crate) fn new(cancel: Arc<AtomicBool>) -> Arc<Self> {
-        Arc::new(Self { cancel })
-    }
-}
-
-impl Drop for LifeToken {
+impl Drop for CancelGuard {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
@@ -47,19 +34,17 @@ impl Drop for LifeToken {
 /// signals the loop to exit.
 #[derive(Clone)]
 pub struct AgentHandle {
-    state: Arc<HandleState>,
-    _life: Arc<LifeToken>,
+    queue: Arc<CommandQueue>,
+    cancel: Arc<AtomicBool>,
+    #[allow(dead_code)]
+    guard: Arc<CancelGuard>,
 }
 
 impl AgentHandle {
-    pub(crate) fn new(state: Arc<HandleState>, life: Arc<LifeToken>) -> Self {
-        Self { state, _life: life }
-    }
-
     /// Deliver a new instruction to the running agent. Picked up at the next
     /// turn boundary, or immediately if the agent is parked idle.
     pub fn send(&self, instruction: impl Into<String>) {
-        self.state.queue.enqueue(QueuedCommand {
+        self.queue.enqueue(QueuedCommand {
             content: instruction.into(),
             priority: QueuePriority::Next,
             source: CommandSource::UserInput,
@@ -70,19 +55,14 @@ impl AgentHandle {
     /// Signal the agent to stop. The loop observes this at the next turn
     /// boundary or idle-wait poll and exits.
     pub fn cancel(&self) {
-        self.state.cancel.store(true, Ordering::Relaxed);
+        self.cancel.store(true, Ordering::Relaxed);
     }
 
     /// Returns `true` if a cancel signal has been raised (explicitly via
     /// [`cancel`](Self::cancel) or implicitly via the last handle being
     /// dropped).
     pub fn is_cancelled(&self) -> bool {
-        self.state.cancel.load(Ordering::Relaxed)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn queue_for_test(&self) -> Arc<CommandQueue> {
-        self.state.queue.clone()
+        self.cancel.load(Ordering::Relaxed)
     }
 }
 
@@ -93,16 +73,10 @@ impl AgentHandle {
 /// (without awaiting) just abandons the result. Whether the loop keeps
 /// running is decided by whether any handles remain.
 ///
-/// Implements [`IntoFuture`] — `.await` consumes the value by move, so a
+/// Implements [`IntoFuture`]: `.await` consumes the value by move, so a
 /// double-await is a compile error rather than a runtime failure.
 pub struct OutputFuture {
     join: JoinHandle<Result<Output>>,
-}
-
-impl OutputFuture {
-    pub(crate) fn new(join: JoinHandle<Result<Output>>) -> Self {
-        Self { join }
-    }
 }
 
 impl IntoFuture for OutputFuture {
@@ -125,15 +99,15 @@ impl IntoFuture for OutputFuture {
 impl Agent {
     /// Start the agent on a background tokio task and return a pair:
     ///
-    /// - [`AgentHandle`] — cheap, clonable handle for injecting new
+    /// - [`AgentHandle`]: cheap, clonable handle for injecting new
     ///   instructions, cancelling, or inspecting state.
-    /// - [`OutputFuture`] — resolves to the final
+    /// - [`OutputFuture`]: resolves to the final
     ///   [`Output`](crate::output::Output) once the loop exits.
     ///
     /// The loop idles after each terminal output as long as any handle is
     /// alive. Dropping the last handle calls [`AgentHandle::cancel`] for you
     /// (RAII safety); an explicit `.cancel()` does the same thing. For a
-    /// pure one-shot run without a handle, use [`Agent::run`] instead — a
+    /// pure one-shot run without a handle, use [`Agent::run`] instead: a
     /// `let (_, out) = agent.spawn(); out.await?` pattern will cancel
     /// before the first turn completes.
     ///
@@ -142,7 +116,9 @@ impl Agent {
     pub fn spawn(self) -> (AgentHandle, OutputFuture) {
         let queue = Arc::new(CommandQueue::new());
         let cancel = Arc::new(AtomicBool::new(false));
-        let life = LifeToken::new(cancel.clone());
+        let guard = Arc::new(CancelGuard {
+            cancel: cancel.clone(),
+        });
 
         let prepared = self
             .cancel_signal(cancel.clone())
@@ -151,10 +127,14 @@ impl Agent {
 
         let join = tokio::spawn(async move { prepared.run().await });
 
-        let state = Arc::new(HandleState { queue, cancel });
-        let handle = AgentHandle::new(state, life);
-        let output = OutputFuture::new(join);
-        (handle, output)
+        (
+            AgentHandle {
+                queue,
+                cancel,
+                guard,
+            },
+            OutputFuture { join },
+        )
     }
 }
 
@@ -185,7 +165,7 @@ mod tests {
     async fn spawn_starts_loop_immediately() {
         let events = EventLog::new();
         let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
-        // AgentStarted is the first event emitted by run_loop — observable
+        // AgentStarted is the first event emitted by run_loop: observable
         // before we await the future.
         events
             .wait_for(|e| matches!(e.kind, EventKind::AgentStarted { .. }))
@@ -198,8 +178,8 @@ mod tests {
     async fn send_enqueues_user_input_command() {
         let (handle, output) = one_shot_agent("done");
         handle.send("hi");
-        let queue = handle.queue_for_test();
-        let cmd = queue
+        let cmd = handle
+            .queue
             .dequeue_if(Some("anyone"), |_| true)
             .expect("queued command");
         assert_eq!(cmd.content, "hi");
@@ -245,7 +225,7 @@ mod tests {
         let other = handle.clone();
         other.send("relay");
         let cmd = handle
-            .queue_for_test()
+            .queue
             .dequeue_if(Some("anyone"), |_| true)
             .expect("queued command");
         assert_eq!(cmd.content, "relay");
@@ -326,8 +306,8 @@ mod tests {
 
     #[tokio::test]
     async fn dropping_future_alone_does_not_cancel() {
-        // The future holds no LifeToken, so dropping it doesn't cancel. The
-        // loop keeps running — cleanup belongs to the handle.
+        // The future holds no CancelGuard, so dropping it doesn't cancel. The
+        // loop keeps running: cleanup belongs to the handle.
         let events = EventLog::new();
         let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
 

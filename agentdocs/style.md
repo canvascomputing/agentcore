@@ -57,7 +57,15 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 - Wrapped underlying errors are named `source`, as in `FooFailed { source: io::Error }`.
 - Typed metadata uses descriptive names: `status`, `retryable`, `retry_delay`, `tool_name`, `retries`, `after_ms`.
 
-## 7. Time-typed fields
+## 7. RAII guard fields
+
+**Fields held only for their `Drop` behavior use a plain name and `#[allow(dead_code)]`.**
+
+- Name the field for its purpose: `guard`, `lock`, `permit`. The `_guard` form is not used.
+- `rustc`'s `dead_code` lint flags such fields because neither `Clone` nor drop glue count as reads; the attribute acknowledges this on the one field that needs it.
+- `#[expect(dead_code)]` is preferred on Rust 1.81+: it self-removes if the field later does get read.
+
+## 8. Time-typed fields
 
 **Use `std::time::Duration`. The type is the unit.**
 
@@ -65,28 +73,28 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 - Internal helpers and on-the-wire JSON may use raw integers where the protocol requires it.
 - Example: `timeout_ms` is acceptable inside a tool input schema because the schema is a wire protocol.
 
-## 8. Builders
+## 9. Builders
 
 **Builder methods are bare nouns. No `with_` prefix.**
 
 - Examples: `.name()`, `.model()`, `.tool()`, `.sub_agents()`, `.read_only()`.
 - The `with_` prefix is used only when a bare name clashes with a trait method, such as `with_description` on `BashTool`.
 
-## 9. Constructors
+## 10. Constructors
 
 **`new()` for the primary path. Named constructors carry semantics.**
 
 - `new()` is the primary constructor.
 - Named constructors: `open()`, `unrestricted()`, `success()`, `error()`, `empty()`, `from_id()`, `from_env()`.
 
-## 10. Getters and setters
+## 11. Getters and setters
 
 **Mutable accessors use `set_` and `get_` prefixes to distinguish them from builders.**
 
 - Example: `set_extension()`, `get_extension()`.
 - Builder methods remain unprefixed.
 
-## 11. Free functions and tool structs
+## 12. Free functions and tool structs
 
 **Free functions are rare and snake_case. Tool structs follow `{Name}Tool`.**
 
@@ -94,7 +102,7 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 - A free function is used only when no receiver type is natural.
 - Tool structs: `ReadFileTool`, `BashTool`, `SpawnAgentTool`.
 
-## 12. Doc comments (`///`)
+## 13. Doc comments (`///`)
 
 **State the purpose in one sentence. No "This function…" or "Returns…".**
 
@@ -103,7 +111,7 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 - Trivial getters, `Default::default`, `From` impls, and self-explanatory variants are left undocumented.
 - Within one type, coverage is all-or-none: every member has a real doc comment, or none does.
 
-## 13. Module docs (`//!`)
+## 14. Module docs (`//!`)
 
 **Every file begins with a `//!` that states what the file contributes to the crate.**
 
@@ -112,7 +120,7 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 - Do not list the contents of the file.
 - The `//!` stays even when the filename is already descriptive.
 
-## 14. Line comments (`//`)
+## 15. Line comments (`//`)
 
 **Four reasons are allowed. Everything else is deleted.**
 
@@ -132,14 +140,14 @@ Not allowed:
 - `TODO`, `FIXME`, or `NOTE`.
 - Decorative banners of any kind: `// ── Title`, `// ==== Title ====`, `// ----- Title -----`.
 
-## 15. Tests
+## 16. Tests
 
 **Test names carry intent. Setup is not narrated.**
 
 - A comment is justified only to pin an architectural invariant the test guards.
 - A module-level `//!` describing the test file's scope is acceptable.
 
-## 16. Comment examples
+## 17. Comment examples
 
 **Good and bad variants of each comment type.**
 
@@ -196,7 +204,7 @@ counter += 1;
 // ----- Core types -----
 ```
 
-## 17. README structure
+## 18. README structure
 
 **Terse, example-driven, scannable.**
 
@@ -205,7 +213,7 @@ counter += 1;
 - Enumerations use bullets or grouped bullets; tables are not used.
 - Facts live in one place; other sections cross-link rather than repeat.
 
-## 18. README voice
+## 19. README voice
 
 **Direct and neutral. No marketing language.**
 
