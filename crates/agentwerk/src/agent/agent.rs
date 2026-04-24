@@ -15,7 +15,7 @@ use crate::provider::Provider;
 use crate::tools::{SpawnAgentTool, ToolLike, ToolRegistry};
 use crate::util::generate_agent_name;
 
-use crate::event::Event;
+use crate::event::{default_logger, Event};
 use crate::output::{Output, OutputSchema};
 
 use super::queue::CommandQueue;
@@ -417,7 +417,7 @@ impl Agent {
         let event_handler: Arc<dyn Fn(Event) + Send + Sync> = self
             .event_handler
             .clone()
-            .unwrap_or_else(Event::default_logger);
+            .unwrap_or_else(default_logger);
 
         let cancel_signal = self
             .cancel_signal

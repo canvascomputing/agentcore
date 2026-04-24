@@ -19,7 +19,7 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 - Companion types and handles live with their owner: `AgentHandle` under `agent::`, `BatchHandle` under `batch::`.
 - Domain errors live with their domain: `ProviderError`, `ToolError`, `AgentError`.
 - Wire-protocol types live with the protocol: `ModelRequest`, `Message`, `TokenUsage` under `provider::`.
-- Free functions live in their module: `tool()` is at `tools::tool`, never at the root.
+- Free functions live in their module, never at the crate root: `now_millis()` in `util`, `run_loop()` in `agent::loop`.
 
 ## Name disambiguation
 
@@ -113,13 +113,27 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 - Example: `set_extension()`, `get_extension()`.
 - Builder methods remain unprefixed.
 
-## Free functions and tool structs
+## Free functions
 
-**Free functions are rare and snake_case. Tool structs follow `{Name}Tool`.**
+**A free function is used only for one of six reasons. Otherwise the function lives on a type.**
 
-- Most operations live as methods on the owning type: `OutputSchema::validate`, `ToolRegistry::execute`.
-- A free function is used only when no receiver type is natural.
-- Tool structs: `ReadFileTool`, `BashTool`, `SpawnAgentTool`.
+Permitted:
+
+- **Ambient state** has no receiver: `now_millis()`, `format_current_date()`, `generate_agent_name()` in `util`.
+- **Foreign-type constructors** cannot use an inherent `impl`: `build_client()` returns a `reqwest::Client`.
+- **Module entry points** drive multiple types: `run_loop()` in `agent::loop`, `from_env()` in `provider::environment`.
+- **Higher-order utilities** take a closure and wrap it: `with_file_lock(path, || ...)`.
+- **Shared algorithm helpers** are called by two or more sibling types in the same module: `glob_match()` used by `BashTool` and `GrepTool`; `env_or()` shared by every provider.
+- **Test fixtures** live in `testutil`: `text_response()`, `tool_response()`, `test_tool_context()`.
+
+Forbidden:
+
+- A free function that delegates to a single method on one type. Inline it as a method instead.
+- A free constructor for a local type that already has an inherent `impl`. Constructors for `Foo` live on `Foo`.
+- A free helper called from exactly one private method. Make it a private method or a nested `fn`.
+- An associated function that takes no `self` and does not return `Self` or `Result<Self>`. Move it to the module as a free function. Exception: a per-variant static lookup where the `Type::` prefix partitions otherwise-colliding names, such as `AnthropicProvider::lookup_context_window_size` vs `OpenAiProvider::lookup_context_window_size`.
+
+Naming: `snake_case`. Tool structs keep the `{Name}Tool` suffix: `ReadFileTool`, `BashTool`, `SpawnAgentTool`.
 
 ## Doc comments (`///`)
 

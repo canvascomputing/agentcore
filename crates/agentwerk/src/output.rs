@@ -119,17 +119,6 @@ impl OutputSchema {
         Ok(value)
     }
 
-    /// Build the corrective user message shown to the model after a terminal
-    /// reply fails [`Self::validate`]. `detail` is the validator's
-    /// human-readable error — passing it to the model lets it fix the exact
-    /// field rather than guess.
-    pub(crate) fn retry_message(detail: &SchemaViolation) -> String {
-        format!(
-            "Your last reply did not match the required output schema. You MUST reply with a \
-             single JSON value conforming to the schema, with no surrounding text and no code \
-             fences.\n\nValidator said: {detail}"
-        )
-    }
 }
 
 fn strip_code_fences(s: &str) -> &str {

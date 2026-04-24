@@ -148,7 +148,7 @@ fn collect_matches(
 /// - `*` matches any sequence of non-`/` characters within a segment
 /// - `**` matches zero or more path segments
 /// - `?` matches exactly one character
-pub fn glob_matches(pattern: &[&str], path: &[&str]) -> bool {
+fn glob_matches(pattern: &[&str], path: &[&str]) -> bool {
     glob_match_recursive(pattern, path)
 }
 

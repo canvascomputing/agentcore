@@ -72,79 +72,77 @@ impl Event {
             kind,
         }
     }
+}
 
-    /// Default event handler: logs lifecycle and tool activity to stderr.
-    ///
-    /// Installed automatically when [`Agent`] is built without `.event_handler(...)`.
-    /// Prints one line per notable event; chatty events (streamed text, token usage,
-    /// turn/request boundaries, paused/resumed) are skipped. Call `.silent()` on the
-    /// agent to opt out, or pass a custom handler for richer formatting.
-    ///
-    /// [`Agent`]: crate::agent::Agent
-    pub fn default_logger() -> Arc<dyn Fn(Event) + Send + Sync> {
-        Arc::new(|event: Event| {
-            let agent = &event.agent_name;
-            match &event.kind {
-                EventKind::AgentStarted => {
-                    eprintln!("[{agent}] start");
-                }
-                EventKind::AgentFinished { turns, outcome } => {
-                    eprintln!("[{agent}] done ({turns} turns, {outcome:?})");
-                }
-                EventKind::ToolCallStarted {
-                    tool_name, input, ..
-                } => {
-                    eprintln!("[{agent}] → {tool_name}({})", compact_input(input));
-                }
-                EventKind::ToolCallFailed {
-                    tool_name,
-                    message,
-                    kind,
-                    ..
-                } => {
-                    eprintln!("[{agent}] ✗ {tool_name} ({kind:?}): {message}");
-                }
-                EventKind::ContextCompacted {
-                    turn,
-                    tokens,
-                    threshold,
-                    reason,
-                } => {
-                    eprintln!(
-                        "[{agent}] compact turn={turn} {tokens}/{threshold} ({reason:?})"
-                    );
-                }
-                EventKind::OutputTruncated { turn } => {
-                    eprintln!("[{agent}] truncated turn={turn}");
-                }
-                EventKind::PolicyViolated { kind, limit } => {
-                    eprintln!("[{agent}] policy violated: {kind:?} limit={limit}");
-                }
-                EventKind::SchemaRetried {
-                    attempt,
-                    max_attempts,
-                    path,
-                    message,
-                } => {
-                    eprintln!(
-                        "[{agent}] ↻ schema retry {attempt}/{max_attempts} at {path}: {message}"
-                    );
-                }
-                EventKind::RequestRetried {
-                    attempt,
-                    max_attempts,
-                    message,
-                    ..
-                } => {
-                    eprintln!("[{agent}] ↻ retry {attempt}/{max_attempts} ({message})");
-                }
-                EventKind::RequestFailed { message, .. } => {
-                    eprintln!("[{agent}] ✗ request failed: {message}");
-                }
-                _ => {}
+/// Default event handler: logs lifecycle and tool activity to stderr.
+///
+/// Installed automatically when [`Agent`] is built without `.event_handler(...)`.
+/// Prints one line per notable event; chatty events (streamed text, token usage,
+/// turn/request boundaries, paused/resumed) are skipped. Call `.silent()` on the
+/// agent to opt out, or pass a custom handler for richer formatting.
+///
+/// [`Agent`]: crate::agent::Agent
+pub fn default_logger() -> Arc<dyn Fn(Event) + Send + Sync> {
+    Arc::new(|event: Event| {
+        let agent = &event.agent_name;
+        match &event.kind {
+            EventKind::AgentStarted => {
+                eprintln!("[{agent}] start");
             }
-        })
-    }
+            EventKind::AgentFinished { turns, outcome } => {
+                eprintln!("[{agent}] done ({turns} turns, {outcome:?})");
+            }
+            EventKind::ToolCallStarted {
+                tool_name, input, ..
+            } => {
+                eprintln!("[{agent}] → {tool_name}({})", compact_input(input));
+            }
+            EventKind::ToolCallFailed {
+                tool_name,
+                message,
+                kind,
+                ..
+            } => {
+                eprintln!("[{agent}] ✗ {tool_name} ({kind:?}): {message}");
+            }
+            EventKind::ContextCompacted {
+                turn,
+                tokens,
+                threshold,
+                reason,
+            } => {
+                eprintln!("[{agent}] compact turn={turn} {tokens}/{threshold} ({reason:?})");
+            }
+            EventKind::OutputTruncated { turn } => {
+                eprintln!("[{agent}] truncated turn={turn}");
+            }
+            EventKind::PolicyViolated { kind, limit } => {
+                eprintln!("[{agent}] policy violated: {kind:?} limit={limit}");
+            }
+            EventKind::SchemaRetried {
+                attempt,
+                max_attempts,
+                path,
+                message,
+            } => {
+                eprintln!(
+                    "[{agent}] ↻ schema retry {attempt}/{max_attempts} at {path}: {message}"
+                );
+            }
+            EventKind::RequestRetried {
+                attempt,
+                max_attempts,
+                message,
+                ..
+            } => {
+                eprintln!("[{agent}] ↻ retry {attempt}/{max_attempts} ({message})");
+            }
+            EventKind::RequestFailed { message, .. } => {
+                eprintln!("[{agent}] ✗ request failed: {message}");
+            }
+            _ => {}
+        }
+    })
 }
 
 /// What an [`Event`] reports. Variants are grouped by lifecycle (`Agent*`),
@@ -254,7 +252,7 @@ mod tests {
     /// Exhaustive match keeps this test honest when a new variant is added.
     #[test]
     fn default_logger_handles_every_variant() {
-        let logger = Event::default_logger();
+        let logger = default_logger();
         let every: Vec<EventKind> = vec![
             EventKind::AgentStarted,
             EventKind::AgentFinished {

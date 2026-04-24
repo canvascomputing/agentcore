@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::error::{Error, Result};
 use crate::event::{Event, EventKind, PolicyKind};
-use crate::output::{Outcome, Output, OutputSchema, SchemaViolation, Statistics};
+use crate::output::{Outcome, Output, SchemaViolation, Statistics};
 use crate::persistence::session::{SessionStore, TranscriptEntry};
 use crate::provider::types::{ContentBlock, Message, ResponseStatus, StreamEvent, TokenUsage};
 use crate::provider::{ModelRequest, Provider, ProviderError, RequestErrorKind};
@@ -441,9 +441,11 @@ pub(crate) fn run_loop(
                         path: path.clone(),
                         message: message.clone(),
                     });
-                    state
-                        .messages
-                        .push(Message::user(OutputSchema::retry_message(&detail)));
+                    state.messages.push(Message::user(format!(
+                        "Your last reply did not match the required output schema. You MUST \
+                         reply with a single JSON value conforming to the schema, with no \
+                         surrounding text and no code fences.\n\nValidator said: {detail}"
+                    )));
                     emit(EventKind::TurnFinished { turn });
                     continue;
                 }
