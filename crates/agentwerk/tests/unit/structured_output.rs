@@ -711,7 +711,7 @@ async fn turn_limit_emits_policy_violated_event() {
     use agentwerk::event::{PolicyKind, EventKind};
 
     // Turn 1 is truncated so the loop must enter turn 2, where the guard
-    // trips. max_turns(1) means state.turn >= 1 at the top of turn 2.
+    // trips. max_turns(1) means state.turns >= 1 at the top of turn 2.
     let provider = MockProvider::new(vec![
         truncated_response("partial"),
         text_response("unreached"),

@@ -35,9 +35,9 @@ pub(crate) fn estimate_next_request_tokens(state: &LoopState) -> u64 {
 }
 
 fn input_tokens_from_last_response(state: &LoopState) -> u64 {
-    state.total_usage.input_tokens
-        + state.total_usage.cache_read_input_tokens
-        + state.total_usage.cache_creation_input_tokens
+    state.usage.input_tokens
+        + state.usage.cache_read_input_tokens
+        + state.usage.cache_creation_input_tokens
 }
 
 fn estimate_tokens_from_message_bytes(messages: &[Message]) -> u64 {
@@ -79,7 +79,7 @@ pub(crate) async fn trigger_if_over_threshold(
     (runtime.event_handler)(Event::new(
         spec.name.clone(),
         EventKind::ContextCompacted {
-            turn: state.turn,
+            turn: state.turns,
             token_count: tokens,
             threshold,
             reason: CompactReason::Proactive,

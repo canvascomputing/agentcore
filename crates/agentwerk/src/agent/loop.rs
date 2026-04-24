@@ -66,10 +66,10 @@ impl LoopRuntime {
 pub(crate) struct LoopState {
     pub messages: Vec<Message>,
     pub errors: Vec<Error>,
-    pub total_usage: TokenUsage,
-    pub request_count: u64,
-    pub tool_call_count: u64,
-    pub turn: u32,
+    pub usage: TokenUsage,
+    pub requests: u64,
+    pub tool_calls: u64,
+    pub turns: u32,
     pub schema_retries: u32,
     pub is_idle: bool,
 }
@@ -133,13 +133,13 @@ pub(crate) fn run_loop(
         emit(EventKind::AgentStarted);
 
         let outcome = 'run: loop {
-            // ── Guards: cancel, turn limit, token budgets ──────────────────
+            // Guards: cancel, turn limit, token budgets
             if runtime.cancel_signal.load(Ordering::Relaxed) {
                 break 'run Outcome::Cancelled;
             }
             if let Some(limit) = spec.max_turns {
-                if state.turn >= limit {
-                    let usage = u64::from(state.turn);
+                if state.turns >= limit {
+                    let usage = u64::from(state.turns);
                     let limit = u64::from(limit);
                     let kind = PolicyKind::Turns;
                     state
@@ -150,8 +150,8 @@ pub(crate) fn run_loop(
                 }
             }
             if let Some(limit) = spec.max_input_tokens {
-                if state.total_usage.input_tokens >= limit {
-                    let usage = state.total_usage.input_tokens;
+                if state.usage.input_tokens >= limit {
+                    let usage = state.usage.input_tokens;
                     let kind = PolicyKind::InputTokens;
                     state
                         .errors
@@ -161,8 +161,8 @@ pub(crate) fn run_loop(
                 }
             }
             if let Some(limit) = spec.max_output_tokens {
-                if state.total_usage.output_tokens >= limit {
-                    let usage = state.total_usage.output_tokens;
+                if state.usage.output_tokens >= limit {
+                    let usage = state.usage.output_tokens;
                     let kind = PolicyKind::OutputTokens;
                     state
                         .errors
@@ -172,15 +172,15 @@ pub(crate) fn run_loop(
                 }
             }
 
-            // ── New turn ───────────────────────────────────────────────────
-            state.turn += 1;
-            let turn = state.turn;
+            // New turn
+            state.turns += 1;
+            let turn = state.turns;
             emit(EventKind::TurnStarted { turn });
             emit(EventKind::RequestStarted {
                 model: spec.model().name.clone(),
             });
 
-            // ── Provider call, retrying transient failures ─────────────────
+            // Provider call, retrying transient failures
             let mut attempt = 0u32;
             let response = 'fetch: loop {
                 let request = ModelRequest {
@@ -272,14 +272,14 @@ pub(crate) fn run_loop(
             emit(EventKind::RequestFinished {
                 model: spec.model().name.clone(),
             });
-            state.total_usage += &response.usage;
-            state.request_count += 1;
+            state.usage += &response.usage;
+            state.requests += 1;
             emit(EventKind::TokensReported {
                 model: response.model.clone(),
                 usage: response.usage.clone(),
             });
 
-            // ── Parse the reply, append the assistant message ──────────────
+            // Parse the reply, append the assistant message
             let mut text = String::new();
             let mut tool_calls: Vec<ToolCall> = Vec::new();
             for block in &response.content {
@@ -302,7 +302,7 @@ pub(crate) fn run_loop(
                 Some((&response.usage, &response.model)),
             );
 
-            // ── Compaction: reactive on mid-generation overflow, then proactive ─
+            // Compaction: reactive on mid-generation overflow, then proactive
             if response.status == ResponseStatus::ContextWindowExceeded
                 && spec.model().context_window_size.is_some()
             {
@@ -316,9 +316,9 @@ pub(crate) fn run_loop(
                 break 'run Outcome::Failed;
             }
 
-            // ── Tool calls: run them, append results, drain the queue ──────
+            // Tool calls: run them, append results, drain the queue
             if response.status == ResponseStatus::ToolUse && !tool_calls.is_empty() {
-                state.tool_call_count += tool_calls.len() as u64;
+                state.tool_calls += tool_calls.len() as u64;
                 for call in &tool_calls {
                     emit(EventKind::ToolCallStarted {
                         tool_name: call.name.clone(),
@@ -373,7 +373,7 @@ pub(crate) fn run_loop(
                 continue;
             }
 
-            // ── Truncated output: ask the model to keep going ──────────────
+            // Truncated output: ask the model to keep going
             if response.status == ResponseStatus::OutputTruncated && tool_calls.is_empty() {
                 emit(EventKind::OutputTruncated { turn });
                 state
@@ -383,7 +383,7 @@ pub(crate) fn run_loop(
                 continue;
             }
 
-            // ── Drain queued messages even without tool use ────────────────
+            // Drain queued messages even without tool use
             let before = state.messages.len();
             if let Some(queue) = runtime.command_queue.as_ref() {
                 while let Some(cmd) =
@@ -397,7 +397,7 @@ pub(crate) fn run_loop(
                 continue;
             }
 
-            // ── Park as idle and poll the queue when keep_alive is set ─────
+            // Park as idle and poll the queue when keep_alive is set
             if spec.keep_alive {
                 state.is_idle = true;
                 emit(EventKind::AgentPaused);
@@ -427,7 +427,7 @@ pub(crate) fn run_loop(
                 }
             }
 
-            // ── Schema validation: retry on violation, succeed otherwise ───
+            // Schema validation: retry on violation, succeed otherwise
             let validated = match spec.output_schema.as_ref().map(|s| s.validate(&text)) {
                 None => None,
                 Some(Ok(value)) => Some(value),
@@ -462,9 +462,9 @@ pub(crate) fn run_loop(
                 }
             };
 
-            // ── Done: model stopped and any schema validates ───────────────
+            // Done: model stopped and any schema validates
             emit(EventKind::AgentFinished {
-                turns: state.turn,
+                turns: state.turns,
                 outcome: Outcome::Completed,
             });
             emit(EventKind::TurnFinished { turn });
@@ -473,18 +473,18 @@ pub(crate) fn run_loop(
                 response: validated,
                 response_raw: text,
                 statistics: Statistics {
-                    input_tokens: state.total_usage.input_tokens,
-                    output_tokens: state.total_usage.output_tokens,
-                    requests: state.request_count,
-                    tool_calls: state.tool_call_count,
-                    turns: state.turn,
+                    input_tokens: state.usage.input_tokens,
+                    output_tokens: state.usage.output_tokens,
+                    requests: state.requests,
+                    tool_calls: state.tool_calls,
+                    turns: state.turns,
                 },
                 outcome: Outcome::Completed,
                 errors: std::mem::take(&mut state.errors),
             });
         };
 
-        // ── Common early-exit path: build output from the last assistant text ──
+        // Common early-exit path: build output from the last assistant text
         let response_raw = state
             .messages
             .iter()
@@ -503,7 +503,7 @@ pub(crate) fn run_loop(
             })
             .unwrap_or_default();
         emit(EventKind::AgentFinished {
-            turns: state.turn,
+            turns: state.turns,
             outcome,
         });
         Ok(Output {
@@ -511,11 +511,11 @@ pub(crate) fn run_loop(
             response: None,
             response_raw,
             statistics: Statistics {
-                input_tokens: state.total_usage.input_tokens,
-                output_tokens: state.total_usage.output_tokens,
-                requests: state.request_count,
-                tool_calls: state.tool_call_count,
-                turns: state.turn,
+                input_tokens: state.usage.input_tokens,
+                output_tokens: state.usage.output_tokens,
+                requests: state.requests,
+                tool_calls: state.tool_calls,
+                turns: state.turns,
             },
             outcome,
             errors: std::mem::take(&mut state.errors),
@@ -1146,12 +1146,10 @@ mod tests {
         assert_lifecycle_events(&harness, &output);
     }
 
-    // ──────────────────────────────────────────────────────────────────────
     // keep_alive / idle wait — matrix-driven test suite
     //
     // Wake sources (W1-W6):   does a queue item wake an idle listener?
     // Lifecycle (L1-L6):      do one-shot / timeout / cancel / events behave?
-    // ──────────────────────────────────────────────────────────────────────
 
     use crate::agent::queue::CommandQueue;
 

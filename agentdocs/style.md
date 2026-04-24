@@ -114,22 +114,23 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 
 ## 14. Line comments (`//`)
 
-**Three reasons are allowed. Everything else is deleted.**
+**Four reasons are allowed. Everything else is deleted.**
 
 Allowed:
 
 - Order-dependency or crash-safety, such as `Write mark BEFORE task file: crash-safe.`
 - API quirk or workaround, such as `serde_json::Map is sorted alphabetically, so we format manually.`
 - Non-obvious constraint, such as `Newest first so 'gpt-4' does not shadow 'gpt-4.1'.`
+- Plain section label in a long function, on its own line above the block it introduces, such as `// Parse the reply, append the assistant message`.
 
 Not allowed:
 
-- Restating what the code does.
+- Restating what the code does on the same line.
 - Task, PR, issue, or changelog references.
 - Commented-out code.
 - Stub or aspirational markers; use `unimplemented!(...)` or return `Ok(())`.
 - `TODO`, `FIXME`, or `NOTE`.
-- Section dividers of any kind.
+- Decorative banners of any kind: `// ── Title`, `// ==== Title ====`, `// ----- Title -----`.
 
 ## 15. Tests
 
@@ -183,11 +184,15 @@ Line comment `//`:
 // Write mark BEFORE task file: crash-safe.
 fs::write(&mark_path, b"")?;
 
+// GOOD: plain section header in a long function
+// Parse the reply, append the assistant message
+
 // BAD: restates the code
 // Increment the counter.
 counter += 1;
 
-// BAD: section divider
+// BAD: decorative banner
+// ── Parse the reply, append the assistant message
 // ----- Core types -----
 ```
 
