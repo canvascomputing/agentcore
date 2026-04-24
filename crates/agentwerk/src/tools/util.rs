@@ -17,7 +17,7 @@ pub(crate) async fn run_shell_command(
     let output_fut = tokio::process::Command::new("sh")
         .arg("-c")
         .arg(command)
-        .current_dir(&ctx.working_directory)
+        .current_dir(&ctx.working_dir)
         .kill_on_drop(true)
         .output();
 

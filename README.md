@@ -408,7 +408,7 @@ The following fields are inherited, shared or owned by the sub-agents:
 
 | Behavior | Fields |
 |---|---|
-| Inherited | `provider`, `model`, `working_directory`, `event_handler`, `cancel_signal` |
+| Inherited | `provider`, `model`, `working_dir`, `event_handler`, `cancel_signal` |
 | Shared | `command_queue`, `session_store` |
 | Per sub-agent | `identity_prompt`, `instruction_prompt`, `behavior_prompt`, `context_prompt`, `tools`, `output_schema`, `max_turns`, `max_request_tokens`, `max_input_tokens`, `max_output_tokens`, `max_schema_retries`, `max_request_retries`, `request_retry_delay` |
 

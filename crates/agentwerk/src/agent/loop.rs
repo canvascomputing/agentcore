@@ -36,7 +36,7 @@ pub(crate) struct LoopRuntime {
     pub provider: Arc<dyn Provider>,
     pub event_handler: Arc<dyn Fn(Event) + Send + Sync>,
     pub cancel_signal: Arc<AtomicBool>,
-    pub working_directory: PathBuf,
+    pub working_dir: PathBuf,
     pub environment: Option<String>,
     pub command_queue: Option<Arc<CommandQueue>>,
     pub session_store: Option<Arc<Mutex<SessionStore>>>,
@@ -46,8 +46,8 @@ pub(crate) struct LoopRuntime {
 
 impl LoopRuntime {
     /// Build the environment block prepended to the first user message.
-    pub(crate) fn environment(working_directory: &Path) -> String {
-        let working_directory = working_directory.display();
+    pub(crate) fn environment(working_dir: &Path) -> String {
+        let working_dir = working_dir.display();
         let platform = std::env::consts::OS;
         let os_version = std::process::Command::new("uname")
             .arg("-r")
@@ -56,7 +56,7 @@ impl LoopRuntime {
             .unwrap_or_default();
         let date = format_current_date();
         format!(
-            "<environment>\nWorking directory: {working_directory}\nPlatform: {platform}\nOS version: {os_version}\nDate: {date}\n</environment>"
+            "<environment>\nWorking directory: {working_dir}\nPlatform: {platform}\nOS version: {os_version}\nDate: {date}\n</environment>"
         )
     }
 }
@@ -320,7 +320,7 @@ pub(crate) fn run_loop(
                         input: call.input.clone(),
                     });
                 }
-                let tool_ctx = ToolContext::new(runtime.working_directory.clone())
+                let tool_ctx = ToolContext::new(runtime.working_dir.clone())
                     .registry(Arc::clone(&runtime.tool_registry))
                     .runtime(Arc::clone(&runtime))
                     .caller_spec(Arc::clone(&spec));
@@ -873,7 +873,7 @@ mod tests {
             provider: Arc::new(MockProvider::text("ok")),
             event_handler: Arc::new(|_| {}),
             cancel_signal: Arc::new(AtomicBool::new(false)),
-            working_directory: PathBuf::from("/tmp"),
+            working_dir: PathBuf::from("/tmp"),
             command_queue: None,
             session_store: None,
             environment: Some(env.to_string()),

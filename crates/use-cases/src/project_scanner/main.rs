@@ -2,7 +2,7 @@
 //! 1. Discovery agent finds files worth reading
 //! 2. Batch of agents summarizes each file in parallel
 //!
-//! Usage: project-scanner [OPTIONS] [FOLDER]
+//! Usage: project-scanner [OPTIONS] [DIR]
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ use agentwerk::{Agent, Batch};
 use serde_json::{json, Value};
 
 const DISCOVERY_PROMPT: &str = "\
-You are a file discovery agent. Analyze the repository at {folder_path}.
+You are a file discovery agent. Analyze the repository at {dir_path}.
 
 1. Use list_directory to see the top-level structure
 2. Use glob to find source files, config files, and documentation
@@ -76,7 +76,7 @@ async fn main() {
     });
 
     // Phase 1: Discover files
-    eprintln!("[discover] scanning {}", config.folder.display());
+    eprintln!("[discover] scanning {}", config.dir.display());
 
     let discovery = Agent::new()
         .provider(provider.clone())
@@ -86,8 +86,8 @@ async fn main() {
         .tool(ListDirectoryTool)
         .tool(GlobTool)
         .output_schema(discovery_schema())
-        .template_variable("folder_path", json!(config.folder.display().to_string()))
-        .working_directory(config.folder.clone())
+        .template_variable("dir_path", json!(config.dir.display().to_string()))
+        .working_dir(config.dir.clone())
         .cancel_signal(cancel.clone())
         .max_turns(20)
         .event_handler(Arc::new(|event| match &event.kind {
@@ -161,7 +161,7 @@ async fn main() {
             .clone()
             .name(format!("summarize-{file}"))
             .instruction_prompt(format!("Read and summarize: {file}"))
-            .working_directory(config.folder.clone())
+            .working_dir(config.dir.clone())
             .event_handler(Arc::new(move |event| match &event.kind {
                 EventKind::ToolCallFailed { message, .. } => {
                     eprintln!("[summarize] {file_name}: error: {message}");
@@ -218,7 +218,7 @@ fn write_output(path: &str, json: &Value) {
 }
 
 struct CliConfig {
-    folder: PathBuf,
+    dir: PathBuf,
     model: String,
     output: String,
     batch_size: usize,
@@ -226,7 +226,7 @@ struct CliConfig {
 
 fn parse_args() -> CliConfig {
     let args: Vec<String> = std::env::args().collect();
-    let mut folder = ".".to_string();
+    let mut dir = ".".to_string();
     let mut model = String::new();
     let mut output = "project.json".to_string();
     let mut batch_size = 5;
@@ -248,14 +248,14 @@ fn parse_args() -> CliConfig {
             }
             "-h" | "--help" => {
                 eprintln!("Scan a project and output a JSON summary.\n");
-                eprintln!("Usage: project-scanner [OPTIONS] [FOLDER]\n");
+                eprintln!("Usage: project-scanner [OPTIONS] [DIR]\n");
                 eprintln!("Options:");
                 eprintln!("  --model <MODEL>        Model override");
                 eprintln!("  --batch-size <N>       Parallel summarizations (default: 5)");
                 eprintln!("  -o, --output <PATH>    Output file (default: project.json)");
                 std::process::exit(0);
             }
-            arg if !arg.starts_with('-') && folder == "." => folder = arg.into(),
+            arg if !arg.starts_with('-') && dir == "." => dir = arg.into(),
             arg => {
                 eprintln!("Unknown option: {arg}");
                 std::process::exit(1);
@@ -264,9 +264,9 @@ fn parse_args() -> CliConfig {
         i += 1;
     }
 
-    let folder = std::fs::canonicalize(&folder).unwrap_or_else(|_| PathBuf::from(&folder));
+    let dir = std::fs::canonicalize(&dir).unwrap_or_else(|_| PathBuf::from(&dir));
     CliConfig {
-        folder,
+        dir,
         model,
         output,
         batch_size,

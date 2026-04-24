@@ -47,11 +47,11 @@ pub struct Agent {
     pub(crate) provider: Option<Arc<dyn Provider>>,
     pub(crate) instruction_prompt: String,
     pub(crate) template_variables: HashMap<String, Value>,
-    pub(crate) working_directory: Option<PathBuf>,
+    pub(crate) working_dir: Option<PathBuf>,
     pub(crate) event_handler: Option<Arc<dyn Fn(Event) + Send + Sync>>,
     pub(crate) cancel_signal: Option<Arc<AtomicBool>>,
     pub(crate) command_queue: Option<Arc<CommandQueue>>,
-    pub(crate) session_directory: Option<PathBuf>,
+    pub(crate) session_dir: Option<PathBuf>,
 }
 
 impl Default for Agent {
@@ -63,8 +63,8 @@ impl Default for Agent {
             event_handler: None,
             command_queue: None,
             cancel_signal: None,
-            working_directory: None,
-            session_directory: None,
+            working_dir: None,
+            session_dir: None,
             template_variables: HashMap::new(),
         }
     }
@@ -274,8 +274,8 @@ impl Agent {
     }
 
     /// Working directory surfaced to tools and the environment prompt. Defaults to the process cwd.
-    pub fn working_directory(mut self, d: impl Into<PathBuf>) -> Self {
-        self.working_directory = Some(d.into());
+    pub fn working_dir(mut self, d: impl Into<PathBuf>) -> Self {
+        self.working_dir = Some(d.into());
         self
     }
 
@@ -304,8 +304,8 @@ impl Agent {
     }
 
     /// Enable session transcript persistence to the given directory.
-    pub fn session_directory(mut self, d: impl Into<PathBuf>) -> Self {
-        self.session_directory = Some(d.into());
+    pub fn session_dir(mut self, d: impl Into<PathBuf>) -> Self {
+        self.session_dir = Some(d.into());
         self
     }
 
@@ -409,8 +409,8 @@ impl Agent {
             panic!("Agent::run() requires .provider() (or .provider_from_env()) on root agents")
         });
 
-        let working_directory = self
-            .working_directory
+        let working_dir = self
+            .working_dir
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
@@ -432,18 +432,18 @@ impl Agent {
                 .unwrap_or_else(|| Arc::new(CommandQueue::new())),
         );
 
-        let session_store = self.session_directory.as_ref().map(|dir| {
+        let session_store = self.session_dir.as_ref().map(|dir| {
             let store = SessionStore::new(dir, &generate_agent_name("session"));
             Arc::new(Mutex::new(store))
         });
 
-        let environment = Some(LoopRuntime::environment(&working_directory));
+        let environment = Some(LoopRuntime::environment(&working_dir));
 
         LoopRuntime {
             provider,
             event_handler,
             cancel_signal,
-            working_directory,
+            working_dir,
             command_queue,
             session_store,
             environment,
@@ -467,10 +467,10 @@ impl Agent {
                 .cancel_signal
                 .clone()
                 .unwrap_or_else(|| parent.cancel_signal.clone()),
-            working_directory: self
-                .working_directory
+            working_dir: self
+                .working_dir
                 .clone()
-                .unwrap_or_else(|| parent.working_directory.clone()),
+                .unwrap_or_else(|| parent.working_dir.clone()),
             command_queue: parent.command_queue.clone(),
             session_store: parent.session_store.clone(),
             environment: parent.environment.clone(),

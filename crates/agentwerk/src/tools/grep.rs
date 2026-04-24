@@ -88,7 +88,7 @@ impl ToolLike for GrepTool {
             };
 
             let base = ctx
-                .working_directory
+                .working_dir
                 .join(input["path"].as_str().unwrap_or("."));
             let glob_filter = input["glob"].as_str().map(|s| s.to_string());
             let output_mode = input["output_mode"].as_str().unwrap_or("files");

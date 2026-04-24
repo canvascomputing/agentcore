@@ -309,7 +309,7 @@ pub struct TestHarness {
     provider: Arc<MockProvider>,
     events: EventCollector,
     template_variables: HashMap<String, serde_json::Value>,
-    working_directory: PathBuf,
+    working_dir: PathBuf,
     cancel_signal: Arc<AtomicBool>,
     // Only read from the cfg(test) branch in `run_agent` — in non-test builds
     // the field is always None and the reader is compiled out.
@@ -327,7 +327,7 @@ impl TestHarness {
             provider,
             events: EventCollector::new(),
             template_variables: HashMap::new(),
-            working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             cancel_signal: Arc::new(AtomicBool::new(false)),
             command_queue: None,
         }
@@ -356,7 +356,7 @@ impl TestHarness {
             .clone()
             .provider(self.provider.clone())
             .instruction_prompt(input)
-            .working_directory(self.working_directory.clone())
+            .working_dir(self.working_dir.clone())
             .event_handler(self.events.callback())
             .cancel_signal(self.cancel_signal.clone());
         for (k, v) in &self.template_variables {

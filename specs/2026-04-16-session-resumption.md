@@ -73,7 +73,7 @@ enum Message {
 AgentBuilder::new()
     .provider(provider)
     .model("claude-sonnet-4-20250514")
-    .session_directory(PathBuf::from("./data"))
+    .session_dir(PathBuf::from("./data"))
     .resume_session("session_abc123")           // ← new
     .instruction_prompt("Continue where we left off.")
     .run()
@@ -81,7 +81,7 @@ AgentBuilder::new()
 ```
 
 `resume_session(session_id)` stores the session ID. At `run()` time:
-1. Load transcript: `SessionStore::load(&session_directory, &session_id)` → `Vec<TranscriptEntry>`
+1. Load transcript: `SessionStore::load(&session_dir, &session_id)` → `Vec<TranscriptEntry>`
 2. Extract messages: `entries.iter().map(|e| e.message.clone()).collect()` → `Vec<Message>`
 3. Detect interrupted turns (trailing `Assistant` with `ToolUse` blocks but no subsequent `ToolResult`) — truncate those
 4. Seed `state.messages` with the loaded messages instead of building from scratch
@@ -141,6 +141,6 @@ make test   # unit tests for interrupted turn detection, message extraction
 ```
 
 Integration test:
-1. Run agent with `session_directory` → produces transcript
+1. Run agent with `session_dir` → produces transcript
 2. Load transcript, resume with new instruction → appends to same file
 3. Verify the resumed agent sees prior messages and responds coherently

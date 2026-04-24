@@ -23,7 +23,7 @@ use crate::tools::error::ToolError;
 pub struct ToolContext {
     /// Working directory the tool runs in. Tools that touch the filesystem
     /// should resolve relative paths against this.
-    pub working_directory: PathBuf,
+    pub working_dir: PathBuf,
     pub(crate) tool_registry: Option<Arc<ToolRegistry>>,
     pub(crate) runtime: Option<Arc<LoopRuntime>>,
     pub(crate) caller_spec: Option<Arc<AgentSpec>>,
@@ -31,12 +31,12 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
-    /// A fresh context rooted at `working_directory`, with no runtime or
+    /// A fresh context rooted at `working_dir`, with no runtime or
     /// caller spec. Tools that call sub-agents or search the registry need a
     /// context installed by the loop; bare contexts are for standalone use.
-    pub fn new(working_directory: PathBuf) -> Self {
+    pub fn new(working_dir: PathBuf) -> Self {
         Self {
-            working_directory,
+            working_dir,
             tool_registry: None,
             runtime: None,
             caller_spec: None,
@@ -79,7 +79,7 @@ impl ToolContext {
 impl std::fmt::Debug for ToolContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ToolContext")
-            .field("working_directory", &self.working_directory)
+            .field("working_dir", &self.working_dir)
             .field("tool_registry", &self.tool_registry)
             .field("has_runtime", &self.runtime.is_some())
             .field("has_caller_spec", &self.caller_spec.is_some())

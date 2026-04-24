@@ -46,10 +46,10 @@ pub struct TaskTool {
 }
 
 impl TaskTool {
-    /// A new task tool storing entries under `data_directory/tasks`.
-    pub fn new(data_directory: &Path) -> Self {
+    /// A new task tool storing entries under `data_dir/tasks`.
+    pub fn new(data_dir: &Path) -> Self {
         Self {
-            store: Arc::new(Mutex::new(TaskStore::new(data_directory, "tasks"))),
+            store: Arc::new(Mutex::new(TaskStore::new(data_dir, "tasks"))),
         }
     }
 }

@@ -85,7 +85,7 @@ impl ToolLike for EditFileTool {
 
             let replace_all = input["replace_all"].as_bool().unwrap_or(false);
 
-            let resolved = ctx.working_directory.join(path);
+            let resolved = ctx.working_dir.join(path);
 
             let content = match std::fs::read_to_string(&resolved) {
                 Ok(c) => c,
