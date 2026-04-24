@@ -30,7 +30,7 @@ pub enum PolicyKind {
 }
 
 /// Categorical discriminant for [`EventKind::ToolCallFailed`]. One variant
-/// per [`ToolError`](crate::ToolError) case, payloads stripped.
+/// per [`ToolError`](crate::tools::ToolError) case, payloads stripped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolFailureKind {
     /// The registry had no tool with that name.
