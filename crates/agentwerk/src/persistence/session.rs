@@ -22,7 +22,7 @@ pub(crate) struct SessionMetadata {
     pub(crate) session_id: String,
     pub(crate) created_at: u64,
     pub(crate) last_active_at: u64,
-    pub(crate) message_count: u64,
+    pub(crate) messages: u64,
 }
 
 /// Append-only JSONL transcript store.
@@ -132,7 +132,7 @@ impl SessionStore {
             session_id: session_id.to_string(),
             created_at: entries.first().map(|e| e.recorded_at).unwrap_or(0),
             last_active_at: entries.last().map(|e| e.recorded_at).unwrap_or(0),
-            message_count: entries.len() as u64,
+            messages: entries.len() as u64,
         })
     }
 }

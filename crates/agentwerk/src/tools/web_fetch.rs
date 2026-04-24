@@ -110,7 +110,7 @@ impl ToolLike for WebFetchTool {
                 body,
                 status,
                 content_type,
-                byte_count,
+                bytes,
             } = text
             else {
                 unreachable!()
@@ -122,7 +122,7 @@ impl ToolLike for WebFetchTool {
                 &body,
                 status,
                 &content_type,
-                byte_count,
+                bytes,
                 max_length,
             );
             Ok(ToolResult::success(output))
@@ -137,7 +137,7 @@ enum FetchedContent {
         body: String,
         status: u16,
         content_type: String,
-        byte_count: usize,
+        bytes: usize,
     },
     Redirect {
         original_url: String,
@@ -201,7 +201,7 @@ async fn fetch_url(url: &str) -> std::result::Result<FetchedContent, String> {
         body,
         status,
         content_type,
-        byte_count: bytes.len(),
+        bytes: bytes.len(),
     })
 }
 
@@ -211,7 +211,7 @@ fn format_output(
     body: &str,
     status: u16,
     content_type: &str,
-    byte_count: usize,
+    bytes: usize,
     max_length: usize,
 ) -> String {
     let mut output = String::new();
@@ -220,7 +220,7 @@ fn format_output(
         output.push_str(&format!("Prompt: {prompt}\n\n"));
     }
     output.push_str(&format!(
-        "URL: {url}\nStatus: {status}\nContent-Type: {content_type}\nSize: {byte_count} bytes\n\n",
+        "URL: {url}\nStatus: {status}\nContent-Type: {content_type}\nSize: {bytes} bytes\n\n",
     ));
 
     let remaining = max_length.saturating_sub(output.len());

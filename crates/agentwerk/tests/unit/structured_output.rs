@@ -190,7 +190,7 @@ async fn state_machine_advances_invalid_then_valid() {
         .unwrap();
 
     assert_eq!(
-        harness.provider().request_count(),
+        harness.provider().requests(),
         2,
         "two turns: invalid + valid"
     );
@@ -281,7 +281,7 @@ async fn valid_json_terminates_in_one_turn() {
         .await
         .unwrap();
 
-    assert_eq!(harness.provider().request_count(), 1);
+    assert_eq!(harness.provider().requests(), 1);
     assert_eq!(output.response, Some(serde_json::json!({"answer": 42})));
     assert_eq!(output.response_raw, VALID_JSON);
 }
@@ -298,7 +298,7 @@ async fn code_fenced_json_accepted_leniently() {
         .await
         .unwrap();
 
-    assert_eq!(harness.provider().request_count(), 1);
+    assert_eq!(harness.provider().requests(), 1);
     assert_eq!(output.response, Some(serde_json::json!({"answer": 42})));
 }
 
@@ -316,7 +316,7 @@ async fn valid_complex_report_terminates_in_one_turn() {
         .await
         .unwrap();
 
-    assert_eq!(harness.provider().request_count(), 1);
+    assert_eq!(harness.provider().requests(), 1);
     assert_eq!(output.response_raw, VALID_REPORT_JSON);
 
     // Walk into the parsed value to prove every layer survived intact —
@@ -464,7 +464,7 @@ async fn tools_run_first_then_validation_at_natural_end() {
     let output = harness.run_agent(&agent, "go").await.unwrap();
 
     // Tool ran on turn 1; validation on turn 2; total 2 requests.
-    assert_eq!(harness.provider().request_count(), 2);
+    assert_eq!(harness.provider().requests(), 2);
     assert_eq!(output.response, Some(serde_json::json!({"answer": 42})));
 }
 
@@ -479,7 +479,7 @@ async fn validation_deferred_through_truncation() {
     let harness = TestHarness::new(provider);
     let output = harness.run_agent(&schema_agent(), "go").await.unwrap();
 
-    assert_eq!(harness.provider().request_count(), 2);
+    assert_eq!(harness.provider().requests(), 2);
     assert_eq!(output.response, Some(serde_json::json!({"answer": 42})));
 
     // Turn 2's input must contain the continuation prompt, not the schema
@@ -509,7 +509,7 @@ async fn cancel_before_any_reply_skips_validation() {
     assert_eq!(output.outcome, Outcome::Cancelled);
     assert_eq!(output.response, None);
     // No request was sent at all (guard fires before the first turn body).
-    assert_eq!(harness.provider().request_count(), 0);
+    assert_eq!(harness.provider().requests(), 0);
 }
 
 #[tokio::test]
@@ -621,7 +621,7 @@ async fn ad_hoc_spawned_agent_declares_schema_via_overrides() {
 
     // Total 4 requests: parent(2) + child(2). Confirms the child enforced
     // its schema and retried before terminating.
-    assert_eq!(harness.provider().request_count(), 4);
+    assert_eq!(harness.provider().requests(), 4);
 
     let req4 = &harness.provider().requests.lock().unwrap()[3];
     let tool_result = last_tool_result_content(req4).expect("expected a tool_result");

@@ -106,12 +106,12 @@ impl Event {
                 }
                 EventKind::ContextCompacted {
                     turn,
-                    token_count,
+                    tokens,
                     threshold,
                     reason,
                 } => {
                     eprintln!(
-                        "[{agent}] compact turn={turn} {token_count}/{threshold} ({reason:?})"
+                        "[{agent}] compact turn={turn} {tokens}/{threshold} ({reason:?})"
                     );
                 }
                 EventKind::OutputTruncated { turn } => {
@@ -209,7 +209,7 @@ pub enum EventKind {
     /// Conversation history was compacted to stay within the model's window.
     ContextCompacted {
         turn: u32,
-        token_count: u64,
+        tokens: u64,
         threshold: u64,
         reason: CompactReason,
     },
@@ -307,7 +307,7 @@ mod tests {
             EventKind::OutputTruncated { turn: 2 },
             EventKind::ContextCompacted {
                 turn: 2,
-                token_count: 9_000,
+                tokens: 9_000,
                 threshold: 10_000,
                 reason: CompactReason::Proactive,
             },

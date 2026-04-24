@@ -59,7 +59,7 @@ impl MockProvider {
         ])
     }
 
-    pub fn request_count(&self) -> usize {
+    pub fn requests(&self) -> usize {
         self.requests.lock().unwrap().len()
     }
 

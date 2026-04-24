@@ -73,28 +73,46 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 - Internal helpers and on-the-wire JSON may use raw integers where the protocol requires it.
 - Example: `timeout_ms` is acceptable inside a tool input schema because the schema is a wire protocol.
 
-## 9. Builders
+## 9. Directory-path identifiers
+
+**Identifiers that name a directory path use `_dir`. The word `directory` is reserved for prose.**
+
+- Fields, parameters, and locals: `working_dir`, `session_dir`, `base_dir`, `data_dir`.
+- Matches the Rust standard library: `std::fs::read_dir`, `std::env::current_dir`, `std::fs::DirEntry`.
+- `folder` is never used; it has no std analog.
+- Doc comments and environment labels may still say "working directory" in English prose.
+
+## 10. Counter identifiers
+
+**Counters use a bare plural noun. No `_count` suffix on fields or on methods that return a count.**
+
+- `Statistics` sets the vocabulary: `requests`, `tool_calls`, `turns`, `input_tokens`, `output_tokens`.
+- Event payloads follow suit: `tokens` on `ContextCompacted`, not `token_count`.
+- Accessor methods mirror the field form: `MockProvider::requests()` returns the count of captured requests.
+- The `_count` suffix is reserved for the rare case where the plural would clash with a sibling collection field on the same type.
+
+## 11. Builders
 
 **Builder methods are bare nouns. No `with_` prefix.**
 
 - Examples: `.name()`, `.model()`, `.tool()`, `.sub_agents()`, `.read_only()`.
 - The `with_` prefix is used only when a bare name clashes with a trait method, such as `with_description` on `BashTool`.
 
-## 10. Constructors
+## 12. Constructors
 
 **`new()` for the primary path. Named constructors carry semantics.**
 
 - `new()` is the primary constructor.
 - Named constructors: `open()`, `unrestricted()`, `success()`, `error()`, `empty()`, `from_id()`, `from_env()`.
 
-## 11. Getters and setters
+## 13. Getters and setters
 
 **Mutable accessors use `set_` and `get_` prefixes to distinguish them from builders.**
 
 - Example: `set_extension()`, `get_extension()`.
 - Builder methods remain unprefixed.
 
-## 12. Free functions and tool structs
+## 14. Free functions and tool structs
 
 **Free functions are rare and snake_case. Tool structs follow `{Name}Tool`.**
 
@@ -102,7 +120,7 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 - A free function is used only when no receiver type is natural.
 - Tool structs: `ReadFileTool`, `BashTool`, `SpawnAgentTool`.
 
-## 13. Doc comments (`///`)
+## 15. Doc comments (`///`)
 
 **State the purpose in one sentence. No "This function…" or "Returns…".**
 
@@ -111,7 +129,7 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 - Trivial getters, `Default::default`, `From` impls, and self-explanatory variants are left undocumented.
 - Within one type, coverage is all-or-none: every member has a real doc comment, or none does.
 
-## 14. Module docs (`//!`)
+## 16. Module docs (`//!`)
 
 **Every file begins with a `//!` that states what the file contributes to the crate.**
 
@@ -120,7 +138,7 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 - Do not list the contents of the file.
 - The `//!` stays even when the filename is already descriptive.
 
-## 15. Line comments (`//`)
+## 17. Line comments (`//`)
 
 **Four reasons are allowed. Everything else is deleted.**
 
@@ -140,14 +158,14 @@ Not allowed:
 - `TODO`, `FIXME`, or `NOTE`.
 - Decorative banners of any kind: `// ── Title`, `// ==== Title ====`, `// ----- Title -----`.
 
-## 16. Tests
+## 18. Tests
 
 **Test names carry intent. Setup is not narrated.**
 
 - A comment is justified only to pin an architectural invariant the test guards.
 - A module-level `//!` describing the test file's scope is acceptable.
 
-## 17. Comment examples
+## 19. Comment examples
 
 **Good and bad variants of each comment type.**
 
@@ -204,7 +222,7 @@ counter += 1;
 // ----- Core types -----
 ```
 
-## 18. README structure
+## 20. README structure
 
 **Terse, example-driven, scannable.**
 
@@ -213,7 +231,7 @@ counter += 1;
 - Enumerations use bullets or grouped bullets; tables are not used.
 - Facts live in one place; other sections cross-link rather than repeat.
 
-## 19. README voice
+## 21. README voice
 
 **Direct and neutral. No marketing language.**
 

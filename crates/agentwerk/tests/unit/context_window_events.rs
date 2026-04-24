@@ -176,13 +176,13 @@ async fn proactive_compact_fires_when_threshold_crossed() {
     let harness = TestHarness::new(MockProvider::new(vec![response]));
     let _ = harness.run_agent(&agent, "hi").await;
 
-    let (turn, token_count, threshold_in_event, reason) = first_compact(&harness.events().all());
+    let (turn, tokens, threshold_in_event, reason) = first_compact(&harness.events().all());
     assert_eq!(reason, CompactReason::Proactive);
     assert_eq!(turn, 1);
     assert_eq!(threshold_in_event, threshold);
     assert!(
-        token_count > threshold,
-        "token_count={token_count} should exceed threshold={threshold}",
+        tokens > threshold,
+        "tokens={tokens} should exceed threshold={threshold}",
     );
 }
 
@@ -229,10 +229,10 @@ async fn reactive_compact_fires_on_context_window_exceeded_error() {
     let harness = TestHarness::with_provider(provider);
     let _ = harness.run_agent(&agent, "hi").await;
 
-    let (turn, token_count, threshold, reason) = first_compact(&harness.events().all());
+    let (turn, tokens, threshold, reason) = first_compact(&harness.events().all());
     assert_eq!(reason, CompactReason::Reactive);
     assert_eq!(turn, 1);
-    assert_eq!(token_count, 0, "reactive event sentinels token_count to 0");
+    assert_eq!(tokens, 0, "reactive event sentinels tokens to 0");
     assert_eq!(threshold, 0, "reactive event sentinels threshold to 0");
 }
 
@@ -252,10 +252,10 @@ async fn reactive_compact_fires_on_mid_generation_context_window_exceeded() {
     let harness = TestHarness::new(MockProvider::new(vec![response]));
     let _ = harness.run_agent(&agent, "hi").await;
 
-    let (turn, token_count, threshold, reason) = first_compact(&harness.events().all());
+    let (turn, tokens, threshold, reason) = first_compact(&harness.events().all());
     assert_eq!(reason, CompactReason::Reactive);
     assert_eq!(turn, 1);
-    assert_eq!(token_count, 0);
+    assert_eq!(tokens, 0);
     assert_eq!(threshold, 0);
 }
 
@@ -514,7 +514,7 @@ fn compact_reasons(events: &[Event]) -> Vec<CompactReason> {
         .collect()
 }
 
-/// Extract `(turn, token_count, threshold, reason)` of the first
+/// Extract `(turn, tokens, threshold, reason)` of the first
 /// `ContextCompacted` event. Panics if none was emitted — callers use this
 /// when the event is the behavior under test.
 fn first_compact(events: &[Event]) -> (u32, u64, u64, CompactReason) {
@@ -523,10 +523,10 @@ fn first_compact(events: &[Event]) -> (u32, u64, u64, CompactReason) {
         .find_map(|e| match e.kind {
             EventKind::ContextCompacted {
                 turn,
-                token_count,
+                tokens,
                 threshold,
                 reason,
-            } => Some((turn, token_count, threshold, reason)),
+            } => Some((turn, tokens, threshold, reason)),
             _ => None,
         })
         .expect("ContextCompacted event must be emitted")

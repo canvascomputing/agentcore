@@ -74,7 +74,7 @@ pub(crate) async fn trigger_if_over_threshold(
         spec.name.clone(),
         EventKind::ContextCompacted {
             turn: state.turns,
-            token_count: tokens,
+            tokens,
             threshold,
             reason: CompactReason::Proactive,
         },
@@ -94,7 +94,7 @@ pub(crate) async fn trigger_reactive(
         spec.name.clone(),
         EventKind::ContextCompacted {
             turn,
-            token_count: 0,
+            tokens: 0,
             threshold: 0,
             reason: CompactReason::Reactive,
         },

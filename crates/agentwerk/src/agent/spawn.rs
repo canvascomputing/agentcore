@@ -202,7 +202,7 @@ mod tests {
             .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
             .await;
         handle.send("follow-up");
-        wait_until(|| provider.request_count() >= 2).await;
+        wait_until(|| provider.requests() >= 2).await;
 
         let second = provider.last_request().expect("second request");
         let last_user = last_user_text(&second).expect("user message in second request");
@@ -333,7 +333,7 @@ mod tests {
             .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
             .await;
         handle.send("wake up");
-        wait_until(|| provider.request_count() >= 2).await;
+        wait_until(|| provider.requests() >= 2).await;
         events
             .wait_for(|e| matches!(e.kind, EventKind::AgentResumed))
             .await;

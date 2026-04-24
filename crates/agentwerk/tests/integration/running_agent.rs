@@ -185,11 +185,11 @@ fn format_event(e: &Event) -> Option<String> {
         )),
         EventKind::ContextCompacted {
             turn,
-            token_count,
+            tokens,
             threshold,
             reason,
         } => Some(format!(
-            "compact turn={turn} {token_count}/{threshold} ({reason:?})"
+            "compact turn={turn} {tokens}/{threshold} ({reason:?})"
         )),
         EventKind::OutputTruncated { turn } => Some(format!("truncated turn={turn}")),
         EventKind::AgentPaused => Some("idle".into()),

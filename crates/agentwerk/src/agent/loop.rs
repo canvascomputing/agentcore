@@ -570,7 +570,7 @@ mod tests {
         let output = harness.run_agent(&simple_agent(), "Hi").await.unwrap();
         assert_eq!(output.response_raw, "Hello, world!");
         assert!(output.response.is_none());
-        assert_eq!(harness.provider().request_count(), 1);
+        assert_eq!(harness.provider().requests(), 1);
     }
 
     #[tokio::test]
@@ -613,7 +613,7 @@ mod tests {
         let harness = TestHarness::new(provider);
         let output = harness.run_agent(&agent, "Echo test").await.unwrap();
         assert_eq!(output.response_raw, "Done!");
-        assert_eq!(harness.provider().request_count(), 2);
+        assert_eq!(harness.provider().requests(), 2);
     }
 
     #[tokio::test]
@@ -904,7 +904,7 @@ mod tests {
 
         assert_eq!(output.outcome, Outcome::Completed);
         assert_eq!(output.response_raw, "...completed response");
-        assert_eq!(harness.provider().request_count(), 2);
+        assert_eq!(harness.provider().requests(), 2);
         assert_lifecycle_events(&harness, &output);
 
         let req = &harness.provider().requests.lock().unwrap()[1];
@@ -1453,7 +1453,7 @@ mod retry_and_events_tests {
         let harness = TestHarness::new(provider);
         let output = harness.run_agent(&agent, "go").await.unwrap();
         assert_eq!(output.response_raw, "hello");
-        assert_eq!(harness.provider().request_count(), 3);
+        assert_eq!(harness.provider().requests(), 3);
     }
 
     #[tokio::test]
@@ -1475,7 +1475,7 @@ mod retry_and_events_tests {
             output.errors.last(),
             Some(Error::Provider(ProviderError::AuthenticationFailed { .. }))
         ));
-        assert_eq!(harness.provider().request_count(), 1);
+        assert_eq!(harness.provider().requests(), 1);
     }
 
     #[tokio::test]
@@ -1569,13 +1569,13 @@ mod retry_and_events_tests {
             })
             .collect();
         assert_eq!(retries, vec![(1, 4), (2, 4)]);
-        let failed_count = harness
+        let failures = harness
             .events()
             .all()
             .iter()
             .filter(|e| matches!(e.kind, EventKind::RequestFailed { .. }))
             .count();
-        assert_eq!(failed_count, 0, "no terminal failure on eventual success");
+        assert_eq!(failures, 0, "no terminal failure on eventual success");
     }
 
     #[tokio::test]
@@ -1813,11 +1813,11 @@ mod retry_and_events_tests {
         assert_eq!(output.outcome, Outcome::Failed);
 
         let events = harness.events().all();
-        let compact_count = events
+        let compacts = events
             .iter()
             .filter(|e| matches!(e.kind, EventKind::ContextCompacted { .. }))
             .count();
-        assert_eq!(compact_count, 1);
+        assert_eq!(compacts, 1);
         assert!(failures_in(&events).is_empty());
     }
 

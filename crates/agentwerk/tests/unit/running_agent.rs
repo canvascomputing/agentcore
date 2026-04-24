@@ -65,7 +65,7 @@ async fn send_injects_an_instruction_into_the_next_turn() {
         .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
         .await;
     handle.send("follow-up");
-    wait_until(|| provider.request_count() >= 2).await;
+    wait_until(|| provider.requests() >= 2).await;
 
     let second = provider.last_request().expect("second request");
     let last_user = last_user_text(&second).expect("user message in second request");
@@ -123,7 +123,7 @@ async fn send_and_cancel_on_a_clone_reach_the_original_task() {
         .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
         .await;
     sender.send("via-clone");
-    wait_until(|| provider.request_count() >= 2).await;
+    wait_until(|| provider.requests() >= 2).await;
 
     let second = provider.last_request().expect("second request");
     assert!(last_user_text(&second).unwrap().contains("via-clone"));
