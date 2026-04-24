@@ -13,13 +13,10 @@ Commands used to build, test, release, and run example agents.
 
 ## Test
 
-**Unit tests use a mock provider; integration tests use a real one.**
+**Test layout and writing rules live in [testing.md](testing.md).**
 
 - `make test` runs unit tests bundled by `tests/unit.rs`.
 - `make test_integration` runs integration tests bundled by `tests/integration.rs`.
-- Shared integration helpers live in `tests/integration/common.rs`.
-- Inline tests live in each module as `#[cfg(test)] mod tests`.
-- `MockProvider` and `TestHarness` are in `testutil.rs`.
 
 ## Release
 
