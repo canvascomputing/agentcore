@@ -87,7 +87,7 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 
 **Counters use a bare plural noun. No `_count` suffix on fields or on methods that return a count.**
 
-- `Statistics` sets the vocabulary: `requests`, `tool_calls`, `turns`, `input_tokens`, `output_tokens`.
+- `Statistics` sets the vocabulary: `requests`, `tool_calls`, `steps`, `input_tokens`, `output_tokens`.
 - Event payloads follow suit: `tokens` on `ContextCompacted`, not `token_count`.
 - Accessor methods mirror the field form: `MockProvider::requests()` returns the count of captured requests.
 - The `_count` suffix is reserved for the rare case where the plural would clash with a sibling collection field on the same type.
@@ -188,7 +188,7 @@ Module `//!`:
 
 ```rust
 // GOOD: states what the file contributes
-//! The execution loop. Runs a compiled `Agent` turn by turn until it yields an `Output`.
+//! The execution loop. Runs a compiled `Agent` step by step until it yields an `Output`.
 
 // BAD: lists contents
 //! Agent execution loop.

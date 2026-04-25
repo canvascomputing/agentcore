@@ -1,4 +1,4 @@
-//! The agent execution loop. Drives one compiled `Agent` turn by turn until it returns an `Output`.
+//! The agent execution loop. Drives one compiled `Agent` step by step until it returns an `Output`.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -51,7 +51,7 @@ pub(crate) struct LoopState {
     pub usage: TokenUsage,
     pub requests: u64,
     pub tool_calls: u64,
-    pub turns: u32,
+    pub steps: u32,
     pub contract_retries: u32,
     pub is_idle: bool,
 }
@@ -108,14 +108,14 @@ pub(crate) fn run_loop(
         emit(EventKind::AgentStarted);
 
         let outcome = 'run: loop {
-            // Guards: cancel, turn limit, token budgets
+            // Guards: cancel, step limit, token budgets
             if runtime.interrupt_signal.load(Ordering::Relaxed) {
                 break 'run Outcome::Cancelled;
             }
-            if let Some(limit) = spec.max_turns {
-                if state.turns >= limit {
+            if let Some(limit) = spec.max_steps {
+                if state.steps >= limit {
                     let limit = u64::from(limit);
-                    let kind = PolicyKind::Turns;
+                    let kind = PolicyKind::Steps;
                     state
                         .errors
                         .push(AgentError::PolicyViolated { kind, limit }.into());
@@ -144,10 +144,10 @@ pub(crate) fn run_loop(
                 }
             }
 
-            // New turn
-            state.turns += 1;
-            let turn = state.turns;
-            emit(EventKind::TurnStarted { turn });
+            // New step
+            state.steps += 1;
+            let step = state.steps;
+            emit(EventKind::StepStarted { step });
             emit(EventKind::RequestStarted {
                 model: spec.model().name.clone(),
             });
@@ -195,7 +195,7 @@ pub(crate) fn run_loop(
                         message,
                     }))) if spec.model().context_window_size.is_some() => {
                         if let Err(compact_err) =
-                            compact::trigger_reactive(&runtime, &spec, turn).await
+                            compact::trigger_reactive(&runtime, &spec, step).await
                         {
                             state.errors.push(compact_err);
                         }
@@ -282,7 +282,7 @@ pub(crate) fn run_loop(
             if response.status == ResponseStatus::ContextWindowExceeded
                 && spec.model().context_window_size.is_some()
             {
-                if let Err(e) = compact::trigger_reactive(&runtime, &spec, turn).await {
+                if let Err(e) = compact::trigger_reactive(&runtime, &spec, step).await {
                     state.errors.push(e);
                     break 'run Outcome::Failed;
                 }
@@ -340,17 +340,17 @@ pub(crate) fn run_loop(
                         state.messages.push(Message::user(task.as_user_message()));
                     }
                 }
-                emit(EventKind::TurnFinished { turn });
+                emit(EventKind::StepFinished { step });
                 continue;
             }
 
             // Truncated output: ask the model to keep going
             if response.status == ResponseStatus::OutputTruncated && tool_calls.is_empty() {
-                emit(EventKind::OutputTruncated { turn });
+                emit(EventKind::OutputTruncated { step });
                 state
                     .messages
                     .push(Message::user(prompts::MAX_TOKENS_CONTINUATION));
-                emit(EventKind::TurnFinished { turn });
+                emit(EventKind::StepFinished { step });
                 continue;
             }
 
@@ -364,7 +364,7 @@ pub(crate) fn run_loop(
                 }
             }
             if state.messages.len() > before {
-                emit(EventKind::TurnFinished { turn });
+                emit(EventKind::StepFinished { step });
                 continue;
             }
 
@@ -393,7 +393,7 @@ pub(crate) fn run_loop(
                 state.is_idle = false;
                 emit(EventKind::AgentResumed);
                 if woken {
-                    emit(EventKind::TurnFinished { turn });
+                    emit(EventKind::StepFinished { step });
                     continue;
                 }
             }
@@ -411,7 +411,7 @@ pub(crate) fn run_loop(
                                 .errors
                                 .push(AgentError::PolicyViolated { kind, limit }.into());
                             emit(EventKind::PolicyViolated { kind, limit });
-                            emit(EventKind::TurnFinished { turn });
+                            emit(EventKind::StepFinished { step });
                             break 'run Outcome::Failed;
                         }
                     }
@@ -428,17 +428,17 @@ pub(crate) fn run_loop(
                          reply with a single JSON value conforming to the schema, with no \
                          surrounding text and no code fences.\n\nValidator said: {detail}"
                     )));
-                    emit(EventKind::TurnFinished { turn });
+                    emit(EventKind::StepFinished { step });
                     continue;
                 }
             };
 
             // Done: model stopped and any schema validates
             emit(EventKind::AgentFinished {
-                turns: state.turns,
+                steps: state.steps,
                 outcome: Outcome::Completed,
             });
-            emit(EventKind::TurnFinished { turn });
+            emit(EventKind::StepFinished { step });
             return Ok(Output {
                 name: spec.name.clone(),
                 response: validated,
@@ -448,7 +448,7 @@ pub(crate) fn run_loop(
                     output_tokens: state.usage.output_tokens,
                     requests: state.requests,
                     tool_calls: state.tool_calls,
-                    turns: state.turns,
+                    steps: state.steps,
                 },
                 outcome: Outcome::Completed,
                 errors: std::mem::take(&mut state.errors),
@@ -474,7 +474,7 @@ pub(crate) fn run_loop(
             })
             .unwrap_or_default();
         emit(EventKind::AgentFinished {
-            turns: state.turns,
+            steps: state.steps,
             outcome,
         });
         Ok(Output {
@@ -486,7 +486,7 @@ pub(crate) fn run_loop(
                 output_tokens: state.usage.output_tokens,
                 requests: state.requests,
                 tool_calls: state.tool_calls,
-                turns: state.turns,
+                steps: state.steps,
             },
             outcome,
             errors: std::mem::take(&mut state.errors),
@@ -526,7 +526,7 @@ mod tests {
         let last_significant = events
             .iter()
             .rev()
-            .find(|e| !matches!(e.kind, EventKind::TurnFinished { .. }));
+            .find(|e| !matches!(e.kind, EventKind::StepFinished { .. }));
         assert!(
             matches!(
                 last_significant.map(|e| &e.kind),
@@ -601,7 +601,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn guard_max_turns() {
+    async fn guard_max_steps() {
         let provider = MockProvider::new(vec![
             tool_response("t", "c1", serde_json::json!({})),
             tool_response("t", "c2", serde_json::json!({})),
@@ -611,17 +611,17 @@ mod tests {
             .name("test")
             .model("mock")
             .role("")
-            .max_turns(2)
+            .max_steps(2)
             .tool(MockTool::new("t", false, "ok"));
 
         let harness = TestHarness::new(provider);
         let output = harness.run_agent(&agent, "go").await.unwrap();
         assert_eq!(output.outcome, Outcome::Failed);
-        assert_eq!(output.statistics.turns, 2);
+        assert_eq!(output.statistics.steps, 2);
         assert!(matches!(
             output.errors.last(),
             Some(Error::Agent(AgentError::PolicyViolated {
-                kind: PolicyKind::Turns,
+                kind: PolicyKind::Steps,
                 limit: 2
             }))
         ));
@@ -908,7 +908,7 @@ mod tests {
             .all()
             .iter()
             .filter_map(|e| match &e.kind {
-                EventKind::OutputTruncated { turn } => Some(*turn),
+                EventKind::OutputTruncated { step } => Some(*step),
                 _ => None,
             })
             .collect();
@@ -1158,7 +1158,7 @@ mod tests {
     }
 
     /// Flip `cancel` after `delay_ms`. Used to break the unlimited idle wait
-    /// once a test's assertion-relevant turns have completed.
+    /// once a test's assertion-relevant steps have completed.
     fn cancel_after(cancel: Arc<AtomicBool>, delay_ms: u64) {
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
@@ -1183,7 +1183,7 @@ mod tests {
         let output = harness.run_agent(&agent, "hi").await.unwrap();
 
         assert_eq!(
-            output.statistics.turns, 2,
+            output.statistics.steps, 2,
             "peer message should wake the listener"
         );
     }
@@ -1198,7 +1198,7 @@ mod tests {
         let output = harness.run_agent(&agent, "hi").await.unwrap();
 
         assert_eq!(
-            output.statistics.turns, 2,
+            output.statistics.steps, 2,
             "broadcast task notification should wake the listener"
         );
     }
@@ -1213,7 +1213,7 @@ mod tests {
         let output = harness.run_agent(&agent, "hi").await.unwrap();
 
         assert_eq!(
-            output.statistics.turns, 2,
+            output.statistics.steps, 2,
             "user input (targeted) should wake the listener"
         );
     }
@@ -1228,7 +1228,7 @@ mod tests {
         let output = harness.run_agent(&agent, "hi").await.unwrap();
 
         assert_eq!(
-            output.statistics.turns, 2,
+            output.statistics.steps, 2,
             "user input (broadcast) should wake the listener"
         );
     }
@@ -1240,7 +1240,7 @@ mod tests {
         let output = harness.run_agent(&agent, "hi").await.unwrap();
 
         assert_eq!(output.outcome, Outcome::Completed);
-        assert_eq!(output.statistics.turns, 1);
+        assert_eq!(output.statistics.steps, 1);
     }
 
     #[tokio::test]
@@ -1308,16 +1308,16 @@ mod tests {
         let output = harness.run_agent(&agent, "hi").await.unwrap();
 
         assert_eq!(
-            output.statistics.turns, 2,
-            "drain-before-exit must inject the preloaded message and force a second turn"
+            output.statistics.steps, 2,
+            "drain-before-exit must inject the preloaded message and force a second step"
         );
     }
 
     #[tokio::test]
-    async fn drains_batch_of_messages_into_one_turn() {
+    async fn drains_batch_of_messages_into_one_step() {
         let (harness, work) = listener_harness(two_text_responses());
-        // Preload two messages. Both must arrive in a single drained turn,
-        // not in two separate turns.
+        // Preload two messages. Both must arrive in a single drained step,
+        // not in two separate steps.
         work.add(peer_msg(Some(AGENT_NAME), "alice", "first"));
         work.add(peer_msg(Some(AGENT_NAME), "bob", "second"));
 
@@ -1327,8 +1327,8 @@ mod tests {
         let output = harness.run_agent(&agent, "hi").await.unwrap();
 
         assert_eq!(
-            output.statistics.turns, 2,
-            "two pending messages should drain into ONE additional turn, not two"
+            output.statistics.steps, 2,
+            "two pending messages should drain into ONE additional step, not two"
         );
     }
 
@@ -1473,20 +1473,20 @@ mod retry_and_events_tests {
             names,
             vec![
                 "AgentStarted",
-                "TurnStarted",
+                "StepStarted",
                 "RequestStarted",
                 "RequestFinished",
                 "TokensReported",
                 "ToolCallStarted",
                 "ToolCallFinished",
-                "TurnFinished",
-                "TurnStarted",
+                "StepFinished",
+                "StepStarted",
                 "RequestStarted",
                 "TextChunkReceived",
                 "RequestFinished",
                 "TokensReported",
                 "AgentFinished",
-                "TurnFinished",
+                "StepFinished",
             ]
         );
     }
@@ -1495,8 +1495,8 @@ mod retry_and_events_tests {
         match &event.kind {
             EventKind::AgentStarted { .. } => "AgentStarted",
             EventKind::AgentFinished { .. } => "AgentFinished",
-            EventKind::TurnStarted { .. } => "TurnStarted",
-            EventKind::TurnFinished { .. } => "TurnFinished",
+            EventKind::StepStarted { .. } => "StepStarted",
+            EventKind::StepFinished { .. } => "StepFinished",
             EventKind::RequestStarted { .. } => "RequestStarted",
             EventKind::RequestFinished { .. } => "RequestFinished",
             EventKind::RequestRetried { .. } => "RequestRetried",

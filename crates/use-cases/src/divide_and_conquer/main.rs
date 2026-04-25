@@ -68,7 +68,7 @@ async fn main() {
             *hi,
             provider.clone(),
             &model,
-            args.max_turns,
+            args.max_steps,
             log.clone(),
         )
     });
@@ -198,7 +198,7 @@ fn build_worker(
     hi: u64,
     provider: Arc<dyn agentwerk::Provider>,
     model: &str,
-    max_turns: u32,
+    max_steps: u32,
     event_handler: Arc<dyn Fn(Event) + Send + Sync>,
 ) -> Agent {
     let schema = json!({
@@ -220,7 +220,7 @@ fn build_worker(
         .task(format!("Compute S = sum_{{k={lo}}}^{{{hi}}} k^2."))
         .tool(python_tool())
         .contract(schema)
-        .max_turns(max_turns)
+        .max_steps(max_steps)
         .event_handler(event_handler)
 }
 
@@ -342,12 +342,12 @@ fn format_range(range: Option<&(u64, u64)>) -> String {
 
 fn failure_reason(output: &Output) -> String {
     let outcome = format!("{:?}", output.outcome);
-    let turns = output.statistics.turns;
+    let steps = output.statistics.steps;
     let preview = truncate(output.response_raw.trim(), 100);
     if preview.is_empty() {
-        format!("[{outcome}, {turns} turns, no final text]")
+        format!("[{outcome}, {steps} steps, no final text]")
     } else {
-        format!("[{outcome}, {turns} turns] final text: {preview}")
+        format!("[{outcome}, {steps} steps] final text: {preview}")
     }
 }
 
@@ -422,7 +422,7 @@ struct CliArgs {
     n: u64,
     partitions: usize,
     concurrency: usize,
-    max_turns: u32,
+    max_steps: u32,
     verbose: bool,
 }
 
@@ -431,7 +431,7 @@ fn parse_args() -> CliArgs {
     let mut n: Option<u64> = None;
     let mut partitions: usize = 16;
     let mut concurrency: usize = 8;
-    let mut max_turns: u32 = 8;
+    let mut max_steps: u32 = 8;
     let mut verbose = false;
 
     let mut i = 1;
@@ -451,12 +451,12 @@ fn parse_args() -> CliArgs {
                     .and_then(|s| s.parse().ok())
                     .unwrap_or_else(|| bad_arg("--concurrency expects a positive number"));
             }
-            "--max-turns" => {
+            "--max-steps" => {
                 i += 1;
-                max_turns = args
+                max_steps = args
                     .get(i)
                     .and_then(|s| s.parse().ok())
-                    .unwrap_or_else(|| bad_arg("--max-turns expects a positive number"));
+                    .unwrap_or_else(|| bad_arg("--max-steps expects a positive number"));
             }
             "-v" | "--verbose" => {
                 verbose = true;
@@ -481,7 +481,7 @@ fn parse_args() -> CliArgs {
         n: n.unwrap_or(10_000),
         partitions,
         concurrency,
-        max_turns,
+        max_steps,
         verbose,
     }
 }
@@ -492,7 +492,7 @@ fn print_help() {
     eprintln!("Options:");
     eprintln!("  -p, --partitions <K>   Number of worker agents (default: 16)");
     eprintln!("  -c, --concurrency <N>  Max in-flight agents (default: 8)");
-    eprintln!("      --max-turns <N>    Per-agent turn cap (default: 8)");
+    eprintln!("      --max-steps <N>    Per-agent step cap (default: 8)");
     eprintln!("  -v, --verbose          Stream per-worker tool calls");
     eprintln!("  -h, --help             Show this help\n");
     eprintln!("Examples:");

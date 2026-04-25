@@ -1,12 +1,12 @@
-//! How message state accumulates across agent turns.
+//! How message state accumulates across agent steps.
 //!
-//! The conversation is a linear state machine. Each turn is one step:
+//! The conversation is a linear state machine. Each step is one transition:
 //!
 //! ```text
-//!   S0 (initial) ──turn 1──▶ S1 ──turn 2──▶ S2 ──turn 3──▶ (terminal)
+//!   S0 (initial) ──step 1──▶ S1 ──step 2──▶ S2 ──step 3──▶ (terminal)
 //! ```
 //!
-//! Every `MockProvider` call captures the input state of that turn, so we
+//! Every `MockProvider` call captures the input state of that step, so we
 //! can read back `provider.requests[i]` to see the state at step `i`. The
 //! snapshot constants below ARE the expected states; the test drives the
 //! machine to completion and asserts each one.
@@ -42,7 +42,7 @@ Working directory: /tmp/demo
 What is the answer?
 ";
 
-const S1_AFTER_TURN_1: &str = "\
+const S1_AFTER_STEP_1: &str = "\
 === system ===
 You are Ada, a concise assistant.
 
@@ -61,7 +61,7 @@ What is the answer?
 [tool_result call_1 ok] answer=42
 ";
 
-const S2_AFTER_TURN_2: &str = "\
+const S2_AFTER_STEP_2: &str = "\
 === system ===
 You are Ada, a concise assistant.
 
@@ -87,11 +87,11 @@ What is the answer?
 ";
 
 #[tokio::test]
-async fn state_machine_advances_one_turn_at_a_time() {
-    // Pre-script the three turns the LLM will drive:
-    //   turn 1 → tool_use(call_1) → advances S0 to S1
-    //   turn 2 → tool_use(call_2) → advances S1 to S2
-    //   turn 3 → final text        → terminal (no S3 sent)
+async fn state_machine_advances_one_step_at_a_time() {
+    // Pre-script the three steps the LLM will drive:
+    //   step 1 → tool_use(call_1) → advances S0 to S1
+    //   step 2 → tool_use(call_2) → advances S1 to S2
+    //   step 3 → final text        → terminal (no S3 sent)
     let provider = MockProvider::new(vec![
         tool_response("lookup", "call_1", serde_json::json!({"q": "answer"})),
         tool_response("lookup", "call_2", serde_json::json!({"q": "confirm"})),
@@ -117,10 +117,10 @@ async fn state_machine_advances_one_turn_at_a_time() {
     let state = |i: usize| canonicalize(&render(&reqs[i]));
 
     assert_eq!(state(0), S0_INITIAL);
-    assert_eq!(state(1), S1_AFTER_TURN_1);
-    assert_eq!(state(2), S2_AFTER_TURN_2);
+    assert_eq!(state(1), S1_AFTER_STEP_1);
+    assert_eq!(state(2), S2_AFTER_STEP_2);
 
-    // Terminal: last turn returned EndTurn with no tool calls, so the loop exited without a 4th request.
+    // Terminal: last step returned EndTurn with no tool calls, so the loop exited without a 4th request.
     assert_eq!(reqs.len(), 3, "no further request after EndTurn");
 }
 
@@ -149,9 +149,9 @@ async fn proactive_compact_fires_when_threshold_crossed() {
     let harness = TestHarness::new(MockProvider::new(vec![response]));
     let _ = harness.run_agent(&agent, "hi").await;
 
-    let (turn, tokens, threshold_in_event, reason) = first_compact(&harness.events().all());
+    let (step, tokens, threshold_in_event, reason) = first_compact(&harness.events().all());
     assert_eq!(reason, CompactReason::Proactive);
-    assert_eq!(turn, 1);
+    assert_eq!(step, 1);
     assert_eq!(threshold_in_event, threshold);
     assert!(
         tokens > threshold,
@@ -199,9 +199,9 @@ async fn reactive_compact_fires_on_context_window_exceeded_error() {
     let harness = TestHarness::with_provider(provider);
     let _ = harness.run_agent(&agent, "hi").await;
 
-    let (turn, tokens, threshold, reason) = first_compact(&harness.events().all());
+    let (step, tokens, threshold, reason) = first_compact(&harness.events().all());
     assert_eq!(reason, CompactReason::Reactive);
-    assert_eq!(turn, 1);
+    assert_eq!(step, 1);
     assert_eq!(tokens, 0, "reactive event sentinels tokens to 0");
     assert_eq!(threshold, 0, "reactive event sentinels threshold to 0");
 }
@@ -222,9 +222,9 @@ async fn reactive_compact_fires_on_mid_generation_context_window_exceeded() {
     let harness = TestHarness::new(MockProvider::new(vec![response]));
     let _ = harness.run_agent(&agent, "hi").await;
 
-    let (turn, tokens, threshold, reason) = first_compact(&harness.events().all());
+    let (step, tokens, threshold, reason) = first_compact(&harness.events().all());
     assert_eq!(reason, CompactReason::Reactive);
-    assert_eq!(turn, 1);
+    assert_eq!(step, 1);
     assert_eq!(tokens, 0);
     assert_eq!(threshold, 0);
 }
@@ -250,10 +250,10 @@ async fn sub_agent_compaction_uses_own_model_window() {
         .hire(child);
 
     // Response script (shared across parent + child runs via the same mock):
-    //   1. parent turn 1 — small usage, stays under parent threshold, spawns child
-    //   2. child  turn 1 — usage crosses child threshold  → child's  ContextCompacted
-    //   3. parent turn 2 — usage crosses parent threshold → parent's ContextCompacted
-    let parent_turn1 = tool_response(
+    //   1. parent step 1 — small usage, stays under parent threshold, spawns child
+    //   2. child  step 1 — usage crosses child threshold  → child's  ContextCompacted
+    //   3. parent step 2 — usage crosses parent threshold → parent's ContextCompacted
+    let parent_step1 = tool_response(
         "agent",
         "sa1",
         serde_json::json!({
@@ -262,17 +262,17 @@ async fn sub_agent_compaction_uses_own_model_window() {
             "agent": "child"
         }),
     );
-    let mut child_turn1 = text_response("child done");
-    child_turn1.usage = TokenUsage {
+    let mut child_step1 = text_response("child done");
+    child_step1.usage = TokenUsage {
         input_tokens: child_threshold + 1_000,
         output_tokens: 10,
         cache_read_input_tokens: 0,
         cache_creation_input_tokens: 0,
     };
-    let mut parent_turn2 = text_response("parent done");
-    // Parent accumulates usage across turns; turn 2 on top of turn 1's
+    let mut parent_step2 = text_response("parent done");
+    // Parent accumulates usage across steps; step 2 on top of step 1's
     // (negligible) baseline must still overshoot the parent threshold.
-    parent_turn2.usage = TokenUsage {
+    parent_step2.usage = TokenUsage {
         input_tokens: parent_threshold + 1_000,
         output_tokens: 10,
         cache_read_input_tokens: 0,
@@ -280,9 +280,9 @@ async fn sub_agent_compaction_uses_own_model_window() {
     };
 
     let harness = TestHarness::new(MockProvider::new(vec![
-        parent_turn1,
-        child_turn1,
-        parent_turn2,
+        parent_step1,
+        child_step1,
+        parent_step2,
     ]));
     let _ = harness.run_agent(&parent, "delegate").await;
 
@@ -481,7 +481,7 @@ fn compact_reasons(events: &[Event]) -> Vec<CompactReason> {
         .collect()
 }
 
-/// Extract `(turn, tokens, threshold, reason)` of the first
+/// Extract `(step, tokens, threshold, reason)` of the first
 /// `ContextCompacted` event. Panics if none was emitted — callers use this
 /// when the event is the behavior under test.
 fn first_compact(events: &[Event]) -> (u32, u64, u64, CompactReason) {
@@ -489,11 +489,11 @@ fn first_compact(events: &[Event]) -> (u32, u64, u64, CompactReason) {
         .iter()
         .find_map(|e| match e.kind {
             EventKind::ContextCompacted {
-                turn,
+                step,
                 tokens,
                 threshold,
                 reason,
-            } => Some((turn, tokens, threshold, reason)),
+            } => Some((step, tokens, threshold, reason)),
             _ => None,
         })
         .expect("ContextCompacted event must be emitted")

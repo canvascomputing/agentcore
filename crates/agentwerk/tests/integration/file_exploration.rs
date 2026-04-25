@@ -14,7 +14,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .model(&model)
         .tool(ReadFileTool)
         .tool(GlobTool)
-        .max_turns(10)
+        .max_steps(10)
         .task("Find all Rust source files and describe what this project does.")
         .await?;
 

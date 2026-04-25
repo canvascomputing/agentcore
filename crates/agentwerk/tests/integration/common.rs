@@ -15,7 +15,7 @@ pub fn build_provider() -> (Arc<dyn Provider>, String) {
 pub fn print_result(output: &Output) {
     let json = serde_json::json!({
         "response": output.response.clone().unwrap_or_else(|| serde_json::Value::String(output.response_raw.clone())),
-        "turns": output.statistics.turns,
+        "steps": output.statistics.steps,
         "tool_calls": output.statistics.tool_calls,
         "tokens_in": output.statistics.input_tokens,
         "tokens_out": output.statistics.output_tokens,

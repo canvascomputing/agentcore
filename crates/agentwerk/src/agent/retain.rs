@@ -41,7 +41,7 @@ pub struct AgentWorking {
 }
 
 impl AgentWorking {
-    /// Hand the running agent a new task. Picked up at the next turn
+    /// Hand the running agent a new task. Picked up at the next step
     /// boundary, or immediately if the agent is parked idle.
     pub fn task(&self, task: impl Into<String>) {
         self.work.add(Task {
@@ -52,7 +52,7 @@ impl AgentWorking {
         });
     }
 
-    /// Signal the agent to stop. The loop observes this at the next turn
+    /// Signal the agent to stop. The loop observes this at the next step
     /// boundary or idle-wait poll and exits.
     pub fn interrupt(&self) {
         self.cancel.store(true, Ordering::Relaxed);
@@ -109,7 +109,7 @@ impl Agent {
     /// (RAII safety); an explicit `.interrupt()` does the same thing. For a
     /// pure one-shot run without a handle, use [`Agent::task`] instead: a
     /// `let (_, out) = agent.retain(); out.await?` pattern will interrupt
-    /// before the first turn completes.
+    /// before the first step completes.
     ///
     /// Requires a running tokio runtime (`tokio::spawn` is invoked
     /// synchronously). Requires `.provider()` and either an initial
@@ -210,7 +210,7 @@ mod tests {
         let last_user = last_user_text(&second).expect("user message in second request");
         assert!(
             last_user.contains("follow-up"),
-            "injected instruction must appear in turn 2's user message; got {last_user:?}",
+            "injected instruction must appear in step 2's user message; got {last_user:?}",
         );
 
         handle.interrupt();

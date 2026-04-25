@@ -52,7 +52,7 @@ async fn orchestrator_sends_message_to_backgrounded_worker(
              the secret is N'. Respond with exactly the number N and end your turn.",
         )
         .keep_alive()
-        .max_turns(3);
+        .max_steps(3);
 
     let orchestrator_identity = format!(
         "You coordinate work. Do exactly these two steps in order:\n\
@@ -71,7 +71,7 @@ async fn orchestrator_sends_message_to_backgrounded_worker(
         .hire(worker)
         .tool(SendMessageTool)
         .interrupt_signal(cancel.clone())
-        .max_turns(6)
+        .max_steps(6)
         .event_handler(event_handler)
         .task(orchestrator_task)
         .await?;
@@ -129,10 +129,10 @@ async fn orchestrator_sends_message_to_backgrounded_worker(
 fn format_event(e: &Event) -> Option<String> {
     match &e.kind {
         EventKind::AgentStarted => Some("start".into()),
-        EventKind::AgentFinished { turns, outcome } => {
-            Some(format!("end    ({turns} turns, {outcome:?})"))
+        EventKind::AgentFinished { steps, outcome } => {
+            Some(format!("end    ({steps} steps, {outcome:?})"))
         }
-        EventKind::TurnStarted { turn } => Some(format!("turn   {turn}")),
+        EventKind::StepStarted { step } => Some(format!("step   {step}")),
         EventKind::ToolCallStarted {
             tool_name, input, ..
         } => Some(format!("tool   {tool_name}({})", one_line(input))),
@@ -146,17 +146,17 @@ fn format_event(e: &Event) -> Option<String> {
             truncate(message, 80)
         )),
         EventKind::ContextCompacted {
-            turn,
+            step,
             tokens,
             threshold,
             reason,
         } => Some(format!(
-            "compact turn={turn} {tokens}/{threshold} ({reason:?})"
+            "compact step={step} {tokens}/{threshold} ({reason:?})"
         )),
-        EventKind::OutputTruncated { turn } => Some(format!("truncated turn={turn}")),
+        EventKind::OutputTruncated { step } => Some(format!("truncated step={step}")),
         EventKind::AgentPaused => Some("idle".into()),
         EventKind::AgentResumed => Some("resumed".into()),
-        // Quiet: TurnFinished, RequestStarted/Finished, TextChunkReceived, TokensReported.
+        // Quiet: StepFinished, RequestStarted/Finished, TextChunkReceived, TokensReported.
         _ => None,
     }
 }

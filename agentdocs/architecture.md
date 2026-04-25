@@ -8,7 +8,7 @@ The invariants that shape how code fits together. Layout says where code lives; 
 
 - The builder carries per-run fields (provider, instruction, cancel signal) and a copy-on-write `Arc<AgentSpec>`.
 - `Agent::compile` resolves the model, fills externals, and hands the loop a frozen `(Arc<AgentSpec>, LoopRuntime)` pair.
-- `run_loop` owns the turn-by-turn state machine and is the only code that mutates `LoopState`.
+- `run_loop` owns the step-by-step state machine and is the only code that mutates `LoopState`.
 - The loop never sees the builder; the builder never sees the loop's state.
 
 ## Runtime versus state
@@ -16,7 +16,7 @@ The invariants that shape how code fits together. Layout says where code lives; 
 **Each run has two buckets: externals in `LoopRuntime`, mutation in `LoopState`.**
 
 - `LoopRuntime` holds the provider, event handler, cancel signal, work inbox, session store, tool registry, and working directory.
-- `LoopState` holds messages, token counters, turn number, schema retries, and collected errors.
+- `LoopState` holds messages, token counters, step number, schema retries, and collected errors.
 - `LoopRuntime` is shared behind an `Arc`; `LoopState` is owned by the loop and threaded through by `&mut`.
 - Sub-agents reuse the parent's runtime; they never share a state.
 
@@ -61,7 +61,7 @@ The invariants that shape how code fits together. Layout says where code lives; 
 
 **`Event` reports state. `Error` reports a failed contract. The two channels carry independent information.**
 
-- State transitions exist only as `Event` (`AgentStarted`, `TurnStarted`, `ContextCompacted`); failures exist as `Error` first (`ProviderError`, `AgentError`, `ToolError`).
+- State transitions exist only as `Event` (`AgentStarted`, `StepStarted`, `ContextCompacted`); failures exist as `Error` first (`ProviderError`, `AgentError`, `ToolError`).
 - An observable failure fires both: the `Error` is the machine-readable truth, the matching `Event` mirrors its kind and message (`RequestFailed`, `ToolCallFailed`, `PolicyViolated`).
 - `Output.errors` is emission-ordered; on `Outcome::Failed` the last entry is the terminal cause, earlier entries are retried transients. Tool failures never land there: they go to the model and fire `ToolCallFailed`.
 - IMPORTANT: pre-flight failures (missing provider, unreadable prompt, unset model) return `Err(...)` without starting the loop. No `AgentStarted` or `AgentFinished` fires.
@@ -80,7 +80,7 @@ The invariants that shape how code fits together. Layout says where code lives; 
 
 **Each concrete provider owns a `reqwest::Client` directly. There is no transport abstraction.**
 
-- The `Provider` trait has two methods: `respond` (drive one turn) and `prewarm` (warm TCP+TLS).
+- The `Provider` trait has two methods: `respond` (drive one step) and `prewarm` (warm TCP+TLS).
 - `ModelRequest` and `ModelResponse` are the wire-shaped types every provider converts to and from.
 - HTTP error mapping is shared through `map_http_errors` + a provider-specific `classify` closure.
 - Retry and compaction are shared seams (`util::Retry`, `agent::compact`); vendor code does not retry.
@@ -89,7 +89,7 @@ The invariants that shape how code fits together. Layout says where code lives; 
 
 **A run is cancelled by setting one shared `Arc<AtomicBool>`. Every waiter polls it.**
 
-- `check_guards` reads the flag at every turn boundary; tools read it via `ToolContext::wait_for_cancel`.
+- `check_guards` reads the flag at every step boundary; tools read it via `ToolContext::wait_for_cancel`.
 - `tokio::select!` pairs provider calls and tool futures with `wait_for_cancel` so a cancel drops the losing branch promptly.
 - `AgentWorking::interrupt` sets the flag explicitly; dropping the last handle sets it via `CancelGuard::drop`.
 - `Werk` installs its own signal on every dispatched worker so `WerkProducing::interrupt` reaches in-flight runs.
@@ -99,7 +99,7 @@ The invariants that shape how code fits together. Layout says where code lives; 
 **`Agent::retain` spawns the loop on tokio and returns `(AgentWorking, OutputFuture)`. The loop idles between instructions while any handle is alive.**
 
 - `retain` flips `keep_alive: true` on the spec and installs a fresh `Work` inbox plus `interrupt_signal` before calling `work` on a `tokio::spawn`.
-- `AgentWorking::task(s)` posts a follow-up task; the loop picks it up at its next idle poll or turn boundary.
+- `AgentWorking::task(s)` posts a follow-up task; the loop picks it up at its next idle poll or step boundary.
 - `OutputFuture` resolves once the loop exits; awaiting it does not keep the loop alive: only `AgentWorking` clones do.
 - `CancelGuard` flips the cancel flag when the last `AgentWorking` clone drops, so an abandoned handle still unblocks the loop.
 
@@ -114,10 +114,10 @@ The invariants that shape how code fits together. Layout says where code lives; 
 
 ## Incoming work carries dynamic tasks
 
-**`Work` is a per-run inbox of `Task`s. The loop drains it between turns; `AgentWorking` and orchestration tools post into it.**
+**`Work` is a per-run inbox of `Task`s. The loop drains it between steps; `AgentWorking` and orchestration tools post into it.**
 
 - The inbox lives on `LoopRuntime` and is shared by the parent and every sub-agent in the run-tree.
-- `AgentWorking::task` posts with `WorkPriority::Next` so the next turn picks it up before any backlog.
+- `AgentWorking::task` posts with `WorkPriority::Next` so the next step picks it up before any backlog.
 - Background sub-agents use the inbox to post notifications back to the parent; routing by `agent_name` keeps the inbox per-agent.
 - The inbox is `pub(crate)` only: the public API exposes it through `AgentWorking` and the orchestration tools, never directly.
 

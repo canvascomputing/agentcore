@@ -22,16 +22,16 @@ pub struct ModelRequest {
     pub system_prompt: String,
     /// Conversation history including the latest user input.
     pub messages: Vec<Message>,
-    /// Tool definitions available to the model this turn.
+    /// Tool definitions available to the model this step.
     pub tools: Vec<ToolDefinition>,
     /// Cap on output tokens for this single request. `None` lets the
     /// provider apply its default.
     pub max_request_tokens: Option<u32>,
-    /// Constraint on which tool the model may pick this turn.
+    /// Constraint on which tool the model may pick this step.
     pub tool_choice: Option<ToolChoice>,
 }
 
-/// Constraint on which tool the model may pick on a given turn.
+/// Constraint on which tool the model may pick on a given step.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolChoice {
     /// The model picks freely (or replies without a tool call).
@@ -70,7 +70,7 @@ pub enum ToolChoice {
 /// # });
 /// ```
 pub trait Provider: Send + Sync {
-    /// Drive one model turn. Emits incremental [`StreamEvent`]s via the
+    /// Drive one model step. Emits incremental [`StreamEvent`]s via the
     /// callback as the model generates, then returns the assembled reply.
     /// Callers that don't care about incremental events pass a no-op closure
     /// and wait for the final [`ModelResponse`].
@@ -82,7 +82,7 @@ pub trait Provider: Send + Sync {
 
     /// Warm the TCP+TLS connection pool before the first request.
     ///
-    /// Called automatically by the agent loop before the first turn. Sends
+    /// Called automatically by the agent loop before the first step. Sends
     /// a fire-and-forget HEAD request to the provider's base URL so the
     /// TLS handshake (~100-200 ms) overlaps with agent startup, letting
     /// the first real request reuse the already-established connection.

@@ -296,8 +296,8 @@ impl EventCollector {
             .unwrap()
             .iter()
             .filter_map(|e| match &e.kind {
-                EventKind::AgentFinished { turns, outcome } => {
-                    Some((e.agent_name.clone(), *turns, outcome.clone()))
+                EventKind::AgentFinished { steps, outcome } => {
+                    Some((e.agent_name.clone(), *steps, outcome.clone()))
                 }
                 _ => None,
             })

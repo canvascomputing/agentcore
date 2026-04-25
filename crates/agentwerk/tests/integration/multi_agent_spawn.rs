@@ -21,8 +21,8 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
             eprintln!("\n[{}] tool: {tool_name}", event.agent_name)
         }
         EventKind::AgentStarted { .. } => eprintln!("[{}] started", event.agent_name),
-        EventKind::AgentFinished { turns, .. } => {
-            eprintln!("[{}] done ({turns} turns)", event.agent_name)
+        EventKind::AgentFinished { steps, .. } => {
+            eprintln!("[{}] done ({steps} steps)", event.agent_name)
         }
         _ => {}
     });
@@ -31,7 +31,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .name("researcher")
         .model(&model)
         .role("You are a research assistant. Answer the given question concisely in 1-2 sentences.")
-        .max_turns(1);
+        .max_steps(1);
 
     let output = Agent::new()
         .provider(provider)
@@ -42,7 +42,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
              Summarize the results. Be concise.",
         )
         .hire(researcher)
-        .max_turns(10)
+        .max_steps(10)
         .event_handler(event_handler)
         .task("What is the capital of France? Use the researcher agent to find out, then tell me.")
         .await?;

@@ -61,7 +61,7 @@ async fn external_sender_delivers_two_instructions_and_clone_cancels(
                 Do not invent numbers. Do not echo any example. Do not restate the rules.",
         )
         .task("wait")
-        .max_turns(10)
+        .max_steps(10)
         .event_handler(event_handler)
         .retain();
 
@@ -95,9 +95,9 @@ async fn external_sender_delivers_two_instructions_and_clone_cancels(
     common::print_result(&output);
 
     assert!(
-        output.statistics.turns <= 10,
-        "ran past max_turns: {}",
-        output.statistics.turns
+        output.statistics.steps <= 10,
+        "ran past max_steps: {}",
+        output.statistics.steps
     );
     let all = events.lock().unwrap();
     assert!(
@@ -167,10 +167,10 @@ where
 fn format_event(e: &Event) -> Option<String> {
     match &e.kind {
         EventKind::AgentStarted => Some("start".into()),
-        EventKind::AgentFinished { turns, outcome } => {
-            Some(format!("end    ({turns} turns, {outcome:?})"))
+        EventKind::AgentFinished { steps, outcome } => {
+            Some(format!("end    ({steps} steps, {outcome:?})"))
         }
-        EventKind::TurnStarted { turn } => Some(format!("turn   {turn}")),
+        EventKind::StepStarted { step } => Some(format!("step   {step}")),
         EventKind::ToolCallStarted {
             tool_name, input, ..
         } => Some(format!("tool   {tool_name}({})", one_line(input))),
@@ -184,14 +184,14 @@ fn format_event(e: &Event) -> Option<String> {
             truncate(message, 80)
         )),
         EventKind::ContextCompacted {
-            turn,
+            step,
             tokens,
             threshold,
             reason,
         } => Some(format!(
-            "compact turn={turn} {tokens}/{threshold} ({reason:?})"
+            "compact step={step} {tokens}/{threshold} ({reason:?})"
         )),
-        EventKind::OutputTruncated { turn } => Some(format!("truncated turn={turn}")),
+        EventKind::OutputTruncated { step } => Some(format!("truncated step={step}")),
         EventKind::AgentPaused => Some("idle".into()),
         EventKind::AgentResumed => Some("resumed".into()),
         _ => None,

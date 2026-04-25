@@ -29,7 +29,7 @@ impl Task {
     }
 
     /// Render as the text body of a `Message::user(...)` injected into the
-    /// recipient's next turn. Peer messages get a header so the LLM sees who
+    /// recipient's next step. Peer messages get a header so the LLM sees who
     /// sent them; other sources deliver content verbatim.
     pub(crate) fn as_user_message(&self) -> String {
         match &self.source {

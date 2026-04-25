@@ -1,4 +1,4 @@
-//! Structured events the loop emits so callers can observe a run (turns, tool calls, compactions, completion) without wrapping the loop itself.
+//! Structured events the loop emits so callers can observe a run (steps, tool calls, compactions, completion) without wrapping the loop itself.
 
 use std::sync::Arc;
 
@@ -19,8 +19,8 @@ pub enum CompactReason {
 /// Which configured policy a [`EventKind::PolicyViolated`] refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyKind {
-    /// `max_turns` — the agentic loop iteration cap.
-    Turns,
+    /// `max_steps` — the agentic loop iteration cap.
+    Steps,
     /// `max_input_tokens` — cumulative request-side token cap.
     InputTokens,
     /// `max_output_tokens` — cumulative reply-side token cap.
@@ -78,7 +78,7 @@ impl Event {
 ///
 /// Installed automatically when [`Agent`] is built without `.event_handler(...)`.
 /// Prints one line per notable event; chatty events (streamed text, token usage,
-/// turn/request boundaries, paused/resumed) are skipped. Call `.silent()` on the
+/// step/request boundaries, paused/resumed) are skipped. Call `.silent()` on the
 /// agent to opt out, or pass a custom handler for richer formatting.
 ///
 /// [`Agent`]: crate::agent::Agent
@@ -89,8 +89,8 @@ pub fn default_logger() -> Arc<dyn Fn(Event) + Send + Sync> {
             EventKind::AgentStarted => {
                 eprintln!("[{agent}] start");
             }
-            EventKind::AgentFinished { turns, outcome } => {
-                eprintln!("[{agent}] done ({turns} turns, {outcome:?})");
+            EventKind::AgentFinished { steps, outcome } => {
+                eprintln!("[{agent}] done ({steps} steps, {outcome:?})");
             }
             EventKind::ToolCallStarted {
                 tool_name, input, ..
@@ -106,15 +106,15 @@ pub fn default_logger() -> Arc<dyn Fn(Event) + Send + Sync> {
                 eprintln!("[{agent}] ✗ {tool_name} ({kind:?}): {message}");
             }
             EventKind::ContextCompacted {
-                turn,
+                step,
                 tokens,
                 threshold,
                 reason,
             } => {
-                eprintln!("[{agent}] compact turn={turn} {tokens}/{threshold} ({reason:?})");
+                eprintln!("[{agent}] compact step={step} {tokens}/{threshold} ({reason:?})");
             }
-            EventKind::OutputTruncated { turn } => {
-                eprintln!("[{agent}] truncated turn={turn}");
+            EventKind::OutputTruncated { step } => {
+                eprintln!("[{agent}] truncated step={step}");
             }
             EventKind::PolicyViolated { kind, limit } => {
                 eprintln!("[{agent}] policy violated: {kind:?} limit={limit}");
@@ -146,19 +146,19 @@ pub fn default_logger() -> Arc<dyn Fn(Event) + Send + Sync> {
 }
 
 /// What an [`Event`] reports. Variants are grouped by lifecycle (`Agent*`),
-/// turn (`Turn*`, `Request*`), tool (`ToolCall*`), context (`OutputTruncated`,
+/// step (`Step*`, `Request*`), tool (`ToolCall*`), context (`OutputTruncated`,
 /// `ContextCompacted`, `*PolicyViolated`), and pause/resume.
 #[derive(Debug, Clone)]
 pub enum EventKind {
     /// Agent run began.
     AgentStarted,
-    /// Agent run finished on an `Ok` path. `turns` is the loop iteration
+    /// Agent run finished on an `Ok` path. `steps` is the loop iteration
     /// count; `outcome` is the exit reason.
-    AgentFinished { turns: u32, outcome: Outcome },
-    /// Agentic loop turn began.
-    TurnStarted { turn: u32 },
-    /// Agentic loop turn finished.
-    TurnFinished { turn: u32 },
+    AgentFinished { steps: u32, outcome: Outcome },
+    /// Agentic loop step began.
+    StepStarted { step: u32 },
+    /// Agentic loop step finished.
+    StepFinished { step: u32 },
     /// Tool invocation began.
     ToolCallStarted {
         tool_name: String,
@@ -203,15 +203,15 @@ pub enum EventKind {
         message: String,
     },
     /// The model's response was cut off at the configured length cap.
-    OutputTruncated { turn: u32 },
+    OutputTruncated { step: u32 },
     /// Conversation history was compacted to stay within the model's window.
     ContextCompacted {
-        turn: u32,
+        step: u32,
         tokens: u64,
         threshold: u64,
         reason: CompactReason,
     },
-    /// A configured policy (`max_turns`, `max_input_tokens`, `max_output_tokens`,
+    /// A configured policy (`max_steps`, `max_input_tokens`, `max_output_tokens`,
     /// `max_contract_retries`) was exceeded; the run is about to terminate with
     /// `Outcome::Failed`.
     PolicyViolated { kind: PolicyKind, limit: u64 },
@@ -256,11 +256,11 @@ mod tests {
         let every: Vec<EventKind> = vec![
             EventKind::AgentStarted,
             EventKind::AgentFinished {
-                turns: 3,
+                steps: 3,
                 outcome: Outcome::Completed,
             },
-            EventKind::TurnStarted { turn: 1 },
-            EventKind::TurnFinished { turn: 1 },
+            EventKind::StepStarted { step: 1 },
+            EventKind::StepFinished { step: 1 },
             EventKind::ToolCallStarted {
                 tool_name: "glob".into(),
                 call_id: "c1".into(),
@@ -302,15 +302,15 @@ mod tests {
                 kind: RequestErrorKind::AuthenticationFailed,
                 message: "auth failed".into(),
             },
-            EventKind::OutputTruncated { turn: 2 },
+            EventKind::OutputTruncated { step: 2 },
             EventKind::ContextCompacted {
-                turn: 2,
+                step: 2,
                 tokens: 9_000,
                 threshold: 10_000,
                 reason: CompactReason::Proactive,
             },
             EventKind::PolicyViolated {
-                kind: PolicyKind::Turns,
+                kind: PolicyKind::Steps,
                 limit: 5,
             },
             EventKind::ContractMissed {
@@ -329,8 +329,8 @@ mod tests {
             match kind {
                 EventKind::AgentStarted
                 | EventKind::AgentFinished { .. }
-                | EventKind::TurnStarted { .. }
-                | EventKind::TurnFinished { .. }
+                | EventKind::StepStarted { .. }
+                | EventKind::StepFinished { .. }
                 | EventKind::ToolCallStarted { .. }
                 | EventKind::ToolCallFinished { .. }
                 | EventKind::ToolCallFailed { .. }

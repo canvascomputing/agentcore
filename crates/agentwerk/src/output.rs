@@ -10,7 +10,7 @@ use crate::error::Error;
 /// detail: that lives in [`Output::errors`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// The model ended turn naturally and the loop exited cleanly. `errors`
+    /// The model ended step naturally and the loop exited cleanly. `errors`
     /// may still contain retried transient failures that didn't terminate.
     Completed,
     /// An external cancel signal was set before natural completion.
@@ -21,7 +21,7 @@ pub enum Outcome {
 }
 
 /// Per-run counters covering token usage, provider requests, tool calls,
-/// and agentic loop turns. Zero-initialized via [`Statistics::default`].
+/// and agentic loop steps. Zero-initialized via [`Statistics::default`].
 #[derive(Debug, Clone, Default)]
 pub struct Statistics {
     /// Cumulative input tokens across every provider request this run.
@@ -32,8 +32,8 @@ pub struct Statistics {
     pub requests: u64,
     /// Number of tool calls invoked.
     pub tool_calls: u64,
-    /// Number of agentic loop turns executed.
-    pub turns: u32,
+    /// Number of agentic loop steps executed.
+    pub steps: u32,
 }
 
 /// The result of an agent run.

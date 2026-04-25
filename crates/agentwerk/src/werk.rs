@@ -203,7 +203,7 @@ impl WerkProducing {
 
     /// Signal all in-flight workers to stop (via their `interrupt_signal`) and
     /// stop the dispatcher from accepting new hires. In-flight workers
-    /// observe the flag at their next turn boundary; the stream ends once
+    /// observe the flag at their next step boundary; the stream ends once
     /// they complete.
     ///
     /// The workshop owns one cancel signal and sets it on every hired worker,

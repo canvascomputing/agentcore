@@ -5,7 +5,7 @@
 //! interacts with it through two values:
 //!
 //! - [`AgentWorking`] — cheap to clone. Public surface:
-//!   - `task(s)` — hand the agent a new task; picked up at the next turn
+//!   - `task(s)` — hand the agent a new task; picked up at the next step
 //!     boundary or immediately if the agent is parked idle.
 //!   - `interrupt()` — flip the shared cancel signal.
 //!   - `is_interrupted()` — read that signal.
@@ -43,7 +43,7 @@ async fn output_resolves_with_final_text_after_interrupt() {
         .retain();
 
     // Wait until the loop has produced its terminal output and parked idle;
-    // interrupting before that would abort turn 1 with `Cancelled` status.
+    // interrupting before that would abort step 1 with `Cancelled` status.
     events
         .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
         .await;
@@ -54,7 +54,7 @@ async fn output_resolves_with_final_text_after_interrupt() {
 }
 
 #[tokio::test]
-async fn task_injects_into_the_next_turn() {
+async fn task_injects_into_the_next_step() {
     let events = EventLog::new();
     let (provider, handle, output) = retain_agent(
         vec![text_response("first"), text_response("second")],
@@ -71,7 +71,7 @@ async fn task_injects_into_the_next_turn() {
     let last_user = last_user_text(&second).expect("user message in second request");
     assert!(
         last_user.contains("follow-up"),
-        "injected instruction must appear in turn 2's user message; got {last_user:?}",
+        "injected instruction must appear in step 2's user message; got {last_user:?}",
     );
 
     handle.interrupt();

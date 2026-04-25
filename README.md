@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Example applications built with this project:
 
 - [Terminal REPL](crates/use-cases/src/terminal_repl/): interactive terminal chat with less than 100 lines of code
-- [Project Scanner](crates/use-cases/src/project_scanner/): scan and analyze local files
+- [Project Scanner](crates/use-cases/src/project_scanner/): orchestrator routes files to specialist agents that hunt for code issues
 - [Divide and Conquer](crates/use-cases/src/divide_and_conquer/): partition a math problem across a Werk of workers
 - [Deep Research](crates/use-cases/src/deep_research/): multi-agent research with web search (requires `BRAVE_API_KEY`)
 - [Model Pricing Tracker](crates/use-cases/src/model_pricing_tracker/): check model prices
@@ -67,17 +67,17 @@ make use_case name=<name>    # run one
 
 ## API
 
-- [Providers](#providers): pick a supplier
-- [Agents](#agents): the worker
-- [Models](#models): the worker's brain
-- [Prompting](#prompting): brief the worker
-- [Tools](#tools): the toolbox
-- [Events](#events): floor activity
-- [Policies](#policies): working rules
-- [Output](#output): the finished result
-- [Coworkers](#coworkers): hiring staff
-- [Werk](#werk): scale up the line
-- [Todo](#todo): on the roadmap
+- [Providers](#providers): choose which LLM supplier to connect to
+- [Agents](#agents): the worker that carries out a task
+- [Models](#models): the reasoning engine behind each worker
+- [Prompting](#prompting): brief the worker on role, behavior, and context
+- [Tools](#tools): equipment the worker can reach for
+- [Events](#events): visibility into what happens on the floor during a run
+- [Policies](#policies): the rules and limits a worker operates under
+- [Output](#output): the finished result handed back at the end
+- [Coworkers](#coworkers): delegate parts of a job to specialists
+- [Werk](#werk): run a full crew of workers in parallel
+- [Todo](#todo): the project's roadmap of planned features
 
 ### Providers
 
@@ -305,8 +305,8 @@ let handler = Arc::new(|event: Event| match &event.kind {
     EventKind::ToolCallFailed { tool_name, message, .. } => {
         eprintln!("[{}] ✗ {tool_name}: {message}", event.agent_name);
     }
-    EventKind::AgentFinished { turns, outcome } => {
-        eprintln!("[{}] done in {turns} turns ({outcome:?})", event.agent_name);
+    EventKind::AgentFinished { steps, outcome } => {
+        eprintln!("[{}] done in {steps} steps ({outcome:?})", event.agent_name);
     }
     _ => {}
 });
@@ -316,8 +316,8 @@ let handler = Arc::new(|event: Event| match &event.kind {
 |-|------|-------------|
 | **Agent** | `AgentStarted` | Worker clocked in |
 | | `AgentFinished` | Worker clocked out |
-| | `TurnStarted` | Agentic loop turn began |
-| | `TurnFinished` | Agentic loop turn finished |
+| | `StepStarted` | Agentic loop step began |
+| | `StepFinished` | Agentic loop step finished |
 | | `AgentPaused` | Worker on standby, waiting for new orders |
 | | `AgentResumed` | Worker back on the clock |
 | **Provider** | `RequestStarted` | Provider request began |
@@ -328,7 +328,7 @@ let handler = Arc::new(|event: Event| match &event.kind {
 | | `TokensReported` | Provider reported token counts for the last request |
 | **Context** | `OutputTruncated` | Response was cut off at the configured length cap |
 | | `ContextCompacted` | Conversation history was compacted to stay within the model's window |
-| | `PolicyViolated` | A configured policy (`max_turns`, `max_input_tokens`, `max_output_tokens`, `max_contract_retries`) was exceeded |
+| | `PolicyViolated` | A configured policy (`max_steps`, `max_input_tokens`, `max_output_tokens`, `max_contract_retries`) was exceeded |
 | | `ContractMissed` | Structured-output validation failed and the loop is asking the model to retry |
 | **Tool** | `ToolCallStarted` | Tool invocation began |
 | | `ToolCallFinished` | Tool invocation succeeded |
@@ -343,7 +343,7 @@ Working rules cap the agent's run, protecting your company against typical LLM f
 
 | Method | Default | Description |
 |--------|---------|-------------|
-| `Agent::max_turns(...)` | no limit | Stop after N agentic loop iterations |
+| `Agent::max_steps(...)` | no limit | Stop after N agentic loop iterations |
 | `Agent::max_request_tokens(...)` | provider default | Cap output tokens per LLM request |
 | `Agent::max_input_tokens(...)` | no limit | Cap cumulative input tokens across the whole run |
 | `Agent::max_output_tokens(...)` | no limit | Cap cumulative output tokens across the whole run |
@@ -386,7 +386,7 @@ output.statistics.input_tokens   // total input tokens
 output.statistics.output_tokens  // total output tokens
 output.statistics.requests       // number of provider requests
 output.statistics.tool_calls     // number of tool calls
-output.statistics.turns          // number of agent turns
+output.statistics.steps          // number of agent steps
 ```
 
 ### Coworkers
@@ -398,7 +398,7 @@ let researcher_base = Agent::new()
     .model("mistral-medium-2508")
     .role("You are a research assistant.")
     .tool(brave_search_tool())
-    .max_turns(3);
+    .max_steps(3);
 
 let r1 = researcher_base.clone().name("researcher_1");
 let r2 = researcher_base.clone().name("researcher_2");
@@ -425,7 +425,7 @@ The following fields are inherited, shared or owned by the coworkers:
 |---|---|
 | Inherited | `provider`, `model`, `working_dir`, `event_handler`, `interrupt_signal` |
 | Shared | `incoming_work`, `session_store` |
-| Per coworker | `role`, `task`, `behavior`, `context`, `tools`, `contract`, `max_turns`, `max_request_tokens`, `max_input_tokens`, `max_output_tokens`, `max_contract_retries`, `max_request_retries`, `request_retry_delay` |
+| Per coworker | `role`, `task`, `behavior`, `context`, `tools`, `contract`, `max_steps`, `max_request_tokens`, `max_input_tokens`, `max_output_tokens`, `max_contract_retries`, `max_request_retries`, `request_retry_delay` |
 
 ### Werk
 

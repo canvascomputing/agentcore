@@ -22,7 +22,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
              Be concise. Always use the todo_list tool, never simulate results.",
         )
         .tool(TodoListTool::new(tmp.path()))
-        .max_turns(15)
+        .max_steps(15)
         .task(
             "Do the following steps in order:\n\
              1. Create three items: 'Design API', 'Write tests', 'Deploy'\n\

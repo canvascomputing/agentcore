@@ -92,7 +92,7 @@ impl ToolLike for AgentTool {
                     "type": "string",
                     "description": "Override the model used for this spawn."
                 },
-                "max_turns": {
+                "max_steps": {
                     "type": "integer",
                     "description": "Cap the agentic loop for this spawn. Ad-hoc agents default to 10."
                 },
@@ -162,7 +162,7 @@ impl ToolLike for AgentTool {
                 .clone();
 
             // Resolve the base Agent: either a registered sub-agent, or a fresh
-            // ad-hoc one seeded with the default identity and max_turns=10. The
+            // ad-hoc one seeded with the default identity and max_steps=10. The
             // overrides step below applies every LLM-supplied tuning knob to
             // this base, regardless of path.
             let base = match &args.agent {
@@ -178,7 +178,7 @@ impl ToolLike for AgentTool {
                 None => Agent::new()
                     .name(&args.description)
                     .role(DEFAULT_IDENTITY)
-                    .max_turns(10),
+                    .max_steps(10),
             };
 
             let agent = base.apply_overrides(&input).task(&args.task);
@@ -304,8 +304,8 @@ mod tests {
         let work = Arc::new(Work::new());
         let valid_json = r#"{"answer":42}"#;
 
-        // Background spawn means the child's first turn races the parent's
-        // turn 2 for the next mock response. Script both with the same valid
+        // Background spawn means the child's first step races the parent's
+        // step 2 for the next mock response. Script both with the same valid
         // JSON so either interleaving succeeds: the child validates and
         // terminates; the parent (no schema) just returns whatever text it
         // got. The notification still carries the child's JSON.

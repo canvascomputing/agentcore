@@ -149,7 +149,7 @@ pub trait ToolLike: Send + Sync {
     fn input_schema(&self) -> Value;
 
     /// Whether this tool has no side effects. Read-only tools in the same
-    /// turn run concurrently; non-read-only tools run serially. Default: `false`.
+    /// step run concurrently; non-read-only tools run serially. Default: `false`.
     fn is_read_only(&self) -> bool {
         false
     }
@@ -388,7 +388,7 @@ impl Tool {
     }
 
     /// Mark the tool read-only so the loop runs it concurrently with other
-    /// read-only calls in the same turn.
+    /// read-only calls in the same step.
     pub fn read_only(mut self, read_only: bool) -> Self {
         self.read_only = read_only;
         self

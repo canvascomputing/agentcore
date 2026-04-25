@@ -73,7 +73,7 @@ pub(crate) async fn trigger_if_over_threshold(
     (runtime.event_handler)(Event::new(
         spec.name.clone(),
         EventKind::ContextCompacted {
-            turn: state.turns,
+            step: state.steps,
             tokens,
             threshold,
             reason: CompactReason::Proactive,
@@ -88,12 +88,12 @@ pub(crate) async fn trigger_if_over_threshold(
 pub(crate) async fn trigger_reactive(
     runtime: &LoopRuntime,
     spec: &AgentSpec,
-    turn: u32,
+    step: u32,
 ) -> Result<()> {
     (runtime.event_handler)(Event::new(
         spec.name.clone(),
         EventKind::ContextCompacted {
-            turn,
+            step,
             tokens: 0,
             threshold: 0,
             reason: CompactReason::Reactive,

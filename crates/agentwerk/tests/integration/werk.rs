@@ -24,7 +24,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .model(&model)
         .tool(ReadFileTool)
         .contract(output_schema)
-        .max_turns(5);
+        .max_steps(5);
 
     let files = ["Cargo.toml", "README.md", "CLAUDE.md"];
     let agents = files.iter().map(|file| {

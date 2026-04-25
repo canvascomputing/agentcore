@@ -70,7 +70,7 @@ async fn main() {
         .name("pricing_researcher")
         .role(PRICING_RESEARCHER_PROMPT)
         .tool(WebFetchTool)
-        .max_turns(10);
+        .max_steps(10);
 
     let output = match Agent::new()
         .name("pricing_tracker")
@@ -81,7 +81,7 @@ async fn main() {
         .role(ORCHESTRATOR_PROMPT)
         .hire(pricing_researcher)
         .contract(output_schema())
-        .max_turns(10)
+        .max_steps(10)
         .event_handler(Arc::new(|event| log_event(&event)))
         .interrupt_signal(setup_interrupt_signal())
         .task("Gather current model pricing from all supported providers.")

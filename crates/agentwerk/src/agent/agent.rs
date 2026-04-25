@@ -144,8 +144,8 @@ impl Agent {
     }
 
     /// Maximum agentic loop iterations.
-    pub fn max_turns(self, n: u32) -> Self {
-        self.with_spec(|c| c.max_turns = Some(n))
+    pub fn max_steps(self, n: u32) -> Self {
+        self.with_spec(|c| c.max_steps = Some(n))
     }
 
     /// Maximum cumulative input tokens across the run.
@@ -368,8 +368,8 @@ impl Agent {
         if let Some(t) = overrides.get("max_output_tokens").and_then(Value::as_u64) {
             self = self.max_output_tokens(t);
         }
-        if let Some(mt) = overrides.get("max_turns").and_then(Value::as_u64) {
-            self = self.max_turns(mt as u32);
+        if let Some(mt) = overrides.get("max_steps").and_then(Value::as_u64) {
+            self = self.max_steps(mt as u32);
         }
         if let Some(sr) = overrides
             .get("max_contract_retries")
@@ -529,7 +529,7 @@ mod tests {
         handler(Event::new(
             "t",
             EventKind::AgentFinished {
-                turns: 1,
+                steps: 1,
                 outcome: Outcome::Completed,
             },
         ));
@@ -617,15 +617,15 @@ mod tests {
 
     #[tokio::test]
     async fn apply_overrides_applies_json_fields() {
-        let base = Agent::new().name("x").model("original").max_turns(3);
+        let base = Agent::new().name("x").model("original").max_steps(3);
         let applied = base.apply_overrides(&serde_json::json!({
             "model": "overridden",
-            "max_turns": 7,
+            "max_steps": 7,
             "max_request_tokens": 256,
             "max_input_tokens": 4000,
             "max_output_tokens": 5000
         }));
-        assert_eq!(applied.spec.max_turns, Some(7));
+        assert_eq!(applied.spec.max_steps, Some(7));
         assert_eq!(applied.spec.max_request_tokens, Some(256));
         assert_eq!(applied.spec.max_input_tokens, Some(4000));
         assert_eq!(applied.spec.max_output_tokens, Some(5000));

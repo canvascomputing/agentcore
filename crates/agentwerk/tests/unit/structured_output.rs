@@ -4,7 +4,7 @@
 //! the regular run loop:
 //!
 //! ```text
-//!   S0 (instruction) ──turn 1──▶ S1 (model text) ──validate─┐
+//!   S0 (instruction) ──step 1──▶ S1 (model text) ──validate─┐
 //!                                                           │
 //!                                 ┌─── valid ───────────────┘
 //!                                 ▼
@@ -12,23 +12,23 @@
 //!
 //!                                 ┌─── invalid ─────────────┐
 //!                                 ▼                         │
-//!                  S2 (text + validator correction) ──turn 2──▶ S1' ─▶ ...
+//!                  S2 (text + validator correction) ──step 2──▶ S1' ─▶ ...
 //! ```
 //!
-//! The validator only fires at the natural end of turn — no tool calls, not
+//! The validator only fires at the natural end of step — no tool calls, not
 //! truncated, no pending peer messages. Tools, truncation, peer messages,
 //! and idle wait all short-circuit *before* validation, so a schema agent
 //! can interleave tool work freely; only its terminal text reply is parsed.
 //!
 //! Run with `cargo test --test structured_output -- --nocapture` to inspect
-//! the per-turn snapshots.
+//! the per-step snapshots.
 //!
 //! Mirrors the structure of `context_window_events.rs`: a file-level
 //! state-machine thesis, one snapshot test that walks every node, and
 //! focused tests grouped by concern.
 //!
 //! - **Centerpiece** — the snapshot state machine.
-//! - **A. Happy paths** — single-turn valid output, lenient code-fence handling.
+//! - **A. Happy paths** — single-step valid output, lenient code-fence handling.
 //! - **B. Retry / failure** — corrective messages, schema violations, exhaustion.
 //! - **C. Tools and end-conditions** — tools run first, truncation defers, guards skip.
 //! - **D. Sub-agent boundary** — the propagation bug: registered, ad-hoc, and background.
@@ -175,9 +175,9 @@ Validator said: Schema violated at summary: missing required field
 
 #[tokio::test]
 async fn state_machine_advances_invalid_then_valid() {
-    // Two turns:
-    //   turn 1 → INVALID_REPORT_JSON  → schema mismatch → push corrective msg
-    //   turn 2 → VALID_REPORT_JSON    → validates       → terminate
+    // Two steps:
+    //   step 1 → INVALID_REPORT_JSON  → schema mismatch → push corrective msg
+    //   step 2 → VALID_REPORT_JSON    → validates       → terminate
     let provider = MockProvider::new(vec![
         text_response(INVALID_REPORT_JSON),
         text_response(VALID_REPORT_JSON),
@@ -192,7 +192,7 @@ async fn state_machine_advances_invalid_then_valid() {
     assert_eq!(
         harness.provider().requests(),
         2,
-        "two turns: invalid + valid"
+        "two steps: invalid + valid"
     );
     assert_eq!(output.response_raw, VALID_REPORT_JSON);
     assert_eq!(
@@ -205,7 +205,7 @@ async fn state_machine_advances_invalid_then_valid() {
     assert_eq!(state(0), S0_INITIAL);
     assert_eq!(state(1), S1_AFTER_INVALID_REPLY);
 
-    // Loop terminated on turn 2 without a third request. Reconstruct what req[2] would have been
+    // Loop terminated on step 2 without a third request. Reconstruct what req[2] would have been
     // (req[1]'s context plus the final assistant reply) to snapshot the end-to-end state machine.
     let mut terminal_messages = reqs[1].messages.clone();
     terminal_messages.push(Message::Assistant {
@@ -271,7 +271,7 @@ async fn schema_agent_with_user_tools_still_advertises_no_synthetic_tool() {
 }
 
 #[tokio::test]
-async fn valid_json_terminates_in_one_turn() {
+async fn valid_json_terminates_in_one_step() {
     // The whole point of going text-based: a valid reply terminates the loop
     // immediately. No follow-up round-trip.
     let provider = MockProvider::new(vec![text_response(VALID_JSON)]);
@@ -303,7 +303,7 @@ async fn code_fenced_json_accepted_leniently() {
 }
 
 #[tokio::test]
-async fn valid_complex_report_terminates_in_one_turn() {
+async fn valid_complex_report_terminates_in_one_step() {
     // Realistic case: a structured report with nested objects in an array and
     // mixed primitive types. Proves the loop handles non-trivial JSON the same
     // way it handles the toy `{answer:42}` — a single round-trip, with the
@@ -347,7 +347,7 @@ async fn non_json_reply_triggers_retry_with_validator_detail() {
     let output = harness.run_agent(&schema_agent(), "go").await.unwrap();
 
     let req2 = &harness.provider().requests.lock().unwrap()[1];
-    let last_user = last_user_text(req2).expect("expected a user message in turn 2 input");
+    let last_user = last_user_text(req2).expect("expected a user message in step 2 input");
     assert!(
         last_user.contains("did not match the required output schema"),
         "expected the static retry copy in: {last_user}"
@@ -463,14 +463,14 @@ async fn tools_run_first_then_validation_at_natural_end() {
     let harness = TestHarness::new(provider);
     let output = harness.run_agent(&agent, "go").await.unwrap();
 
-    // Tool ran on turn 1; validation on turn 2; total 2 requests.
+    // Tool ran on step 1; validation on step 2; total 2 requests.
     assert_eq!(harness.provider().requests(), 2);
     assert_eq!(output.response, Some(serde_json::json!({"answer": 42})));
 }
 
 #[tokio::test]
 async fn validation_deferred_through_truncation() {
-    // Truncated turns push MAX_TOKENS_CONTINUATION instead of try_finish'ing,
+    // Truncated steps push MAX_TOKENS_CONTINUATION instead of try_finish'ing,
     // so the schema retry counter doesn't move.
     let provider = MockProvider::new(vec![
         truncated_response("partial JSON…"),
@@ -482,7 +482,7 @@ async fn validation_deferred_through_truncation() {
     assert_eq!(harness.provider().requests(), 2);
     assert_eq!(output.response, Some(serde_json::json!({"answer": 42})));
 
-    // Turn 2's input must contain the continuation prompt, not the schema
+    // Step 2's input must contain the continuation prompt, not the schema
     // retry copy — proving the deferral happened.
     let req2 = &harness.provider().requests.lock().unwrap()[1];
     let last_user = last_user_text(req2).unwrap();
@@ -508,20 +508,20 @@ async fn cancel_before_any_reply_skips_validation() {
     use agentwerk::output::Outcome;
     assert_eq!(output.outcome, Outcome::Cancelled);
     assert_eq!(output.response, None);
-    // No request was sent at all (guard fires before the first turn body).
+    // No request was sent at all (guard fires before the first step body).
     assert_eq!(harness.provider().requests(), 0);
 }
 
 #[tokio::test]
-async fn turn_limit_skips_validation() {
-    // Same shape as cancel: guard short-circuits on turn 2 before try_finish
-    // can validate (max_turns(1) means turn=1 is the last iteration; the guard
-    // catches turn=2 at the top of the loop).
+async fn step_limit_skips_validation() {
+    // Same shape as cancel: guard short-circuits on step 2 before try_finish
+    // can validate (max_steps(1) means step=1 is the last iteration; the guard
+    // catches step=2 at the top of the loop).
     let provider = MockProvider::new(vec![
         text_response("not json"),
         text_response("still not json"),
     ]);
-    let agent = schema_agent().max_turns(1);
+    let agent = schema_agent().max_steps(1);
     let harness = TestHarness::new(provider);
     let output = harness.run_agent(&agent, "go").await.unwrap();
 
@@ -551,7 +551,7 @@ async fn sub_agent_with_schema_returns_json_in_tool_result() {
         .hire(child);
 
     let provider = MockProvider::new(vec![
-        // parent turn 1: spawn the registered reviewer
+        // parent step 1: spawn the registered reviewer
         tool_response(
             "agent",
             "sa1",
@@ -561,9 +561,9 @@ async fn sub_agent_with_schema_returns_json_in_tool_result() {
                 "agent": "reviewer"
             }),
         ),
-        // child turn 1: structured report → validates → terminates immediately
+        // child step 1: structured report → validates → terminates immediately
         text_response(VALID_REPORT_JSON),
-        // parent turn 2: wraps up
+        // parent step 2: wraps up
         text_response("done"),
     ]);
 
@@ -571,7 +571,7 @@ async fn sub_agent_with_schema_returns_json_in_tool_result() {
     let output = harness.run_agent(&parent, "go").await.unwrap();
     assert_eq!(output.response_raw, "done");
 
-    // The parent's input on turn 2 must contain a tool_result whose content
+    // The parent's input on step 2 must contain a tool_result whose content
     // is the child's JSON answer byte-for-byte — proving the boundary
     // forwarded the full nested structure without re-formatting.
     let req2 = &harness.provider().requests.lock().unwrap()[2];
@@ -595,7 +595,7 @@ async fn ad_hoc_spawned_agent_declares_schema_via_overrides() {
         .tool(AgentTool);
 
     let provider = MockProvider::new(vec![
-        // parent turn 1: ad-hoc spawn with schema in args
+        // parent step 1: ad-hoc spawn with schema in args
         tool_response(
             "agent",
             "sa1",
@@ -607,11 +607,11 @@ async fn ad_hoc_spawned_agent_declares_schema_via_overrides() {
                 "contract": answer_schema(),
             }),
         ),
-        // child turn 1: invalid → triggers schema retry inside the child
+        // child step 1: invalid → triggers schema retry inside the child
         text_response("just kidding"),
-        // child turn 2: valid → terminates the child
+        // child step 2: valid → terminates the child
         text_response(VALID_JSON),
-        // parent turn 2: wraps up
+        // parent step 2: wraps up
         text_response("done"),
     ]);
 
@@ -694,23 +694,23 @@ async fn output_truncation_emits_event_and_keeps_outcome_completed() {
         .all()
         .iter()
         .filter_map(|e| match &e.kind {
-            EventKind::OutputTruncated { turn } => Some(*turn),
+            EventKind::OutputTruncated { step } => Some(*step),
             _ => None,
         })
         .collect();
     assert_eq!(
         truncated,
         vec![1],
-        "expected one OutputTruncated event on turn 1"
+        "expected one OutputTruncated event on step 1"
     );
 }
 
 #[tokio::test]
-async fn turn_limit_emits_policy_violated_event() {
+async fn step_limit_emits_policy_violated_event() {
     use agentwerk::event::{EventKind, PolicyKind};
 
-    // Turn 1 is truncated so the loop must enter turn 2, where the guard
-    // trips. max_turns(1) means state.turns >= 1 at the top of turn 2.
+    // Step 1 is truncated so the loop must enter step 2, where the guard
+    // trips. max_steps(1) means state.steps >= 1 at the top of step 2.
     let provider = MockProvider::new(vec![
         truncated_response("partial"),
         text_response("unreached"),
@@ -720,7 +720,7 @@ async fn turn_limit_emits_policy_violated_event() {
         .model("mock")
         .role("")
         .behavior("")
-        .max_turns(1);
+        .max_steps(1);
     let harness = TestHarness::new(provider);
     let output = harness.run_agent(&agent, "go").await.unwrap();
 
@@ -733,12 +733,12 @@ async fn turn_limit_emits_policy_violated_event() {
             matches!(
                 e.kind,
                 EventKind::PolicyViolated {
-                    kind: PolicyKind::Turns,
+                    kind: PolicyKind::Steps,
                     ..
                 }
             )
         })
-        .expect("expected PolicyViolated event with PolicyKind::Turns");
+        .expect("expected PolicyViolated event with PolicyKind::Steps");
     let finished_idx = events
         .iter()
         .position(|e| matches!(e.kind, EventKind::AgentFinished { .. }))

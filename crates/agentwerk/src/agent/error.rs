@@ -13,7 +13,7 @@ pub enum AgentError {
     /// prompt, or was externally aborted. `message` is the runtime's
     /// description of the crash (panic payload or abort reason).
     AgentCrashed { message: String },
-    /// A configured policy (`max_turns`, `max_input_tokens`, `max_output_tokens`,
+    /// A configured policy (`max_steps`, `max_input_tokens`, `max_output_tokens`,
     /// `max_contract_retries`) was exceeded and the run terminated. `kind` says
     /// which policy tripped.
     PolicyViolated { kind: PolicyKind, limit: u64 },
@@ -27,7 +27,7 @@ impl fmt::Display for AgentError {
             }
             AgentError::PolicyViolated { kind, limit } => {
                 let label = match kind {
-                    PolicyKind::Turns => "Turn limit reached",
+                    PolicyKind::Steps => "Step limit reached",
                     PolicyKind::InputTokens => "Input token limit reached",
                     PolicyKind::OutputTokens => "Output token limit reached",
                     PolicyKind::ContractMisses => "Contract unmet (retry limit reached)",

@@ -86,10 +86,10 @@ async fn main() {
     };
     match result {
         Ok(o) => eprintln!(
-            "\n{}— {} · {} turns · {} in / {} out{}",
+            "\n{}— {} · {} steps · {} in / {} out{}",
             style.dim,
             outcome_label(&o.outcome),
-            o.statistics.turns,
+            o.statistics.steps,
             o.statistics.input_tokens,
             o.statistics.output_tokens,
             style.reset,

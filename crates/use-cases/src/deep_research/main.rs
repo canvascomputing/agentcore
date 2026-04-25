@@ -28,7 +28,7 @@ async fn main() {
                 .name(format!("researcher_{i}"))
                 .role(RESEARCHER_PROMPT)
                 .tool(brave_search_tool(brave_key.clone()))
-                .max_turns(3)
+                .max_steps(3)
         })
         .collect();
 
@@ -41,7 +41,7 @@ async fn main() {
         .role(REPORT_WRITER_PROMPT)
         .hire_all(researchers)
         .contract(output_schema())
-        .max_turns(10)
+        .max_steps(10)
         .event_handler(Arc::new(|event| log_event(&event)))
         .interrupt_signal(setup_interrupt_signal())
         .task(question)

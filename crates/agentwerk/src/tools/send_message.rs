@@ -1,4 +1,4 @@
-//! Peer-to-peer agent messaging. Routes a message through the shared `Work` so a running sibling agent picks it up at the next turn boundary.
+//! Peer-to-peer agent messaging. Routes a message through the shared `Work` so a running sibling agent picks it up at the next step boundary.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -15,17 +15,17 @@ const NAME: &str = "send_message";
 
 const DESCRIPTION: &str = "\
 Send a message to another named agent in the same run-tree. The recipient \
-picks the message up automatically on its next turn — there is no inbox to poll.
+picks the message up automatically on its next step — there is no inbox to poll.
 
 Use this to coordinate with peers you've spawned or that are running alongside \
 you. The recipient sees your agent name as the sender; you do not pass it.
 
 # When NOT to use
 - To spawn a new agent — use agent instead.
-- To return a result to your caller — just finish your turn normally.";
+- To return a result to your caller — just finish your step normally.";
 
 /// Deliver a message to a peer agent in the same run-tree. Routes through
-/// the shared work inbox and is injected into the recipient's next turn.
+/// the shared work inbox and is injected into the recipient's next step.
 /// If no agent with the given name is running, the message sits in the inbox
 /// indefinitely; the caller is responsible for using a correct name.
 pub struct SendMessageTool;
