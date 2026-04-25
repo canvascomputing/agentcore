@@ -368,7 +368,7 @@ impl TestHarness {
         if let Some(queue) = &self.command_queue {
             prepared = prepared.command_queue(queue.clone());
         }
-        prepared.run().await
+        prepared.work().await
     }
 
     pub fn events(&self) -> &EventCollector {

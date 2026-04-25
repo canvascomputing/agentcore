@@ -5,8 +5,8 @@
 //! interacts with it through two values:
 //!
 //! - [`AgentWorking`] — cheap to clone. Public surface:
-//!   - `send(instruction)` — enqueue a new instruction; picked up at the
-//!     next turn boundary or immediately if the agent is parked idle.
+//!   - `work(instruction)` — hand the agent a new piece of work; picked up
+//!     at the next turn boundary or immediately if the agent is parked idle.
 //!   - `interrupt()` — flip the shared cancel signal.
 //!   - `is_interrupted()` — read that signal.
 //!   - Dropping the last handle auto-interrupts (RAII leak protection).
@@ -54,7 +54,7 @@ async fn output_resolves_with_final_text_after_interrupt() {
 }
 
 #[tokio::test]
-async fn send_injects_an_instruction_into_the_next_turn() {
+async fn work_injects_an_instruction_into_the_next_turn() {
     let events = EventLog::new();
     let (provider, handle, output) = retain_agent(
         vec![text_response("first"), text_response("second")],
@@ -64,7 +64,7 @@ async fn send_injects_an_instruction_into_the_next_turn() {
     events
         .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
         .await;
-    handle.send("follow-up");
+    handle.work("follow-up");
     wait_until(|| provider.requests() >= 2).await;
 
     let second = provider.last_request().expect("second request");
@@ -110,19 +110,19 @@ async fn interrupt_breaks_an_idle_agent_out_of_its_wait() {
 }
 
 #[tokio::test]
-async fn send_and_interrupt_on_a_clone_reach_the_original_task() {
+async fn work_and_interrupt_on_a_clone_reach_the_original_task() {
     let events = EventLog::new();
     let (provider, original, output) = retain_agent(
         vec![text_response("first"), text_response("second")],
         &events,
     );
-    let sender = original.clone();
+    let worker = original.clone();
     let interrupter = original.clone();
 
     events
         .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
         .await;
-    sender.send("via-clone");
+    worker.work("via-clone");
     wait_until(|| provider.requests() >= 2).await;
 
     let second = provider.last_request().expect("second request");
@@ -131,7 +131,7 @@ async fn send_and_interrupt_on_a_clone_reach_the_original_task() {
     assert!(!original.is_interrupted());
     interrupter.interrupt();
     assert!(
-        original.is_interrupted() && sender.is_interrupted(),
+        original.is_interrupted() && worker.is_interrupted(),
         "interrupt from one clone must be visible from every clone",
     );
 

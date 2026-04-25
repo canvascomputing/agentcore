@@ -74,7 +74,7 @@ async fn orchestrator_sends_message_to_backgrounded_worker(
         .cancel_signal(cancel.clone())
         .max_turns(6)
         .event_handler(event_handler)
-        .run()
+        .work()
         .await?;
 
     common::print_result(&output);

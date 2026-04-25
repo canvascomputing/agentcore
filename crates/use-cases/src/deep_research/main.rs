@@ -45,7 +45,7 @@ async fn main() {
         .instruction(question)
         .event_handler(Arc::new(|event| log_event(&event)))
         .cancel_signal(setup_cancel_signal())
-        .run()
+        .work()
         .await
     {
         Ok(output) => output,

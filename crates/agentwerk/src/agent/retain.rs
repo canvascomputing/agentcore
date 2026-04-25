@@ -41,9 +41,9 @@ pub struct AgentWorking {
 }
 
 impl AgentWorking {
-    /// Deliver a new instruction to the running agent. Picked up at the next
+    /// Hand the running agent a new piece of work. Picked up at the next
     /// turn boundary, or immediately if the agent is parked idle.
-    pub fn send(&self, instruction: impl Into<String>) {
+    pub fn work(&self, instruction: impl Into<String>) {
         self.queue.enqueue(QueuedCommand {
             content: instruction.into(),
             priority: QueuePriority::Next,
@@ -107,7 +107,7 @@ impl Agent {
     /// The loop idles after each terminal output as long as any handle is
     /// alive. Dropping the last handle calls [`AgentWorking::interrupt`] for you
     /// (RAII safety); an explicit `.interrupt()` does the same thing. For a
-    /// pure one-shot run without a handle, use [`Agent::run`] instead: a
+    /// pure one-shot run without a handle, use [`Agent::work`] instead: a
     /// `let (_, out) = agent.retain(); out.await?` pattern will interrupt
     /// before the first turn completes.
     ///
@@ -125,7 +125,7 @@ impl Agent {
             .command_queue(queue.clone())
             .keep_alive();
 
-        let join = tokio::spawn(async move { prepared.run().await });
+        let join = tokio::spawn(async move { prepared.work().await });
 
         (
             AgentWorking {
@@ -175,9 +175,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_enqueues_user_input_command() {
+    async fn work_enqueues_user_input_command() {
         let (handle, output) = one_shot_agent("done");
-        handle.send("hi");
+        handle.work("hi");
         let cmd = handle
             .queue
             .dequeue_if(Some("anyone"), |_| true)
@@ -191,7 +191,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_reaches_next_provider_request() {
+    async fn work_reaches_next_provider_request() {
         let events = EventLog::new();
         let (provider, handle, output) = keep_alive_agent_with_provider(
             vec![text_response("first"), text_response("second")],
@@ -201,7 +201,7 @@ mod tests {
         events
             .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
             .await;
-        handle.send("follow-up");
+        handle.work("follow-up");
         wait_until(|| provider.requests() >= 2).await;
 
         let second = provider.last_request().expect("second request");
@@ -223,7 +223,7 @@ mod tests {
     async fn clone_shares_queue() {
         let (handle, output) = one_shot_agent("done");
         let other = handle.clone();
-        other.send("relay");
+        other.work("relay");
         let cmd = handle
             .queue
             .dequeue_if(Some("anyone"), |_| true)
@@ -332,7 +332,7 @@ mod tests {
         events
             .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
             .await;
-        handle.send("wake up");
+        handle.work("wake up");
         wait_until(|| provider.requests() >= 2).await;
         events
             .wait_for(|e| matches!(e.kind, EventKind::AgentResumed))

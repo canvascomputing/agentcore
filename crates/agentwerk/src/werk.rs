@@ -166,7 +166,7 @@ async fn dispatch(
                 };
                 let worker = worker.cancel_signal(cancel.clone());
                 in_flight.push(tokio::spawn(async move {
-                    (index, worker.run().await)
+                    (index, worker.work().await)
                 }));
             }
             else => return,

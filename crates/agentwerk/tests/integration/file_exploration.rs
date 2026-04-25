@@ -16,7 +16,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .tool(ReadFileTool)
         .tool(GlobTool)
         .max_turns(10)
-        .run()
+        .work()
         .await?;
 
     common::print_result(&output);

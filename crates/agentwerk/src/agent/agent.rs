@@ -38,7 +38,7 @@ use super::spec::AgentSpec;
 ///     .model_name("claude-sonnet-4-20250514")
 ///     .role("You are a helpful assistant.");
 ///
-/// let first = agent.clone().instruction("Greet me.").run().await.unwrap();
+/// let first = agent.clone().instruction("Greet me.").work().await.unwrap();
 /// assert_eq!(first.response_raw, "Hello!");
 /// # });
 /// ```
@@ -321,7 +321,7 @@ impl Agent {
     ///
     /// Requires `.provider()` (or [`Agent::provider_from_env`]), `.model_name()`
     /// (or [`Agent::model_from_env`]), and `.instruction()`.
-    pub async fn run(&self) -> Result<Output> {
+    pub async fn work(&self) -> Result<Output> {
         let (spec, runtime) = self.compile(None);
         let runtime = Arc::new(runtime);
         let instruction = self.interpolate(&self.instruction);
@@ -330,8 +330,8 @@ impl Agent {
         run_loop(runtime, spec, state).await
     }
 
-    /// Run as a child under a parent's run-tree. `parent_spec` supplies the model fallback.
-    pub(crate) async fn run_child(
+    /// Work as a child under a parent's run-tree. `parent_spec` supplies the model fallback.
+    pub(crate) async fn work_child(
         &self,
         parent_spec: &AgentSpec,
         parent_runtime: &LoopRuntime,
@@ -391,7 +391,7 @@ impl Agent {
             (Some(m), _) => m.clone(),
             (None, Some((parent_spec, _))) => parent_spec.model().clone(),
             (None, None) => panic!(
-                "Agent::run() requires .model() / .model_name() on root agents (sub-agents inherit)"
+                "Agent::work() requires .model() / .model_name() on root agents (sub-agents inherit)"
             ),
         };
 
@@ -409,7 +409,7 @@ impl Agent {
     /// Build the root `LoopRuntime`. Requires `self.provider` to be set.
     fn build_runtime(&self, spec: &AgentSpec) -> LoopRuntime {
         let provider = self.provider.clone().unwrap_or_else(|| {
-            panic!("Agent::run() requires .provider() (or .provider_from_env()) on root agents")
+            panic!("Agent::work() requires .provider() (or .provider_from_env()) on root agents")
         });
 
         let working_dir = self
@@ -602,12 +602,12 @@ mod tests {
 
     #[tokio::test]
     #[should_panic(expected = ".provider()")]
-    async fn missing_provider_panics_on_run() {
+    async fn missing_provider_panics_on_work() {
         let agent = Agent::new()
             .name("test")
             .model_name("mock")
             .role("x")
             .instruction("do");
-        let _ = agent.run().await;
+        let _ = agent.work().await;
     }
 }

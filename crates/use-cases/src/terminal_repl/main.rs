@@ -76,7 +76,7 @@ async fn main() {
             break;
         }
         announce_assistant(&style);
-        running.send(line);
+        running.work(line);
     }
 
     running.interrupt();

@@ -848,7 +848,7 @@ mod tests {
             .model_name("mock")
             .role("x")
             .instruction("do");
-        let _ = agent.run().await;
+        let _ = agent.work().await;
     }
 
     #[allow(dead_code)]
@@ -1850,7 +1850,7 @@ mod retry_and_events_tests {
             .event_handler(handler)
             .instruction("go");
 
-        let run_fut = agent.run();
+        let run_fut = agent.work();
         let check_fut = async {
             for _ in 0..20 {
                 tokio::task::yield_now().await;
@@ -1927,7 +1927,7 @@ mod retry_and_events_tests {
                 .count()
         };
 
-        let run_fut = agent.run();
+        let run_fut = agent.work();
         let check_fut = async {
             drain().await;
             assert_eq!(retries(), 0, "T=0: no retries yet");
@@ -2000,7 +2000,7 @@ mod retry_and_events_tests {
         };
 
         let start = std::time::Instant::now();
-        let (run_result, _) = tokio::join!(agent.run(), cancel_setter);
+        let (run_result, _) = tokio::join!(agent.work(), cancel_setter);
         let elapsed = start.elapsed();
 
         let output = run_result.unwrap();
@@ -2036,7 +2036,7 @@ mod retry_and_events_tests {
             .event_handler(handler)
             .instruction("go");
 
-        let output = agent.run().await.unwrap();
+        let output = agent.work().await.unwrap();
         assert_eq!(output.outcome, Outcome::Failed);
 
         let events = collected.lock().unwrap().clone();

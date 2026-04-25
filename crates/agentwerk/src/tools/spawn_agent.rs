@@ -189,7 +189,7 @@ impl ToolLike for SpawnAgentTool {
                 let agent_id = id.clone();
                 let caller_for_child = caller.clone();
                 tokio::spawn(async move {
-                    let summary = match agent.run_child(&caller_for_child, &runtime).await {
+                    let summary = match agent.work_child(&caller_for_child, &runtime).await {
                         Ok(o) => o.response_raw,
                         Err(e) => format!("Failed: {e}"),
                     };
@@ -202,7 +202,7 @@ impl ToolLike for SpawnAgentTool {
                     args.description
                 )))
             } else {
-                match agent.run_child(&caller, &runtime).await {
+                match agent.work_child(&caller, &runtime).await {
                     Ok(o) => Ok(ToolResult::success(o.response_raw)),
                     Err(e) => Ok(ToolResult::error(format!("Agent error: {e}"))),
                 }

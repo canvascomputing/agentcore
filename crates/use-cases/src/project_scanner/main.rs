@@ -111,7 +111,7 @@ async fn main() {
             }
             _ => {}
         }))
-        .run()
+        .work()
         .await;
 
     let files: Vec<String> = match discovery {

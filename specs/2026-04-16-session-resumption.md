@@ -76,7 +76,7 @@ AgentBuilder::new()
     .session_dir(PathBuf::from("./data"))
     .resume_session("session_abc123")           // ← new
     .instruction("Continue where we left off.")
-    .run()
+    .work()
     .await?;
 ```
 

@@ -45,7 +45,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .tool(wc)
         .output_schema(output_schema)
         .max_turns(10)
-        .run()
+        .work()
         .await?;
 
     common::print_result(&output);

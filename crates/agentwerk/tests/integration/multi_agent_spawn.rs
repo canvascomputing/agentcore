@@ -45,7 +45,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .sub_agents([researcher])
         .max_turns(10)
         .event_handler(event_handler)
-        .run()
+        .work()
         .await?;
 
     common::print_result(&output);

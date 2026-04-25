@@ -34,7 +34,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
         )
         .tool(TaskTool::new(tmp.path()))
         .max_turns(15)
-        .run()
+        .work()
         .await?;
 
     common::print_result(&output);

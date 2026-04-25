@@ -63,7 +63,7 @@ pub enum ToolChoice {
 ///     .model_from_env()
 ///     .unwrap()
 ///     .instruction("Summarize the project.")
-///     .run()
+///     .work()
 ///     .await
 ///     .unwrap();
 ///

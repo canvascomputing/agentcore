@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .model_name("mistral-large-2512")
         .instruction("Find all Rust source files.")
         .tool(GlobTool)
-        .run()
+        .work()
         .await?;
 
     println!("{}", output.response_raw);
@@ -108,7 +108,7 @@ let output = Agent::new()
     .provider_from_env()?
     .model_name("mistral-small-2603")
     .instruction("...")
-    .run().await?;
+    .work().await?;
 ```
 
 ### Agents
@@ -121,11 +121,11 @@ let output = Agent::new()
     .model_name("claude-sonnet-4-20250514")
     .instruction("Summarize src/main.rs")
     .tool(ReadFileTool)
-    .run() // start agent and wait for the results
+    .work() // start agent and wait for the results
     .await?;
 ```
 
-#### Keep Agents Alive
+#### Retain Agents
 
 Use `retain` when you want to keep sending instructions to your agent:
 
@@ -137,17 +137,17 @@ let (agent, output) = Agent::new()
     .tool(ReadFileTool)
     .retain(); // start the agent and send more instructions later
 
-agent.send("What does src/main.rs do?");
-agent.send("Now summarize src/lib.rs.");
+agent.work("What does src/main.rs do?");
+agent.work("Now summarize src/lib.rs.");
 
 agent.interrupt(); // stop the agent when there are no more instructions to send
 ```
 
-The agent waits for the next `send` after each reply. Call `interrupt()` to stop it.
+The agent waits for the next `work` call after each reply. Call `interrupt()` to stop it.
 
 | Method | Description |
 |--------|-------------|
-| `AgentWorking::send(...)` | Send a instruction |
+| `AgentWorking::work(...)` | Hand the agent a new piece of work |
 | `AgentWorking::interrupt()` | Stop the agent |
 | `AgentWorking::is_interrupted()` | Check if the agent was interrupted |
 | `AgentWorking::clone()` | Get another handle to the same agent |
@@ -184,7 +184,7 @@ let output = Agent::new()
     .role("You are a helpful assistant.")
     .instruction("What does src/main.rs do?")
     .tool(ReadFileTool)
-    .run()
+    .work()
     .await?;
 ```
 
@@ -281,7 +281,7 @@ let agent = Agent::new()
     .tool(SendMessageTool)
     .tool(TaskTool::new(Path::new("/tmp/tasks")))
     .tool(ToolSearchTool)
-    .run().await?;
+    .work().await?;
 ```
 
 ### Events
@@ -348,7 +348,7 @@ For protecting your budget or data, you can define clear execution rules for typ
 ### Output
 
 ```rust
-let output = agent.run().await?;
+let output = agent.work().await?;
 println!("{}", output.response_raw);
 ```
 
@@ -357,7 +357,7 @@ You can enforce validation of your response with an output schema:
 ```rust
 let output = Agent::new()
     .output_schema(json!({ "type": "object", "properties": { "category": { "type": "string" } } }))
-    .run().await?;
+    .work().await?;
 
 println!("{}", output.response.unwrap()["category"]);
 ```
@@ -400,7 +400,7 @@ let output = Agent::new()
     .role("You are a research orchestrator.")
     .sub_agents([r1, r2])
     .instruction("Research the economic impact of quantum computing.")
-    .run()
+    .work()
     .await?;
 ```
 

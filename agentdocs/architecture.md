@@ -36,7 +36,7 @@ The invariants that shape how code fits together. Layout says where code lives; 
 - `Agent::compile(Some(parent))` fills the child's `model: None` with the parent's resolved model and reuses the parent's externals.
 - Child per-run fields (cancel signal, event handler, working directory) override the inherited values when set.
 - Tools and sub-agents are not inherited: each `AgentSpec` declares its own registry.
-- `SpawnAgentTool` is the only path that calls `Agent::run_child`; the public API never exposes the parent slot.
+- `SpawnAgentTool` is the only path that calls `Agent::work_child`; the public API never exposes the parent slot.
 
 ## One error at the crate boundary
 

@@ -2,7 +2,7 @@
 //! function-call-shaped units.
 //!
 //! [`Agent`] is the entry point. Build with `Agent::new()`, chain
-//! configurations, then call `.run()`. The same agent can be cloned and run
+//! configurations, then call `.work()`. The same agent can be cloned and run
 //! again with a new instruction: the static template (tools, sub-agents,
 //! behavior prompts) is shared, the per-run fields are not.
 //!
@@ -20,7 +20,7 @@
 //!     .provider(provider)
 //!     .model_name("claude-sonnet-4-20250514")
 //!     .instruction("Find all Rust source files.")
-//!     .run()
+//!     .work()
 //!     .await
 //!     .unwrap();
 //!
@@ -43,7 +43,7 @@
 //!
 //! - Every fallible call returns [`Result`] (alias for `Result<T, Error>`).
 //! - The loop emits [`Event`]s; observers, not hooks.
-//! - Agents are cheap to clone and may be `.run()` again.
+//! - Agents are cheap to clone and may be `.work()` again.
 
 pub mod agent;
 pub mod error;

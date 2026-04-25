@@ -42,8 +42,8 @@ pub enum ToolFailureKind {
 /// Observation emitted during an agent run.
 ///
 /// Events are an out-of-band observation channel, distinct from the
-/// [`Output`](crate::Output) returned by `.run()`. Observers (loggers, UIs,
-/// tracers) receive the event stream; the caller of `.run()` receives the
+/// [`Output`](crate::Output) returned by `.work()`. Observers (loggers, UIs,
+/// tracers) receive the event stream; the caller of `.work()` receives the
 /// final result.
 ///
 /// Terminal-path invariants (verified in the loop):
@@ -51,7 +51,7 @@ pub enum ToolFailureKind {
 ///   with `Outcome::Completed`, `Cancelled`, or `Failed`. Its `outcome` field
 ///   matches `output.outcome`. This holds even after `RequestFailed`: the loop
 ///   folds the failure into `Outcome::Failed` and emits `AgentFinished` last.
-/// - `.run()` returns `Err(...)` only for pre-flight failures (missing
+/// - `.work()` returns `Err(...)` only for pre-flight failures (missing
 ///   provider, unreadable prompt file, model not set); those never emit
 ///   `AgentFinished` because the loop never started.
 /// - `ToolCallFailed` is never terminal for the run: more events follow as

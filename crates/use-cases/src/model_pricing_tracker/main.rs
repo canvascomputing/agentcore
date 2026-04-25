@@ -85,7 +85,7 @@ async fn main() {
         .instruction("Gather current model pricing from all supported providers.")
         .event_handler(Arc::new(|event| log_event(&event)))
         .cancel_signal(setup_cancel_signal())
-        .run()
+        .work()
         .await
     {
         Ok(out) => out,
