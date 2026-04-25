@@ -83,7 +83,7 @@ async fn main() {
         .schema(output_schema())
         .max_turns(10)
         .event_handler(Arc::new(|event| log_event(&event)))
-        .cancel_signal(setup_cancel_signal())
+        .interrupt_signal(setup_interrupt_signal())
         .task("Gather current model pricing from all supported providers.")
         .await
     {
@@ -173,7 +173,7 @@ fn parse_args() -> String {
     "pricing.json".into()
 }
 
-fn setup_cancel_signal() -> Arc<AtomicBool> {
+fn setup_interrupt_signal() -> Arc<AtomicBool> {
     let signal = Arc::new(AtomicBool::new(false));
     let handle = signal.clone();
     tokio::spawn(async move {

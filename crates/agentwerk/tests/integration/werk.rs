@@ -35,7 +35,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
             .task(format!("Read and summarize: {file}"))
     });
 
-    let results = Werk::new().lines(2).hire_all(agents).produce().await;
+    let results = Werk::new().lines(2).hire_and_fire(agents).await;
 
     assert_eq!(results.len(), files.len());
     for result in &results {

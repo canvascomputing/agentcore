@@ -87,7 +87,7 @@ async fn main() {
         .schema(discovery_schema())
         .template("dir_path", json!(config.dir.display().to_string()))
         .working_dir(config.dir.clone())
-        .cancel_signal(cancel.clone())
+        .interrupt_signal(cancel.clone())
         .max_turns(20)
         .event_handler(Arc::new(|event| match &event.kind {
             EventKind::ToolCallStarted {
@@ -175,9 +175,8 @@ async fn main() {
 
     let results = Werk::new()
         .lines(config.batch_size)
-        .cancel_signal(cancel.clone())
-        .hire_all(agents)
-        .produce()
+        .interrupt_signal(cancel.clone())
+        .hire_and_fire(agents)
         .await;
 
     // Phase 3: Aggregate — `results` is in hire order, so indices align with `files`.

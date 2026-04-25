@@ -34,7 +34,7 @@ use super::spec::AgentSpec;
 pub(crate) struct LoopRuntime {
     pub provider: Arc<dyn Provider>,
     pub event_handler: Arc<dyn Fn(Event) + Send + Sync>,
-    pub cancel_signal: Arc<AtomicBool>,
+    pub interrupt_signal: Arc<AtomicBool>,
     pub working_dir: PathBuf,
     pub default_context: String,
     pub command_queue: Option<Arc<CommandQueue>>,
@@ -109,7 +109,7 @@ pub(crate) fn run_loop(
 
         let outcome = 'run: loop {
             // Guards: cancel, turn limit, token budgets
-            if runtime.cancel_signal.load(Ordering::Relaxed) {
+            if runtime.interrupt_signal.load(Ordering::Relaxed) {
                 break 'run Outcome::Cancelled;
             }
             if let Some(limit) = spec.max_turns {
@@ -184,7 +184,7 @@ pub(crate) fn run_loop(
 
                 let call = tokio::select! {
                     biased;
-                    _ = wait_for_cancel(&runtime.cancel_signal) => None,
+                    _ = wait_for_cancel(&runtime.interrupt_signal) => None,
                     r = runtime.provider.respond(request, on_event) => Some(r.map_err(Error::from)),
                 };
 
@@ -208,7 +208,7 @@ pub(crate) fn run_loop(
                     }
                     Some(Err(e)) if e.is_retryable() && attempt < retry.max_attempts() => {
                         let delay = retry.delay(attempt, e.retry_delay());
-                        if !cancellable_sleep(delay, &runtime.cancel_signal).await {
+                        if !cancellable_sleep(delay, &runtime.interrupt_signal).await {
                             state.errors.push(e);
                             break 'run Outcome::Cancelled;
                         }
@@ -229,7 +229,7 @@ pub(crate) fn run_loop(
                         // Cancellation mid-flight surfaces as `None` above, not an
                         // error here — the signal check guards the rare race
                         // where the request itself errors out as cancel propagates.
-                        if runtime.cancel_signal.load(Ordering::Relaxed) {
+                        if runtime.interrupt_signal.load(Ordering::Relaxed) {
                             break 'run Outcome::Cancelled;
                         }
                         let kind = match &e {
@@ -374,7 +374,7 @@ pub(crate) fn run_loop(
                 emit(EventKind::AgentPaused);
                 const POLL_INTERVAL: Duration = Duration::from_millis(100);
                 let woken = loop {
-                    if runtime.cancel_signal.load(Ordering::Relaxed) {
+                    if runtime.interrupt_signal.load(Ordering::Relaxed) {
                         break false;
                     }
                     let before = state.messages.len();
@@ -856,7 +856,7 @@ mod tests {
         LoopRuntime {
             provider: Arc::new(MockProvider::text("ok")),
             event_handler: Arc::new(|_| {}),
-            cancel_signal: Arc::new(AtomicBool::new(false)),
+            interrupt_signal: Arc::new(AtomicBool::new(false)),
             working_dir: PathBuf::from("/tmp"),
             command_queue: None,
             session_store: None,
@@ -1184,7 +1184,7 @@ mod tests {
     async fn wake_on_peer_message_targeted_at_me() {
         let (harness, queue) = listener_harness(two_text_responses());
         enqueue_after(&queue, 120, peer_msg(Some(AGENT_NAME), "peer", "hi"));
-        cancel_after(harness.cancel_signal_for_test(), 400);
+        cancel_after(harness.interrupt_signal_for_test(), 400);
 
         let agent = simple_agent().keep_alive();
         let output = harness.run_agent(&agent, "hi").await.unwrap();
@@ -1199,7 +1199,7 @@ mod tests {
     async fn wake_on_task_notification_broadcast() {
         let (harness, queue) = listener_harness(two_text_responses());
         enqueue_after(&queue, 120, task_notification(None, "Task foo completed"));
-        cancel_after(harness.cancel_signal_for_test(), 400);
+        cancel_after(harness.interrupt_signal_for_test(), 400);
 
         let agent = simple_agent().keep_alive();
         let output = harness.run_agent(&agent, "hi").await.unwrap();
@@ -1214,7 +1214,7 @@ mod tests {
     async fn wake_on_user_input_targeted_at_me() {
         let (harness, queue) = listener_harness(two_text_responses());
         enqueue_after(&queue, 120, user_input(Some(AGENT_NAME), "hello"));
-        cancel_after(harness.cancel_signal_for_test(), 400);
+        cancel_after(harness.interrupt_signal_for_test(), 400);
 
         let agent = simple_agent().keep_alive();
         let output = harness.run_agent(&agent, "hi").await.unwrap();
@@ -1229,7 +1229,7 @@ mod tests {
     async fn wake_on_user_input_broadcast() {
         let (harness, queue) = listener_harness(two_text_responses());
         enqueue_after(&queue, 120, user_input(None, "anyone?"));
-        cancel_after(harness.cancel_signal_for_test(), 400);
+        cancel_after(harness.interrupt_signal_for_test(), 400);
 
         let agent = simple_agent().keep_alive();
         let output = harness.run_agent(&agent, "hi").await.unwrap();
@@ -1254,7 +1254,7 @@ mod tests {
     async fn cancel_interrupts_keep_alive() {
         let (harness, _queue) = listener_harness(Arc::new(MockProvider::text("done")));
 
-        let cancel = harness.cancel_signal_for_test();
+        let cancel = harness.interrupt_signal_for_test();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
             cancel.store(true, Ordering::Relaxed);
@@ -1279,7 +1279,7 @@ mod tests {
     async fn idle_and_resumed_events_fire_in_order() {
         let (harness, queue) = listener_harness(two_text_responses());
         enqueue_after(&queue, 120, peer_msg(Some(AGENT_NAME), "peer", "hi"));
-        cancel_after(harness.cancel_signal_for_test(), 400);
+        cancel_after(harness.interrupt_signal_for_test(), 400);
 
         let agent = simple_agent().keep_alive();
         let _ = harness.run_agent(&agent, "hi").await.unwrap();
@@ -1328,7 +1328,7 @@ mod tests {
         queue.enqueue(peer_msg(Some(AGENT_NAME), "alice", "first"));
         queue.enqueue(peer_msg(Some(AGENT_NAME), "bob", "second"));
 
-        cancel_after(harness.cancel_signal_for_test(), 300);
+        cancel_after(harness.interrupt_signal_for_test(), 300);
 
         let agent = simple_agent().keep_alive();
         let output = harness.run_agent(&agent, "hi").await.unwrap();
@@ -1347,7 +1347,7 @@ mod tests {
             .model_name("mock")
             .provider(Arc::new(MockProvider::text("x")))
             .task("")
-            .cancel_signal(cancel.clone())
+            .interrupt_signal(cancel.clone())
             .command_queue(queue.clone());
 
         let (_spec, rt) = agent.compile(None);
@@ -1357,7 +1357,7 @@ mod tests {
             "LoopRuntime should reuse the externally supplied queue"
         );
         assert!(
-            Arc::ptr_eq(&rt.cancel_signal, &cancel),
+            Arc::ptr_eq(&rt.interrupt_signal, &cancel),
             "LoopRuntime should reuse the externally supplied cancel signal"
         );
     }
@@ -1988,7 +1988,7 @@ mod retry_and_events_tests {
             .role("")
             .max_request_retries(4)
             .request_retry_delay(Duration::from_millis(30_000))
-            .cancel_signal(cancel.clone())
+            .interrupt_signal(cancel.clone())
             .task("go");
 
         let cancel_setter = {

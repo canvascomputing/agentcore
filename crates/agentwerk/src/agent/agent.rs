@@ -52,7 +52,7 @@ pub struct Agent {
     pub(crate) templates: HashMap<String, Value>,
     pub(crate) working_dir: Option<PathBuf>,
     pub(crate) event_handler: Option<Arc<dyn Fn(Event) + Send + Sync>>,
-    pub(crate) cancel_signal: Option<Arc<AtomicBool>>,
+    pub(crate) interrupt_signal: Option<Arc<AtomicBool>>,
     pub(crate) command_queue: Option<Arc<CommandQueue>>,
     pub(crate) session_dir: Option<PathBuf>,
 }
@@ -65,7 +65,7 @@ impl Default for Agent {
             task: String::new(),
             event_handler: None,
             command_queue: None,
-            cancel_signal: None,
+            interrupt_signal: None,
             working_dir: None,
             session_dir: None,
             templates: HashMap::new(),
@@ -193,7 +193,7 @@ impl Agent {
         self.with_spec(|c| c.request_retry_delay = delay)
     }
 
-    /// Park the agent idle after a terminal output until a peer message arrives or `cancel_signal` fires.
+    /// Park the agent idle after a terminal output until a peer message arrives or `interrupt_signal` fires.
     ///
     /// [`Agent::retain`] sets this implicitly. Call it only on a sub-agent template
     /// that should idle in the background after the orchestrator spawns it.
@@ -304,8 +304,8 @@ impl Agent {
     }
 
     /// Share a cancel flag. Setting it to `true` stops the loop at the next safe point.
-    pub fn cancel_signal(mut self, s: Arc<AtomicBool>) -> Self {
-        self.cancel_signal = Some(s);
+    pub fn interrupt_signal(mut self, s: Arc<AtomicBool>) -> Self {
+        self.interrupt_signal = Some(s);
         self
     }
 
@@ -430,8 +430,8 @@ impl Agent {
         let event_handler: Arc<dyn Fn(Event) + Send + Sync> =
             self.event_handler.clone().unwrap_or_else(default_logger);
 
-        let cancel_signal = self
-            .cancel_signal
+        let interrupt_signal = self
+            .interrupt_signal
             .clone()
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
 
@@ -453,7 +453,7 @@ impl Agent {
         LoopRuntime {
             provider,
             event_handler,
-            cancel_signal,
+            interrupt_signal,
             working_dir,
             command_queue,
             session_store,
@@ -474,10 +474,10 @@ impl Agent {
                 .event_handler
                 .clone()
                 .unwrap_or_else(|| parent.event_handler.clone()),
-            cancel_signal: self
-                .cancel_signal
+            interrupt_signal: self
+                .interrupt_signal
                 .clone()
-                .unwrap_or_else(|| parent.cancel_signal.clone()),
+                .unwrap_or_else(|| parent.interrupt_signal.clone()),
             working_dir: self
                 .working_dir
                 .clone()

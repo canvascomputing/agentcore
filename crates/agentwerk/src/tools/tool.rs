@@ -27,7 +27,7 @@ pub struct ToolContext {
     pub(crate) tool_registry: Option<Arc<ToolRegistry>>,
     pub(crate) runtime: Option<Arc<LoopRuntime>>,
     pub(crate) caller_spec: Option<Arc<AgentSpec>>,
-    pub(crate) cancel_signal: Arc<AtomicBool>,
+    pub(crate) interrupt_signal: Arc<AtomicBool>,
 }
 
 impl ToolContext {
@@ -40,7 +40,7 @@ impl ToolContext {
             tool_registry: None,
             runtime: None,
             caller_spec: None,
-            cancel_signal: Arc::new(AtomicBool::new(false)),
+            interrupt_signal: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -50,7 +50,7 @@ impl ToolContext {
     }
 
     pub(crate) fn runtime(mut self, runtime: Arc<LoopRuntime>) -> Self {
-        self.cancel_signal = runtime.cancel_signal.clone();
+        self.interrupt_signal = runtime.interrupt_signal.clone();
         self.runtime = Some(runtime);
         self
     }
@@ -66,7 +66,7 @@ impl ToolContext {
     /// kills. When the context is not attached to a running loop, the future
     /// stays pending forever and the `select!` degrades to a plain await.
     pub async fn wait_for_cancel(&self) {
-        crate::util::wait_for_cancel(&self.cancel_signal).await;
+        crate::util::wait_for_cancel(&self.interrupt_signal).await;
     }
 
     pub(crate) fn mark_tool_discovered(&self, name: &str) {

@@ -80,7 +80,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_interrupts_long_running_subprocess() {
         let ctx = ToolContext::new(std::env::current_dir().unwrap());
-        let flag = ctx.cancel_signal.clone();
+        let flag = ctx.interrupt_signal.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(100)).await;
             flag.store(true, Ordering::Relaxed);

@@ -310,7 +310,7 @@ pub struct TestHarness {
     events: EventCollector,
     templates: HashMap<String, serde_json::Value>,
     working_dir: PathBuf,
-    cancel_signal: Arc<AtomicBool>,
+    interrupt_signal: Arc<AtomicBool>,
     // Only read from the cfg(test) branch in `run_agent` — in non-test builds
     // the field is always None and the reader is compiled out.
     #[allow(dead_code)]
@@ -328,7 +328,7 @@ impl TestHarness {
             events: EventCollector::new(),
             templates: HashMap::new(),
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-            cancel_signal: Arc::new(AtomicBool::new(false)),
+            interrupt_signal: Arc::new(AtomicBool::new(false)),
             command_queue: None,
         }
     }
@@ -358,7 +358,7 @@ impl TestHarness {
             .task(input)
             .working_dir(self.working_dir.clone())
             .event_handler(self.events.callback())
-            .cancel_signal(self.cancel_signal.clone());
+            .interrupt_signal(self.interrupt_signal.clone());
         for (k, v) in &self.templates {
             prepared = prepared.template(k.clone(), v.clone());
         }
@@ -380,14 +380,14 @@ impl TestHarness {
     }
 
     pub fn cancel(&self) {
-        self.cancel_signal
+        self.interrupt_signal
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Clone of the cancel signal — useful when a test needs to flip it from
     /// a spawned task while the harness is blocked on `run_agent`.
     #[cfg(test)]
-    pub(crate) fn cancel_signal_for_test(&self) -> Arc<AtomicBool> {
-        self.cancel_signal.clone()
+    pub(crate) fn interrupt_signal_for_test(&self) -> Arc<AtomicBool> {
+        self.interrupt_signal.clone()
     }
 }

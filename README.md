@@ -75,8 +75,8 @@ make use_case name=<name>    # run one
 - [Events](#events): agent and provider activity
 - [Policies](#policies): retries, token caps, and turn limits
 - [Output](#output): validated, schema-based responses
-- [Sub-agents](#sub-agents): nested workers
-- [Werke](#werke): parallel execution
+- [Coworkers](#coworkers): agents hire crew
+- [Werk](#werk): parallel execution
 - [Todo](#todo): planned work
 
 ### Providers
@@ -123,34 +123,6 @@ let output = Agent::new()
     .await?;
 ```
 
-#### Retain Agents
-
-Use `retain` when you want to keep sending instructions to your agent:
-
-```rust
-let (agent, output) = Agent::new()
-    .provider(provider)
-    .model_name("claude-sonnet-4-20250514")
-    .role("You are a codebase Q&A assistant.")
-    .tool(ReadFileTool)
-    .retain(); // start the agent and send more instructions later
-
-agent.task("What does src/main.rs do?");
-agent.task("Now summarize src/lib.rs.");
-
-agent.interrupt(); // stop the agent when there are no more instructions to send
-```
-
-The agent waits for the next `task` call after each reply. Call `interrupt()` to stop it.
-
-| Method | Description |
-|--------|-------------|
-| `AgentWorking::task(...)` | Hand the agent a new task |
-| `AgentWorking::interrupt()` | Stop the agent |
-| `AgentWorking::is_interrupted()` | Check if the agent was interrupted |
-| `AgentWorking::clone()` | Get another handle to the same agent |
-
-
 ### Models
 
 You can configure each agent to use a single model:
@@ -191,7 +163,7 @@ The following methods on `Agent` configure prompts:
 |--------|-------------|
 | `Agent::role(...)` | Persistent identity of the agent |
 | `Agent::role_file(...)` | Read the identity prompt from a file |
-| `Agent::task(...)` | Task for the current run |
+| `Agent::task(...)` | Instruct the agent to perform a task, returns `AgentWorking` |
 | `Agent::task_file(...)` | Read the task from a file |
 | `Agent::context(...)` | Override the context prompt (default: `Agent::default_context()`, containing working directory, platform, OS version, date) |
 | `Agent::context_file(...)` | Read the context prompt from a file |
@@ -220,6 +192,34 @@ Agent::new()
     .template("role", json!("a code reviewer"))
     .template("language", json!("German"))
 ```
+
+#### Workers on Retainer
+
+Use `retain` when you want to keep sending instructions to your agent:
+
+```rust
+let (agent, output) = Agent::new()
+    .provider(provider)
+    .model_name("claude-sonnet-4-20250514")
+    .role("You are a codebase Q&A assistant.")
+    .tool(ReadFileTool)
+    .retain(); // start the agent and send more instructions later
+
+agent.task("What does src/main.rs do?");
+agent.task("Now summarize src/lib.rs.");
+
+agent.interrupt(); // stop the agent when there are no more instructions to send
+```
+
+The worker stays on standby for the next task. Call `interrupt()` to send them home.
+
+| Method | Description |
+|--------|-------------|
+| `AgentWorking::task(...)` | Hand the agent a new task |
+| `AgentWorking::interrupt()` | Stop the agent |
+| `AgentWorking::is_interrupted()` | Check if the agent was interrupted |
+| `AgentWorking::clone()` | Get another handle to the same agent |
+
 
 ### Tools
 
@@ -251,11 +251,11 @@ let greet = Tool::new("greet", "Say hello")
 | | `GrepTool` | Search file contents by substring |
 | | `ListDirectoryTool` | List directory entries with type and size |
 | **Web** | `WebFetchTool` | Fetch a URL and return its content as text |
-| **Utility** | `BashTool` | Execute shell commands matching a glob pattern |
-| | `AgentTool` | Delegate work to a coworker agent |
-| | `SendMessageTool` | Send messages to other agents |
-| | `TaskTool` | Perform task management |
-| | `ToolSearchTool` | Discover available tools by keyword |
+| **Utility** | `BashTool` | Run shell commands on the floor, matching a glob pattern |
+| | `AgentTool` | Hand a job off to a coworker |
+| | `SendMessageTool` | Pass a memo to coworkers |
+| | `TaskTool` | Keep the work-order book |
+| | `ToolSearchTool` | Browse the toolbox by keyword |
 
 ```rust
 use agentwerk::tools::{
@@ -306,12 +306,12 @@ let handler = Arc::new(|event: Event| match &event.kind {
 
 | | Kind | Description |
 |-|------|-------------|
-| **Agent** | `AgentStarted` | Agent run began |
-| | `AgentFinished` | Agent run finished |
+| **Agent** | `AgentStarted` | Worker clocked in |
+| | `AgentFinished` | Worker clocked out |
 | | `TurnStarted` | Agentic loop turn began |
 | | `TurnFinished` | Agentic loop turn finished |
-| | `AgentPaused` | Keep-alive agent is waiting for new input |
-| | `AgentResumed` | Keep-alive agent resumed after being paused |
+| | `AgentPaused` | Worker on standby, waiting for new orders |
+| | `AgentResumed` | Worker back on the clock |
 | **Provider** | `RequestStarted` | Provider request began |
 | | `RequestFinished` | Provider request finished |
 | | `RequestRetried` | Transient provider error triggered a retry |
@@ -369,7 +369,7 @@ Agent::new().schema_file("schemas/category.json")
 
 #### Statistics
 
-Each run reports statistics about what happened:
+Each shift reports a tally of what happened:
 
 ```rust
 output.statistics.input_tokens   // total input tokens
@@ -379,10 +379,10 @@ output.statistics.tool_calls     // number of tool calls
 output.statistics.turns          // number of agent turns
 ```
 
-### Sub-agents
+### Coworkers
 
 You can allow your agent to spawn its own colleagues.
-Internally agents have access to a `AgentTool` if you add a sub-agent.
+Internally agents have access to a `AgentTool` if you hire a coworker.
 
 ```rust
 let researcher_base = Agent::new()
@@ -405,20 +405,20 @@ let output = Agent::new()
 
 | Method | Description |
 |--------|-------------|
-| `Agent::hire(...)` | Register one sub-agent the parent can delegate to |
-| `Agent::hire_all(...)` | Register many sub-agents at once |
+| `Agent::hire(...)` | Register one coworker the parent can hand off to |
+| `Agent::hire_all(...)` | Register many coworkers at once |
 
 #### Inheritance
 
-The following fields are inherited, shared or owned by the sub-agents:
+The following fields are inherited, shared or owned by the coworkers:
 
 | Behavior | Fields |
 |---|---|
-| Inherited | `provider`, `model`, `working_dir`, `event_handler`, `cancel_signal` |
+| Inherited | `provider`, `model`, `working_dir`, `event_handler`, `interrupt_signal` |
 | Shared | `command_queue`, `session_store` |
-| Per sub-agent | `role`, `task`, `behavior`, `context`, `tools`, `schema`, `max_turns`, `max_request_tokens`, `max_input_tokens`, `max_output_tokens`, `max_schema_retries`, `max_request_retries`, `request_retry_delay` |
+| Per coworker | `role`, `task`, `behavior`, `context`, `tools`, `schema`, `max_turns`, `max_request_tokens`, `max_input_tokens`, `max_output_tokens`, `max_schema_retries`, `max_request_retries`, `request_retry_delay` |
 
-### Werke
+### Werk
 
 Run many agents in parallel with a `Werk`. Wait for the execution of all workers on a fixed number of production lines. Results arrive in *hire order*:
 
@@ -440,8 +440,7 @@ let workers = docs.iter().map(|doc| {
 
 let results = Werk::new()
     .lines(10)
-    .hire_all(workers)
-    .produce()
+    .hire_and_fire(workers)
     .await;
 
 for (doc, result) in docs.iter().zip(results.iter()) {
@@ -449,7 +448,14 @@ for (doc, result) in docs.iter().zip(results.iter()) {
 }
 ```
 
-#### Dynamic Number of Workers
+| Method | Description |
+|--------|-------------|
+| `Werk::lines(n)` | Number of assembly lines |
+| `Werk::open()` | Open the Werk for hiring; returns `WerkProducing` |
+| `Werk::hire_and_fire(workers)` | Put every worker on the line, returns a list of `Output` |
+| `Werk::interrupt_signal(...)` | Share an external cancel signal with the workshop |
+
+#### Hiring on the Fly
 
 Start a Werk that hires workers over time. Results are reported in *completion order*:
 
@@ -475,15 +481,10 @@ while let Some((i, result)) = results.next().await {
 |--------|-------------|
 | `WerkProducing::hire(...)` | Hire another worker |
 | `WerkProducing::hire_all(...)` | Hire many workers at once |
-| `WerkProducing::close()` | Stop hiring and let in-flight workers finish |
-| `WerkProducing::interrupt()` | Stop all workers and close the workshop |
-| `WerkProducing::is_interrupted()` | Check if the workshop was interrupted |
 | `WerkProducing::clone()` | Get another handle to the same workshop |
-
-> `hire(worker)` and `hire_all(workers)` are the same on three surfaces:
-> [`Agent`](#sub-agents) (register sub-agents on a parent), `Werk` (preload
-> workers on the workshop builder above), and `WerkProducing` (add workers to
-> a running workshop). Same shape, same vocabulary, three contexts.
+| `WerkProducing::close()` | Stop hiring; let the current shift finish |
+| `WerkProducing::interrupt()` | Pull everyone off the line and shut the workshop |
+| `WerkProducing::is_interrupted()` | Check if the workshop was interrupted |
 
 ### Todo
 

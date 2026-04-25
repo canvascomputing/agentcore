@@ -98,7 +98,7 @@ The invariants that shape how code fits together. Layout says where code lives; 
 
 **`Agent::retain` spawns the loop on tokio and returns `(AgentWorking, OutputFuture)`. The loop idles between instructions while any handle is alive.**
 
-- `retain` flips `keep_alive: true` on the spec and installs a fresh `CommandQueue` plus `cancel_signal` before calling `work` on a `tokio::spawn`.
+- `retain` flips `keep_alive: true` on the spec and installs a fresh `CommandQueue` plus `interrupt_signal` before calling `work` on a `tokio::spawn`.
 - `AgentWorking::task(s)` enqueues a follow-up task; the loop picks it up at its next idle poll or turn boundary.
 - `OutputFuture` resolves once the loop exits; awaiting it does not keep the loop alive: only `AgentWorking` clones do.
 - `CancelGuard` flips the cancel flag when the last `AgentWorking` clone drops, so an abandoned handle still unblocks the loop.
@@ -110,7 +110,7 @@ The invariants that shape how code fits together. Layout says where code lives; 
 - The dispatcher is a single `tokio::spawn` task that owns a `FuturesUnordered` of in-flight worker tasks bounded by `lines`.
 - Hire indices are monotonic and reserved at submission time, so preloaded workers occupy `0..n` and dynamic `WerkProducing::hire` calls continue the sequence.
 - `WerkProducing` is `Clone`: the workshop accepts new hires while any clone is alive; dropping the last one closes it.
-- `Werk::cancel_signal` lets the caller share an external signal; otherwise the workshop owns one and overrides any per-worker signal.
+- `Werk::interrupt_signal` lets the caller share an external signal; otherwise the workshop owns one and overrides any per-worker signal.
 
 ## Command queue carries dynamic instructions
 

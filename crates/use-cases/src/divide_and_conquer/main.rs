@@ -40,7 +40,7 @@ async fn main() {
     let provider = agentwerk::provider::from_env().expect("LLM provider required");
     let model = agentwerk::provider::model_from_env().expect("model name required");
     let style = Style::detect();
-    let cancel = install_cancel_signal();
+    let cancel = install_interrupt_signal();
 
     let partitions = partition(args.n, args.partitions);
     let total_chunks = partitions.len();
@@ -76,9 +76,9 @@ async fn main() {
     let started = Instant::now();
     let (producing, mut stream) = Werk::new()
         .lines(args.concurrency)
-        .cancel_signal(cancel)
-        .hire_all(agents)
+        .interrupt_signal(cancel)
         .open();
+    producing.hire_all(agents);
     producing.close();
 
     let mut partial_sums: Vec<Option<i128>> = vec![None; total_chunks];
@@ -182,7 +182,7 @@ fn print_intro(args: &CliArgs, total_chunks: usize, style: &Style) {
     );
 }
 
-fn install_cancel_signal() -> Arc<AtomicBool> {
+fn install_interrupt_signal() -> Arc<AtomicBool> {
     let cancel = Arc::new(AtomicBool::new(false));
     let handle = cancel.clone();
     tokio::spawn(async move {

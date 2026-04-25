@@ -123,7 +123,7 @@ impl Agent {
         });
 
         let prepared = self
-            .cancel_signal(cancel.clone())
+            .interrupt_signal(cancel.clone())
             .command_queue(queue.clone())
             .keep_alive();
 
