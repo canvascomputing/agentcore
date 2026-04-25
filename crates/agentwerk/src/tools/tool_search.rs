@@ -203,7 +203,7 @@ mod tests {
         let registry = registry_with_mock_tools();
         let agent = Agent::new()
             .name("t")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .provider(Arc::new(crate::testutil::MockProvider::text("ok")));
         let (_spec, runtime) = agent.compile(None);

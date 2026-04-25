@@ -38,7 +38,7 @@ use agentwerk::Agent;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = Agent::new()
         .provider_from_env()?
-        .model_name("mistral-large-2512")
+        .model("mistral-large-2512")
         .tool(GlobTool)
         .task("Find all Rust source files.")
         .await?;
@@ -105,19 +105,19 @@ Or pick a provider for your agent from environment variables (see [Environment](
 ```rust
 let output = Agent::new()
     .provider_from_env()?
-    .model_name("mistral-small-2603")
+    .model("mistral-small-2603")
     .task("...")
     .await?;
 ```
 
 ### Agents
 
-The `Agent` interface is the main entry point. Configure it with the builder, then end the chain with `.task(...).await` to run it:
+An `Agent` is a single worker. Equip them with what they need, then hand them a task:
 
 ```rust
 let output = Agent::new()
     .provider(provider)
-    .model_name("mistral-medium-2508")
+    .model("mistral-medium-2508")
     .tool(ReadFileTool)
     .task("Summarize src/main.rs")
     .await?;
@@ -127,17 +127,17 @@ let output = Agent::new()
 |--------|-------------|
 | `Agent::new()` | Start a new agent builder |
 | `Agent::provider(...)` | Attach a provider |
-| `Agent::model_name(...)` | Pick a model by name |
+| `Agent::model(...)` | Pick a model by name or pass a configured `Model` |
 | `Agent::tool(...)` | Register a tool the agent can call |
 | `Agent::task(...)` | Set the task and run; awaiting returns the `Output` |
 
 ### Models
 
-You can configure each agent to use a single model:
+Each worker runs on one model: their brain. `.model(...)` accepts a model name or a configured `Model`:
 
 ```rust
 Agent::new().model_from_env()?
-Agent::new().model_name("mistral-medium-2508")
+Agent::new().model("mistral-medium-2508")
 ```
 
 Models from Anthropic, OpenAI, and Mistral come with a default context window size. Override it when needed, e.g. for custom model setups. The context window size is only relevant for calculating when messages need to be compacted:
@@ -151,14 +151,14 @@ let agent = Agent::new().model(model);
 
 ### Prompting
 
-Prompts are the core ingredient of every agentic application. Here are different prompt types which are important to drive your agent's work:
+Prompts are how you brief the worker. Here are the prompt types that drive their work:
 
 ```rust
 use agentwerk::Agent;
 
 let output = Agent::new()
     .provider(provider)
-    .model_name("mistral-medium-2508")
+    .model("mistral-medium-2508")
     .role("You are a helpful assistant.")
     .tool(ReadFileTool)
     .task("What does src/main.rs do?")
@@ -208,7 +208,7 @@ Use `retain` when you want to keep sending instructions to your agent:
 ```rust
 let (agent, output) = Agent::new()
     .provider(provider)
-    .model_name("mistral-medium-2508")
+    .model("mistral-medium-2508")
     .role("You are a codebase Q&A assistant.")
     .tool(ReadFileTool)
     .retain(); // start the agent and send more instructions later
@@ -259,7 +259,7 @@ let greet = Tool::new("greet", "Say hello")
 | | `GrepTool` | Search file contents by substring |
 | | `ListDirectoryTool` | List directory entries with type and size |
 | **Web** | `WebFetchTool` | Fetch a URL and return its content as text |
-| **Utility** | `BashTool` | Run shell commands on the floor, matching a glob pattern |
+| **Utility** | `BashTool` | Run shell commands matching a glob pattern |
 | | `AgentTool` | Hand a job off to a coworker |
 | | `SendMessageTool` | Pass a memo to coworkers |
 | | `TodoListTool` | Keep a persistent todo list of items |
@@ -339,7 +339,7 @@ let handler = Arc::new(|event: Event| match &event.kind {
 
 ### Policies
 
-For protecting your budget or data, you can define clear execution rules for typical LLM failures. You can configure the following on your `Agent`:
+Working rules cap the agent's run, protecting your company against typical LLM failures:
 
 | Method | Default | Description |
 |--------|---------|-------------|
@@ -352,6 +352,8 @@ For protecting your budget or data, you can define clear execution rules for typ
 | `Agent::request_retry_delay(...)` | 500ms | Base delay for exponential backoff between request retries |
 
 ### Output
+
+The `Output` is the worker's finished result:
 
 ```rust
 let output = agent.task("Summarize src/main.rs").await?;
@@ -389,12 +391,11 @@ output.statistics.turns          // number of agent turns
 
 ### Coworkers
 
-You can allow your agent to spawn its own colleagues.
-Internally agents have access to a `AgentTool` if you hire a coworker.
+A worker can hire their own colleagues. Once you hire at least one coworker, they pick up an `AgentTool` to hand work off:
 
 ```rust
 let researcher_base = Agent::new()
-    .model_name("mistral-medium-2508")
+    .model("mistral-medium-2508")
     .role("You are a research assistant.")
     .tool(brave_search_tool())
     .max_turns(3);
@@ -413,8 +414,8 @@ let output = Agent::new()
 
 | Method | Description |
 |--------|-------------|
-| `Agent::hire(...)` | Register one coworker the parent can hand off to |
-| `Agent::hire_all(...)` | Register many coworkers at once |
+| `Agent::hire(...)` | Hire one coworker to hand off to |
+| `Agent::hire_all(...)` | Hire many coworkers at once |
 
 #### Inheritance
 
@@ -436,7 +437,7 @@ use agentwerk::{Agent, Werk};
 
 let template = Agent::new()
     .provider(provider)
-    .model_name("mistral-medium-2508")
+    .model("mistral-medium-2508")
     .tool(ReadFileTool);
 
 let docs = ["document A", "document B"];

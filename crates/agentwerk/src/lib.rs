@@ -18,7 +18,7 @@
 //!
 //! let output = Agent::new()
 //!     .provider(provider)
-//!     .model_name("claude-sonnet-4-20250514")
+//!     .model("claude-sonnet-4-20250514")
 //!     .task("Find all Rust source files.")
 //!     .await
 //!     .unwrap();

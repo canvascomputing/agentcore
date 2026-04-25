@@ -39,6 +39,24 @@ impl Model {
     }
 }
 
+impl From<&str> for Model {
+    fn from(name: &str) -> Self {
+        Self::from_name(name)
+    }
+}
+
+impl From<String> for Model {
+    fn from(name: String) -> Self {
+        Self::from_name(name)
+    }
+}
+
+impl From<&String> for Model {
+    fn from(name: &String) -> Self {
+        Self::from_name(name.as_str())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

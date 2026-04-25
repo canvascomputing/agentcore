@@ -37,7 +37,7 @@ use super::work::Work;
 ///
 /// let agent = Agent::new()
 ///     .provider(provider)
-///     .model_name("claude-sonnet-4-20250514")
+///     .model("claude-sonnet-4-20250514")
 ///     .role("You are a helpful assistant.");
 ///
 /// let first = agent.clone().task("Greet me.").await.unwrap();
@@ -120,14 +120,11 @@ impl Agent {
         self.with_spec(|c| c.name = n.into())
     }
 
-    /// Set the model by name. Context window size is auto-detected; use [`Agent::model`] to override.
-    pub fn model_name(self, name: impl Into<String>) -> Self {
-        self.with_spec(|c| c.model = Some(Model::from_name(name)))
-    }
-
-    /// Set the full [`Model`] — name plus capability overrides.
-    pub fn model(self, model: Model) -> Self {
-        self.with_spec(|c| c.model = Some(model))
+    /// Set the model. Pass a name (`&str` / `String`) for registry-backed
+    /// auto-detection of the context window, or a [`Model`] to override
+    /// capabilities.
+    pub fn model(self, model: impl Into<Model>) -> Self {
+        self.with_spec(|c| c.model = Some(model.into()))
     }
 
     /// The agent's persistent role — who it is and how it behaves.
@@ -264,7 +261,7 @@ impl Agent {
     ///
     /// Priority: `MODEL` → `*_MODEL` (provider-prefixed) → hosted default.
     pub fn model_from_env(self) -> Result<Self> {
-        Ok(self.model_name(crate::provider::environment::model_from_env()?))
+        Ok(self.model(crate::provider::environment::model_from_env()?))
     }
 
     /// The task for this run — what to do right now.
@@ -329,7 +326,7 @@ impl Agent {
     /// Drive the loop to completion and return the agent's output. Awaiting an
     /// `Agent` (via the [`IntoFuture`] impl) is the public entry point.
     ///
-    /// Requires `.provider()` (or [`Agent::provider_from_env`]), `.model_name()`
+    /// Requires `.provider()` (or [`Agent::provider_from_env`]), `.model()`
     /// (or [`Agent::model_from_env`]), and `.task()`.
     pub(crate) async fn work(&self) -> Result<Output> {
         let (spec, runtime) = self.compile(None);
@@ -357,7 +354,7 @@ impl Agent {
     /// Apply LLM-supplied JSON overrides. Missing keys are left alone, unknown keys ignored.
     pub(crate) fn apply_overrides(mut self, overrides: &Value) -> Self {
         if let Some(m) = overrides.get("model").and_then(Value::as_str) {
-            self = self.model_name(m);
+            self = self.model(m);
         }
         if let Some(i) = overrides.get("identity").and_then(Value::as_str) {
             self = self.role(i);
@@ -404,7 +401,7 @@ impl Agent {
             (Some(m), _) => m.clone(),
             (None, Some((parent_spec, _))) => parent_spec.model().clone(),
             (None, None) => panic!(
-                "Agent::task(...).await requires .model() / .model_name() on root agents (sub-agents inherit)"
+                "Agent::task(...).await requires .model(...) on root agents (sub-agents inherit)"
             ),
         };
 
@@ -540,14 +537,13 @@ mod tests {
 
     #[test]
     fn default_logger_is_used_when_no_handler_is_set() {
-        let agent =
-            Agent::new()
-                .name("t")
-                .model_name("mock")
-                .role("")
-                .provider(std::sync::Arc::new(crate::testutil::MockProvider::text(
-                    "ok",
-                )));
+        let agent = Agent::new()
+            .name("t")
+            .model("mock")
+            .role("")
+            .provider(std::sync::Arc::new(crate::testutil::MockProvider::text(
+                "ok",
+            )));
         assert!(agent.event_handler.is_none());
         let _ = agent.compile(None);
     }
@@ -574,8 +570,8 @@ mod tests {
 
     #[test]
     fn hire_all_extends_hires_in_order() {
-        let a = Agent::new().name("a").model_name("mock");
-        let b = Agent::new().name("b").model_name("mock");
+        let a = Agent::new().name("a").model("mock");
+        let b = Agent::new().name("b").model("mock");
         let agent = Agent::new().hire_all([a, b]);
         let names: Vec<String> = agent
             .spec
@@ -621,7 +617,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_overrides_applies_json_fields() {
-        let base = Agent::new().name("x").model_name("original").max_turns(3);
+        let base = Agent::new().name("x").model("original").max_turns(3);
         let applied = base.apply_overrides(&serde_json::json!({
             "model": "overridden",
             "max_turns": 7,
@@ -642,11 +638,7 @@ mod tests {
     #[tokio::test]
     #[should_panic(expected = ".provider()")]
     async fn missing_provider_panics_on_await() {
-        let agent = Agent::new()
-            .name("test")
-            .model_name("mock")
-            .role("x")
-            .task("do");
+        let agent = Agent::new().name("test").model("mock").role("x").task("do");
         let _ = agent.await;
     }
 }

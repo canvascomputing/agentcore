@@ -255,6 +255,14 @@ counter += 1;
 - Example models are `claude-haiku-4-5-20251001` or `claude-sonnet-4-20250514`.
 - Update triggers: a new builder method, a new tool, a new event kind, a new environment variable, or a changed default.
 
+## README framing
+
+**The Werk/factory-worker analogy is allowed in the README only.**
+
+- Section openers and orchestration-tool descriptions may use the analogy.
+- Method tables, policy descriptions, and built-in I/O tools stay direct.
+- Code, doc comments, and agentdocs do not use the analogy.
+
 ## README descriptions
 
 **In README table cells, bullet descriptions, and inline `//` comments, describe what the caller gets, not how it works inside.**

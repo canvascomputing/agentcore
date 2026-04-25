@@ -334,10 +334,7 @@ impl TestHarness {
     }
 
     #[cfg(test)]
-    pub(crate) fn with_provider_and_work(
-        provider: Arc<MockProvider>,
-        work: Arc<Work>,
-    ) -> Self {
+    pub(crate) fn with_provider_and_work(provider: Arc<MockProvider>, work: Arc<Work>) -> Self {
         let mut h = Self::with_provider(provider);
         h.incoming_work = Some(work);
         h

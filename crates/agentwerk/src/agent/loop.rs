@@ -379,8 +379,8 @@ pub(crate) fn run_loop(
                     }
                     let before = state.messages.len();
                     if let Some(work) = runtime.incoming_work.as_ref() {
-                        while let Some(task) = work
-                            .take_if(Some(&spec.name), |c| c.priority != WorkPriority::Later)
+                        while let Some(task) =
+                            work.take_if(Some(&spec.name), |c| c.priority != WorkPriority::Later)
                         {
                             state.messages.push(Message::user(task.as_user_message()));
                         }
@@ -506,7 +506,7 @@ mod tests {
     fn simple_agent() -> Agent {
         Agent::new()
             .name("test-agent")
-            .model_name("mock-model")
+            .model("mock-model")
             .role("You are a test assistant.")
     }
 
@@ -562,7 +562,7 @@ mod tests {
         let provider = MockProvider::tool_then_text("boom", serde_json::json!({}), "acknowledged");
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .tool(MockTool::error("boom", false, "disk full"));
 
@@ -590,7 +590,7 @@ mod tests {
             MockProvider::tool_then_text("echo_tool", serde_json::json!({"text": "ping"}), "Done!");
         let agent = Agent::new()
             .name("test-agent")
-            .model_name("mock-model")
+            .model("mock-model")
             .role("You are helpful.")
             .tool(MockTool::new("echo_tool", false, "pong"));
 
@@ -609,7 +609,7 @@ mod tests {
         ]);
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .max_turns(2)
             .tool(MockTool::new("t", false, "ok"));
@@ -636,7 +636,7 @@ mod tests {
         ]);
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .tool(MockTool::new("t", false, "ok"));
 
@@ -652,7 +652,7 @@ mod tests {
         let provider = MockProvider::text("Answer about rust");
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("You are an expert on {topic}.");
 
         let harness = TestHarness::new(provider).with_state("topic", serde_json::json!("rust"));
@@ -667,7 +667,7 @@ mod tests {
         let provider = MockProvider::tool_then_text("read", serde_json::json!({}), "Done");
         let agent = Agent::new()
             .name("assistant")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .tool(MockTool::new("read", true, "file contents"));
 
@@ -690,7 +690,7 @@ mod tests {
         ]);
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .tool(MockTool::new("t", false, "ok"));
 
@@ -726,7 +726,7 @@ mod tests {
         ]);
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .tool(MockTool::new("t", false, "ok"));
 
@@ -751,7 +751,7 @@ mod tests {
         let provider = MockProvider::text("ok");
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .tool(MockTool::new("always", true, "ok"))
             .tool(DeferredMockTool::new("deferred"));
@@ -770,7 +770,7 @@ mod tests {
         let provider = MockProvider::new(vec![text_response(&schema_input.to_string())]);
         let agent = Agent::new()
             .name("classifier")
-            .model_name("mock")
+            .model("mock")
             .role("Classify.")
             .contract(serde_json::json!({
                 "type": "object",
@@ -795,7 +795,7 @@ mod tests {
         ]);
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .contract(serde_json::json!({
                 "type": "object",
@@ -818,15 +818,12 @@ mod tests {
 
     #[tokio::test]
     async fn hire_auto_wires_agent_tool() {
-        let sub = Agent::new()
-            .name("helper")
-            .model_name("mock")
-            .role("I help.");
+        let sub = Agent::new().name("helper").model("mock").role("I help.");
 
         let provider = MockProvider::text("ok");
         let agent = Agent::new()
             .name("parent")
-            .model_name("mock")
+            .model("mock")
             .role("I coordinate.")
             .hire(sub);
 
@@ -843,11 +840,7 @@ mod tests {
     #[tokio::test]
     #[should_panic(expected = ".provider()")]
     async fn missing_provider_panics_on_run() {
-        let agent = Agent::new()
-            .name("test")
-            .model_name("mock")
-            .role("x")
-            .task("do");
+        let agent = Agent::new().name("test").model("mock").role("x").task("do");
         let _ = agent.work().await;
     }
 
@@ -934,7 +927,7 @@ mod tests {
 
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .max_input_tokens(4000)
             .tool(MockTool::new("t", false, "ok"));
@@ -974,7 +967,7 @@ mod tests {
 
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .max_input_tokens(4000)
             .tool(MockTool::new("t", false, "ok"));
@@ -1003,7 +996,7 @@ mod tests {
 
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .max_output_tokens(4000)
             .tool(MockTool::new("t", false, "ok"));
@@ -1060,7 +1053,7 @@ mod tests {
 
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .max_input_tokens(10_000)
             .max_output_tokens(4000)
@@ -1090,7 +1083,7 @@ mod tests {
 
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .max_output_tokens(4000)
             .tool(MockTool::new("t", false, "ok"));
@@ -1344,7 +1337,7 @@ mod tests {
         let work = Arc::new(Work::new());
         let cancel = Arc::new(AtomicBool::new(false));
         let agent = Agent::new()
-            .model_name("mock")
+            .model("mock")
             .provider(Arc::new(MockProvider::text("x")))
             .task("")
             .interrupt_signal(cancel.clone())
@@ -1365,7 +1358,7 @@ mod tests {
     #[test]
     fn compile_allocates_default_work_when_none_supplied() {
         let agent = Agent::new()
-            .model_name("mock")
+            .model("mock")
             .provider(Arc::new(MockProvider::text("x")))
             .task("");
 
@@ -1429,7 +1422,7 @@ mod retry_and_events_tests {
         ]);
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .max_request_retries(3)
             .request_retry_delay(Duration::from_millis(10));
@@ -1447,7 +1440,7 @@ mod retry_and_events_tests {
         })]);
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .max_request_retries(3)
             .request_retry_delay(Duration::from_millis(10));
@@ -1467,7 +1460,7 @@ mod retry_and_events_tests {
         let provider = MockProvider::tool_then_text("read", serde_json::json!({}), "done");
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .tool(MockTool::new("read", true, "file contents"));
 
@@ -1531,7 +1524,7 @@ mod retry_and_events_tests {
         ]);
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .max_request_retries(4)
             .request_retry_delay(Duration::from_millis(1));
@@ -1569,7 +1562,7 @@ mod retry_and_events_tests {
         })]);
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .max_request_retries(3)
             .request_retry_delay(Duration::from_millis(1));
@@ -1606,7 +1599,7 @@ mod retry_and_events_tests {
         ]);
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .max_request_retries(2)
             .request_retry_delay(Duration::from_millis(1));
@@ -1627,7 +1620,7 @@ mod retry_and_events_tests {
     #[tokio::test]
     async fn happy_path_emits_no_request_failed() {
         let provider = MockProvider::text("done");
-        let agent = Agent::new().name("test").model_name("mock").role("");
+        let agent = Agent::new().name("test").model("mock").role("");
 
         let harness = TestHarness::new(provider);
         harness.run_agent(&agent, "go").await.unwrap();
@@ -1644,7 +1637,7 @@ mod retry_and_events_tests {
             let provider = MockProvider::with_results(results);
             let agent = Agent::new()
                 .name("test")
-                .model_name("mock")
+                .model("mock")
                 .role("")
                 .max_request_retries(max_retries)
                 .request_retry_delay(Duration::from_millis(1));
@@ -1674,7 +1667,7 @@ mod retry_and_events_tests {
         let provider = MockProvider::with_results(vec![Err(rate_limit_error())]);
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1));
@@ -1698,7 +1691,7 @@ mod retry_and_events_tests {
         ]);
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .max_request_retries(3)
             .request_retry_delay(Duration::from_millis(1));
@@ -1755,7 +1748,7 @@ mod retry_and_events_tests {
             let provider = MockProvider::with_results(vec![Err(err)]);
             let agent = Agent::new()
                 .name("test")
-                .model_name("mock")
+                .model("mock")
                 .role("")
                 .max_request_retries(3)
                 .request_retry_delay(Duration::from_millis(1));
@@ -1810,7 +1803,7 @@ mod retry_and_events_tests {
             })]);
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .max_request_retries(3)
             .request_retry_delay(Duration::from_millis(1));
@@ -1842,7 +1835,7 @@ mod retry_and_events_tests {
         };
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .provider(Arc::new(provider))
             .role("")
             .max_request_retries(3)
@@ -1905,7 +1898,7 @@ mod retry_and_events_tests {
         };
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .provider(Arc::new(provider))
             .role("")
             .max_request_retries(3)
@@ -1983,7 +1976,7 @@ mod retry_and_events_tests {
         let cancel: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .provider(Arc::new(provider))
             .role("")
             .max_request_retries(4)
@@ -2028,7 +2021,7 @@ mod retry_and_events_tests {
         };
         let agent = Agent::new()
             .name("test")
-            .model_name("mock")
+            .model("mock")
             .provider(Arc::new(provider))
             .role("")
             .max_request_retries(3)

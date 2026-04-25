@@ -15,7 +15,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let output = Agent::new()
         .provider(provider)
-        .model_name(&model)
+        .model(&model)
         .role(
             "You are a project planner. Use the todo_list tool to manage work items. \
              The todo_list tool supports these actions: create, update, list, get, delete, claim, add_dependency. \

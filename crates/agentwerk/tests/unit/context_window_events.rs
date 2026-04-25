@@ -100,7 +100,7 @@ async fn state_machine_advances_one_turn_at_a_time() {
 
     let agent = Agent::new()
         .name("demo")
-        .model_name("mock")
+        .model("mock")
         .role("You are Ada, a concise assistant.")
         .behavior("Be terse.")
         .context("Working directory: /tmp/demo")
@@ -171,7 +171,7 @@ async fn proactive_compact_suppressed_when_model_has_no_window() {
         cache_creation_input_tokens: 0,
     };
 
-    let agent = Agent::new().name("demo").model_name("mock").role("");
+    let agent = Agent::new().name("demo").model("mock").role("");
 
     let harness = TestHarness::new(MockProvider::new(vec![response]));
     let output = harness.run_agent(&agent, "hi").await.unwrap();
@@ -312,7 +312,7 @@ async fn sub_agent_compaction_uses_own_model_window() {
 
 #[tokio::test]
 async fn registry_populates_context_window_for_known_model_name() {
-    // `.model_name("claude-…")` consults the built-in registry via
+    // `.model("claude-…")` consults the built-in registry via
     // Model::from_name, so the compaction seam fires at the threshold derived
     // from 200k.
     let expected_threshold = compact_threshold(200_000);
@@ -326,7 +326,7 @@ async fn registry_populates_context_window_for_known_model_name() {
 
     let agent = Agent::new()
         .name("claude-agent")
-        .model_name("claude-sonnet-4-20250514")
+        .model("claude-sonnet-4-20250514")
         .role("");
 
     let harness = TestHarness::new(MockProvider::new(vec![response]));
@@ -373,7 +373,7 @@ async fn reactive_compact_suppressed_when_model_has_no_window() {
 
     // "mock" has no known window — reactive seam stays dormant and the
     // ContextWindowExceeded error propagates as-is.
-    let agent = Agent::new().name("demo").model_name("mock").role("");
+    let agent = Agent::new().name("demo").model("mock").role("");
 
     let harness = TestHarness::with_provider(provider);
     let output = harness.run_agent(&agent, "hi").await.unwrap();

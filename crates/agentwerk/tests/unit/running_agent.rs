@@ -35,7 +35,7 @@ async fn output_resolves_with_final_text_after_interrupt() {
     let events = EventLog::new();
     let (handle, output) = Agent::new()
         .name("demo")
-        .model_name("mock")
+        .model("mock")
         .provider(Arc::new(MockProvider::text("hello world")))
         .role("")
         .task("greet")
@@ -81,7 +81,7 @@ async fn task_injects_into_the_next_turn() {
 #[tokio::test]
 async fn is_interrupted_returns_true_after_interrupt() {
     let (handle, output) = Agent::new()
-        .model_name("mock")
+        .model("mock")
         .provider(Arc::new(MockProvider::text("done")))
         .role("")
         .task("x")
@@ -159,7 +159,7 @@ fn retain_agent(
     let provider = Arc::new(MockProvider::new(responses));
     let (h, o) = Agent::new()
         .name("root")
-        .model_name("mock")
+        .model("mock")
         .provider(provider.clone())
         .role("")
         .task("initial")

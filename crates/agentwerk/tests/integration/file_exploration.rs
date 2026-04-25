@@ -11,7 +11,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let output = Agent::new()
         .provider(provider)
-        .model_name(&model)
+        .model(&model)
         .tool(ReadFileTool)
         .tool(GlobTool)
         .max_turns(10)

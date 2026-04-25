@@ -215,7 +215,7 @@ fn build_worker(
     Agent::new()
         .name(format!("chunk_{i}"))
         .provider(provider)
-        .model_name(model)
+        .model(model)
         .role(WORKER_PROMPT)
         .task(format!("Compute S = sum_{{k={lo}}}^{{{hi}}} k^2."))
         .tool(python_tool())

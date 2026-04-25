@@ -346,7 +346,7 @@ mod tests {
     fn one_shot_agent(text: &str) -> (AgentWorking, OutputFuture) {
         Agent::new()
             .name("demo")
-            .model_name("mock")
+            .model("mock")
             .provider(Arc::new(MockProvider::text(text)))
             .role("")
             .task("x")
@@ -368,7 +368,7 @@ mod tests {
         let provider = Arc::new(MockProvider::new(responses));
         let (h, o) = Agent::new()
             .name("root")
-            .model_name("mock")
+            .model("mock")
             .provider(provider.clone())
             .role("")
             .task("initial")

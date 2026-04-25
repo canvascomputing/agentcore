@@ -18,7 +18,9 @@ use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
 /// failures (lock contention, I/O) become `ToolError`.
 fn route(err: PersistenceError) -> Result<ToolResult> {
     match err {
-        PersistenceError::TodoItemNotFound(id) => Ok(ToolResult::error(format!("Item {id} not found"))),
+        PersistenceError::TodoItemNotFound(id) => {
+            Ok(ToolResult::error(format!("Item {id} not found")))
+        }
         PersistenceError::TodoItemAlreadyCompleted(id) => {
             Ok(ToolResult::error(format!("Item {id} already completed")))
         }

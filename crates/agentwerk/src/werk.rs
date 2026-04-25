@@ -272,7 +272,7 @@ mod tests {
     fn agent_with_response(name: &str, text: &str) -> Agent {
         Agent::new()
             .name(name)
-            .model_name("mock")
+            .model("mock")
             .role("")
             .task("go")
             .provider(Arc::new(MockProvider::text(text)))
@@ -295,7 +295,7 @@ mod tests {
 
         Agent::new()
             .name(name)
-            .model_name("mock")
+            .model("mock")
             .role("")
             .task("go")
             .tool(slow_tool)
@@ -340,7 +340,7 @@ mod tests {
     async fn hire_and_fire_surfaces_failures_without_blocking_others() {
         let failing = Agent::new()
             .name("fail")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .task("go")
             .provider(Arc::new(MockProvider::new(vec![])));
@@ -447,7 +447,7 @@ mod tests {
                 });
             Agent::new()
                 .name(&format!("w{i}"))
-                .model_name("mock")
+                .model("mock")
                 .role("")
                 .task("go")
                 .tool(slow_tool)

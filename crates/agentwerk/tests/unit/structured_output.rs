@@ -79,7 +79,7 @@ const VALID_REPORT_JSON: &str = r#"{"category":"security","priority":"high","sum
 fn report_agent() -> Agent {
     Agent::new()
         .name("reviewer")
-        .model_name("mock")
+        .model("mock")
         .role("You are a code reviewer. Reply with a structured report.")
         .behavior("")
         .contract(report_schema())
@@ -538,14 +538,14 @@ async fn sub_agent_with_schema_returns_json_in_tool_result() {
     // or strip whitespace.
     let child = Agent::new()
         .name("reviewer")
-        .model_name("mock")
+        .model("mock")
         .role("You are a code reviewer. Reply with a structured report.")
         .behavior("")
         .contract(report_schema());
 
     let parent = Agent::new()
         .name("orchestrator")
-        .model_name("mock")
+        .model("mock")
         .role("Coordinate.")
         .behavior("")
         .hire(child);
@@ -589,7 +589,7 @@ async fn ad_hoc_spawned_agent_declares_schema_via_overrides() {
     // tool's JSON args; apply_overrides wires it onto the ad-hoc child.
     let parent = Agent::new()
         .name("orchestrator")
-        .model_name("mock")
+        .model("mock")
         .role("")
         .behavior("")
         .tool(AgentTool);
@@ -680,7 +680,7 @@ async fn output_truncation_emits_event_and_keeps_outcome_completed() {
     ]);
     let agent = Agent::new()
         .name("plain")
-        .model_name("mock")
+        .model("mock")
         .role("")
         .behavior("");
     let harness = TestHarness::new(provider);
@@ -717,7 +717,7 @@ async fn turn_limit_emits_policy_violated_event() {
     ]);
     let agent = Agent::new()
         .name("capped")
-        .model_name("mock")
+        .model("mock")
         .role("")
         .behavior("")
         .max_turns(1);
@@ -760,7 +760,7 @@ async fn cancel_before_run_does_not_emit_request_failed() {
     harness.cancel();
     let agent = Agent::new()
         .name("ghost")
-        .model_name("mock")
+        .model("mock")
         .role("")
         .behavior("");
     let output = harness.run_agent(&agent, "go").await.unwrap();
@@ -784,7 +784,7 @@ async fn cancel_before_run_does_not_emit_request_failed() {
 fn schema_agent() -> Agent {
     Agent::new()
         .name("classifier")
-        .model_name("mock")
+        .model("mock")
         .role("You answer with JSON.")
         .behavior("")
         .contract(answer_schema())

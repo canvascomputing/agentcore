@@ -185,10 +185,7 @@ mod tests {
             },
             agent_name: Some("bob".into()),
         };
-        assert_eq!(
-            t.as_user_message(),
-            "[message from alice: greeting]\nping"
-        );
+        assert_eq!(t.as_user_message(), "[message from alice: greeting]\nping");
     }
 
     #[test]

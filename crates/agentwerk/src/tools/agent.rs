@@ -222,7 +222,7 @@ mod tests {
     async fn agent_tool_foreground() {
         let agent = Agent::new()
             .name("orchestrator")
-            .model_name("mock")
+            .model("mock")
             .role("Coordinate work.")
             .tool(AgentTool);
 
@@ -247,7 +247,7 @@ mod tests {
     async fn agent_tool_background_delivers_notification() {
         let agent = Agent::new()
             .name("orchestrator")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .tool(AgentTool);
 
@@ -277,7 +277,10 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         let task = work.take_if(None, |_| true);
-        assert!(task.is_some(), "Expected notification from background agent");
+        assert!(
+            task.is_some(),
+            "Expected notification from background agent"
+        );
         let notification = task.unwrap().content;
         assert!(
             notification.contains("response-") || notification.contains("Failed"),
@@ -294,7 +297,7 @@ mod tests {
         // `"Task <id> completed:"` prefix).
         let agent = Agent::new()
             .name("orchestrator")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .tool(AgentTool);
 
@@ -347,12 +350,12 @@ mod tests {
     async fn agent_tool_named_sub_agent() {
         let sub = Agent::new()
             .name("specialist")
-            .model_name("mock")
+            .model("mock")
             .role("I am a specialist.");
 
         let agent = Agent::new()
             .name("orchestrator")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .hire(sub);
 
@@ -385,13 +388,13 @@ mod tests {
 
         let sub = Agent::new()
             .name("tight-budget")
-            .model_name("mock")
+            .model("mock")
             .role("I do work.")
             .tool(MockTool::new("t", false, "ok"));
 
         let agent = Agent::new()
             .name("orchestrator")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .hire(sub);
 
@@ -443,13 +446,13 @@ mod tests {
 
         let sub = Agent::new()
             .name("tight-budget")
-            .model_name("mock")
+            .model("mock")
             .role("I do work.")
             .tool(MockTool::new("t", false, "ok"));
 
         let agent = Agent::new()
             .name("orchestrator")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .hire(sub);
 
@@ -498,7 +501,7 @@ mod tests {
     async fn agent_tool_unknown_agent_errors() {
         let agent = Agent::new()
             .name("orchestrator")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .tool(AgentTool);
 

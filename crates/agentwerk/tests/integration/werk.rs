@@ -21,7 +21,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
     });
 
     let summarizer = Agent::new()
-        .model_name(&model)
+        .model(&model)
         .tool(ReadFileTool)
         .contract(output_schema)
         .max_turns(5);

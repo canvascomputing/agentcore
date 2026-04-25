@@ -135,7 +135,7 @@ mod tests {
         let work = Arc::new(Work::new());
         let caller = Agent::new()
             .name("alice")
-            .model_name("mock")
+            .model("mock")
             .role("")
             .provider(Arc::new(MockProvider::text("unused")))
             .incoming_work(work.clone());
@@ -159,9 +159,7 @@ mod tests {
         let out = tool.call(input, &ctx).await.unwrap();
         assert!(matches!(out, ToolResult::Success(_)));
 
-        let task = work
-            .take_if(Some("bob"), |_| true)
-            .expect("posted for bob");
+        let task = work.take_if(Some("bob"), |_| true).expect("posted for bob");
         assert_eq!(task.agent_name.as_deref(), Some("bob"));
         assert_eq!(task.content, "hi");
         match task.source {

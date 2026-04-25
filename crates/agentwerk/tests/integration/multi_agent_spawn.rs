@@ -29,13 +29,13 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let researcher = Agent::new()
         .name("researcher")
-        .model_name(&model)
+        .model(&model)
         .role("You are a research assistant. Answer the given question concisely in 1-2 sentences.")
         .max_turns(1);
 
     let output = Agent::new()
         .provider(provider)
-        .model_name(&model)
+        .model(&model)
         .name("orchestrator")
         .role(
             "You coordinate research tasks. Use agent with agent: \"researcher\" to delegate questions. \

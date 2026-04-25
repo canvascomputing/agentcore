@@ -45,7 +45,7 @@ async fn orchestrator_sends_message_to_backgrounded_worker(
 
     let worker = Agent::new()
         .name("worker")
-        .model_name(&model)
+        .model(&model)
         .role(
             "You are a worker waiting for a message. Your conversation will \
              include one message of the form '[message from orchestrator: ...] \
@@ -65,7 +65,7 @@ async fn orchestrator_sends_message_to_backgrounded_worker(
 
     let output = Agent::new()
         .provider(provider)
-        .model_name(&model)
+        .model(&model)
         .name("orchestrator")
         .role(orchestrator_identity)
         .hire(worker)
