@@ -1,4 +1,4 @@
-//! Run many agents on a fixed number of production lines. `Werk::run` waits for a fixed set; `Werk::spawn` hands back a pool you can submit into while it's running.
+//! Run many agents on a fixed number of production lines. `Werk::produce` waits for a fixed set; `Werk::spawn` hands back a producing handle you can hire into while it's running.
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -14,10 +14,10 @@ use crate::output::Output;
 
 const DEFAULT_LINES: usize = 1;
 
-/// Pool of agents capped to a fixed number of production lines. Build with
+/// Workshop of agents capped to a fixed number of production lines. Build with
 /// [`Werk::new`], chain [`lines`](Self::lines) and
 /// [`worker`](Self::worker) / [`workers`](Self::workers), then finish with
-/// [`run`](Self::run) (wait for all) or [`spawn`](Self::spawn) (dynamic pool).
+/// [`produce`](Self::produce) (wait for all) or [`spawn`](Self::spawn) (dynamic).
 pub struct Werk {
     lines: usize,
     workers: Vec<Agent>,
@@ -60,23 +60,23 @@ impl Werk {
         self
     }
 
-    /// Share an external cancel signal with the pool. Every submitted agent
-    /// uses it, and [`WerkProducing::cancel`] writes to it. Useful when the
+    /// Share an external cancel signal with the workshop. Every hired worker
+    /// uses it, and [`WerkProducing::interrupt`] writes to it. Useful when the
     /// caller already owns a signal (e.g. wired to Ctrl-C) and wants in-flight
-    /// agents to observe it.
+    /// workers to observe it.
     pub fn cancel_signal(mut self, signal: Arc<AtomicBool>) -> Self {
         self.cancel_signal = Some(signal);
         self
     }
 
-    /// Run every added agent to completion. Returns results in **submission**
-    /// order: `results[i]` corresponds to the `i`th agent added via
-    /// [`worker`](Self::worker) / [`workers`](Self::workers). A failing agent does
+    /// Run every hired worker to completion. Returns results in **hire**
+    /// order: `results[i]` corresponds to the `i`th worker added via
+    /// [`worker`](Self::worker) / [`workers`](Self::workers). A failing worker does
     /// not abort the others.
-    pub async fn run(self) -> Vec<Result<Output>> {
+    pub async fn produce(self) -> Vec<Result<Output>> {
         let total = self.workers.len();
         let (handle, stream) = self.spawn();
-        handle.drain();
+        handle.close();
 
         let mut slots: Vec<Option<Result<Output>>> = (0..total).map(|_| None).collect();
         for (index, result) in stream.collect().await {
@@ -86,27 +86,27 @@ impl Werk {
         }
         slots
             .into_iter()
-            .map(|slot| slot.expect("werk stream yields one result per submission"))
+            .map(|slot| slot.expect("werk stream yields one result per hire"))
             .collect()
     }
 
     /// Start a dispatcher on a background tokio task and return a pair:
     ///
-    /// - [`WerkProducing`] — cheap, clonable handle for submitting more agents
+    /// - [`WerkProducing`] — cheap, clonable handle for hiring more workers
     ///   or cancelling.
     /// - [`WerkOutputStream`] — yields
-    ///   `(submission_index, Result<Output>)` in completion order. The
-    ///   `submission_index` matches the position the agent was added:
+    ///   `(hire_index, Result<Output>)` in completion order. The
+    ///   `hire_index` matches the position the worker was added:
     ///   preloaded [`workers`](Self::workers) take indices `0..n`, then dynamic
-    ///   [`submit`](WerkProducing::submit) calls continue the sequence. Ends
-    ///   once all handles are dropped or [`drain`](WerkProducing::drain)ed (let
-    ///   in-flight finish), or [`cancel`](WerkProducing::cancel) is called
-    ///   (interrupt in-flight) and the backlog completes.
+    ///   [`hire`](WerkProducing::hire) calls continue the sequence. Ends
+    ///   once all handles are dropped or [`close`](WerkProducing::close)d (let
+    ///   in-flight finish), or [`interrupt`](WerkProducing::interrupt) is
+    ///   called (stop in-flight) and the backlog completes.
     ///
     /// Requires a running tokio runtime.
     pub fn spawn(self) -> (WerkProducing, WerkOutputStream) {
         let lines = self.lines;
-        let (submit_tx, submit_rx) = mpsc::unbounded_channel::<(usize, Agent)>();
+        let (hire_tx, hire_rx) = mpsc::unbounded_channel::<(usize, Agent)>();
         let (output_tx, output_rx) = mpsc::unbounded_channel::<(usize, Result<Output>)>();
         let cancel = self
             .cancel_signal
@@ -115,16 +115,16 @@ impl Werk {
 
         for worker in self.workers {
             let index = counter.fetch_add(1, Ordering::Relaxed);
-            let _ = submit_tx.send((index, worker));
+            let _ = hire_tx.send((index, worker));
         }
 
         let dispatcher_cancel = cancel.clone();
         tokio::spawn(async move {
-            dispatch(submit_rx, output_tx, lines, dispatcher_cancel).await;
+            dispatch(hire_rx, output_tx, lines, dispatcher_cancel).await;
         });
 
         let handle = WerkProducing {
-            sender: submit_tx,
+            sender: hire_tx,
             cancel,
             counter,
         };
@@ -134,7 +134,7 @@ impl Werk {
 }
 
 async fn dispatch(
-    mut submit_rx: mpsc::UnboundedReceiver<(usize, Agent)>,
+    mut hire_rx: mpsc::UnboundedReceiver<(usize, Agent)>,
     output_tx: mpsc::UnboundedSender<(usize, Result<Output>)>,
     lines: usize,
     cancel: Arc<AtomicBool>,
@@ -145,7 +145,7 @@ async fn dispatch(
 
     loop {
         if cancel.load(Ordering::Relaxed) && !closed {
-            submit_rx.close();
+            hire_rx.close();
             closed = true;
         }
 
@@ -153,13 +153,13 @@ async fn dispatch(
             biased;
             Some(join) = in_flight.next(), if !in_flight.is_empty() => {
                 // A task-level JoinError means the spawned future panicked or was
-                // aborted — the submission index is then unrecoverable, so the slot
-                // will be backfilled with a synthetic error by `Werk::run`.
+                // aborted — the hire index is then unrecoverable, so the slot
+                // will be backfilled with a synthetic error by `Werk::produce`.
                 if let Ok(pair) = join {
                     let _ = output_tx.send(pair);
                 }
             }
-            maybe = submit_rx.recv(), if !closed && in_flight.len() < lines => {
+            maybe = hire_rx.recv(), if !closed && in_flight.len() < lines => {
                 let Some((index, worker)) = maybe else {
                     closed = true;
                     continue;
@@ -174,12 +174,12 @@ async fn dispatch(
     }
 }
 
-/// Cheap, clonable handle to a running [`Werk`] pool. Obtained from
+/// Cheap, clonable handle to a running [`Werk`]. Obtained from
 /// [`Werk::spawn`].
 ///
-/// While any clone of the handle is alive, the pool accepts new submissions.
-/// Dropping the last clone (or calling [`drain`](Self::drain) on it) closes
-/// the pool gracefully: queued and in-flight agents finish, then the output
+/// While any clone of the handle is alive, the workshop accepts new hires.
+/// Dropping the last clone (or calling [`close`](Self::close) on it) closes
+/// the workshop gracefully: queued and in-flight workers finish, then the output
 /// stream ends. Use [`cancel`](Self::cancel) to interrupt instead.
 #[derive(Clone)]
 pub struct WerkProducing {
@@ -189,53 +189,53 @@ pub struct WerkProducing {
 }
 
 impl WerkProducing {
-    /// Enqueue another agent for the pool. Returns the submission index that
-    /// will accompany this agent's result on the [`WerkOutputStream`].
-    /// Indices are assigned monotonically and continue the sequence begun by
-    /// the preloaded [`Werk::workers`] / [`Werk::worker`] calls. If the pool
-    /// has already been cancelled or the dispatcher has exited the agent is
-    /// silently dropped; the returned index is still reserved but no result
-    /// will arrive for it.
-    pub fn submit(&self, agent: Agent) -> usize {
+    /// Hire another worker. Returns the hire index that will accompany this
+    /// worker's result on the [`WerkOutputStream`]. Indices are assigned
+    /// monotonically and continue the sequence begun by the preloaded
+    /// [`Werk::workers`] / [`Werk::worker`] calls. If the workshop has already
+    /// been cancelled or the dispatcher has exited the worker is silently
+    /// dropped; the returned index is still reserved but no result will arrive
+    /// for it.
+    pub fn hire(&self, worker: Agent) -> usize {
         let index = self.counter.fetch_add(1, Ordering::Relaxed);
-        let _ = self.sender.send((index, agent));
+        let _ = self.sender.send((index, worker));
         index
     }
 
-    /// Signal all in-flight agents to stop (via their `cancel_signal`) and
-    /// stop the dispatcher from pulling new submissions. In-flight agents
+    /// Signal all in-flight workers to stop (via their `cancel_signal`) and
+    /// stop the dispatcher from accepting new hires. In-flight workers
     /// observe the flag at their next turn boundary; the stream ends once
     /// they complete.
     ///
-    /// The pool owns one cancel signal and sets it on every submitted agent,
-    /// overriding any per-agent signal the caller attached. To share an
-    /// external signal with the pool, pass it to
+    /// The workshop owns one cancel signal and sets it on every hired worker,
+    /// overriding any per-worker signal the caller attached. To share an
+    /// external signal with the workshop, pass it to
     /// [`Werk::cancel_signal`](Werk::cancel_signal).
-    pub fn cancel(&self) {
+    pub fn interrupt(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
 
-    /// Returns `true` if [`cancel`](Self::cancel) has been called.
-    pub fn is_cancelled(&self) -> bool {
+    /// Returns `true` if [`interrupt`](Self::interrupt) has been called.
+    pub fn is_interrupted(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
     }
 
-    /// Release this handle. When the last clone is gone, the dispatcher
-    /// flushes in-flight agents to completion and ends the output stream.
-    /// Non-blocking: results still arrive on the [`WerkOutputStream`]. Sugar
-    /// for `drop(handle)`, but visible at the call site — pairs with
-    /// [`cancel`](Self::cancel) (interrupt) to name the two exit modes.
-    pub fn drain(self) {}
+    /// Close the workshop to new hires. When the last clone is gone, the
+    /// dispatcher flushes in-flight workers to completion and ends the output
+    /// stream. Non-blocking: results still arrive on the [`WerkOutputStream`].
+    /// Sugar for `drop(handle)`, but visible at the call site — pairs with
+    /// [`interrupt`](Self::interrupt) to name the two exit modes.
+    pub fn close(self) {}
 }
 
-/// Stream of per-agent results from a [`Werk::spawn`] pool. Yields
-/// `(submission_index, Result<Output>)` in completion order. The
-/// `submission_index` matches the position the agent was added — preloaded
-/// [`Werk::workers`] first, then dynamic [`WerkProducing::submit`] calls — so
-/// the caller can correlate a streamed result back to its input without
-/// inspecting [`Output::name`]. Ends once the pool is closed (all
-/// handles dropped, [`drain`](WerkProducing::drain)ed, or
-/// [`cancel`](WerkProducing::cancel)led) and the backlog completes.
+/// Stream of per-worker results from a [`Werk::spawn`] workshop. Yields
+/// `(hire_index, Result<Output>)` in completion order. The `hire_index`
+/// matches the position the worker was added — preloaded [`Werk::workers`]
+/// first, then dynamic [`WerkProducing::hire`] calls — so the caller can
+/// correlate a streamed result back to its input without inspecting
+/// [`Output::name`]. Ends once the workshop is closed (all handles dropped,
+/// [`close`](WerkProducing::close)d, or [`interrupt`](WerkProducing::interrupt)ed)
+/// and the backlog completes.
 pub struct WerkOutputStream {
     rx: mpsc::UnboundedReceiver<(usize, Result<Output>)>,
 }
@@ -254,7 +254,7 @@ impl WerkOutputStream {
         StreamExt::collect(self).await
     }
 
-    /// Await the next result, or `None` once the pool has drained.
+    /// Await the next result, or `None` once the workshop has closed.
     pub async fn next(&mut self) -> Option<(usize, Result<Output>)> {
         StreamExt::next(self).await
     }
@@ -304,17 +304,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_run_yields_empty_vec() {
-        let results = Werk::new().lines(4).run().await;
+    async fn empty_produce_yields_empty_vec() {
+        let results = Werk::new().lines(4).produce().await;
         assert!(results.is_empty());
     }
 
     #[tokio::test]
-    async fn run_returns_results_in_submission_order() {
+    async fn produce_returns_results_in_hire_order() {
         let results = Werk::new()
             .lines(4)
             .workers(["a", "b", "c"].iter().map(|n| agent_with_response(n, "ok")))
-            .run()
+            .produce()
             .await;
         assert_eq!(results.len(), 3);
         let names: Vec<String> = results
@@ -325,18 +325,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_submission_order_ignores_completion_order() {
-        // First submitted agent finishes last; result must still land at index 0.
+    async fn produce_hire_order_ignores_completion_order() {
+        // First hired worker finishes last; result must still land at index 0.
         let slow = agent_with_delay("slow", 80, "slow");
         let fast = agent_with_response("fast", "fast");
 
-        let results = Werk::new().lines(4).worker(slow).worker(fast).run().await;
+        let results = Werk::new()
+            .lines(4)
+            .worker(slow)
+            .worker(fast)
+            .produce()
+            .await;
         assert_eq!(results[0].as_ref().unwrap().name, "slow");
         assert_eq!(results[1].as_ref().unwrap().name, "fast");
     }
 
     #[tokio::test]
-    async fn run_surfaces_failures_without_blocking_others() {
+    async fn produce_surfaces_failures_without_blocking_others() {
         let failing = Agent::new()
             .name("fail")
             .model_name("mock")
@@ -349,7 +354,7 @@ mod tests {
             .worker(agent_with_response("ok1", "first"))
             .worker(failing)
             .worker(agent_with_response("ok2", "second"))
-            .run()
+            .produce()
             .await;
         assert_eq!(results.len(), 3);
         assert_eq!(
@@ -367,12 +372,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_yields_submission_indices() {
-        let (pool, mut stream) = Werk::new()
+    async fn stream_yields_hire_indices() {
+        let (producing, mut stream) = Werk::new()
             .lines(4)
             .workers(["a", "b", "c"].iter().map(|n| agent_with_response(n, "ok")))
             .spawn();
-        drop(pool);
+        drop(producing);
 
         let mut seen: Vec<(usize, String)> = Vec::new();
         while let Some((index, result)) = stream.next().await {
@@ -386,18 +391,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn submit_returns_monotonic_indices_continuing_preloaded() {
-        let (pool, mut stream) = Werk::new()
+    async fn hire_returns_monotonic_indices_continuing_preloaded() {
+        let (producing, mut stream) = Werk::new()
             .lines(4)
             .worker(agent_with_response("preloaded", "ok"))
             .spawn();
 
-        let idx_b = pool.submit(agent_with_response("b", "ok"));
-        let idx_c = pool.submit(agent_with_response("c", "ok"));
+        let idx_b = producing.hire(agent_with_response("b", "ok"));
+        let idx_c = producing.hire(agent_with_response("c", "ok"));
         assert_eq!(idx_b, 1);
         assert_eq!(idx_c, 2);
 
-        drop(pool);
+        drop(producing);
         let mut seen = Vec::new();
         while let Some((i, _)) = stream.next().await {
             seen.push(i);
@@ -439,7 +444,11 @@ mod tests {
                 ])))
         };
 
-        let results = Werk::new().lines(3).workers((0..10).map(make)).run().await;
+        let results = Werk::new()
+            .lines(3)
+            .workers((0..10).map(make))
+            .produce()
+            .await;
         assert_eq!(results.len(), 10);
         assert!(results.iter().all(|r| r.is_ok()));
         let peak = max_concurrent.load(Ordering::SeqCst);
@@ -456,7 +465,7 @@ mod tests {
         let seq = Werk::new()
             .lines(1)
             .workers((0..10).map(|i| agent_with_delay("w", 30, &format!("r{i}"))))
-            .run()
+            .produce()
             .await;
         let seq_elapsed = start.elapsed();
 
@@ -464,7 +473,7 @@ mod tests {
         let par = Werk::new()
             .lines(10)
             .workers((0..10).map(|i| agent_with_delay("w", 30, &format!("r{i}"))))
-            .run()
+            .produce()
             .await;
         let par_elapsed = start.elapsed();
 
@@ -481,23 +490,23 @@ mod tests {
         let results = Werk::new()
             .lines(50)
             .workers((0..500).map(|i| agent_with_response("w", &format!("r{i}"))))
-            .run()
+            .produce()
             .await;
         assert_eq!(results.len(), 500);
         assert!(results.iter().all(|r| r.is_ok()));
     }
 
     #[tokio::test]
-    async fn spawn_accepts_dynamic_submissions() {
-        let (pool, mut stream) = Werk::new().lines(2).spawn();
-        pool.submit(agent_with_response("a", "first"));
-        pool.submit(agent_with_response("b", "second"));
+    async fn spawn_accepts_dynamic_hires() {
+        let (producing, mut stream) = Werk::new().lines(2).spawn();
+        producing.hire(agent_with_response("a", "first"));
+        producing.hire(agent_with_response("b", "second"));
 
         let r1 = stream.next().await.expect("first result");
         let r2 = stream.next().await.expect("second result");
 
-        pool.submit(agent_with_response("c", "third"));
-        drop(pool);
+        producing.hire(agent_with_response("c", "third"));
+        drop(producing);
 
         let r3 = stream.next().await.expect("third result");
         assert!(stream.next().await.is_none(), "stream must end after drop");
@@ -512,23 +521,23 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_keeps_stream_open_while_any_handle_lives() {
-        let (pool, mut stream) = Werk::new().lines(4).spawn();
-        let clone = pool.clone();
-        pool.submit(agent_with_response("a", "done"));
-        drop(pool);
+        let (producing, mut stream) = Werk::new().lines(4).spawn();
+        let clone = producing.clone();
+        producing.hire(agent_with_response("a", "done"));
+        drop(producing);
         assert!(stream.next().await.unwrap().1.is_ok());
-        clone.submit(agent_with_response("b", "done"));
+        clone.hire(agent_with_response("b", "done"));
         assert!(stream.next().await.unwrap().1.is_ok());
         drop(clone);
         assert!(stream.next().await.is_none());
     }
 
     #[tokio::test]
-    async fn spawn_drops_handle_drains_backlog_and_ends_stream() {
-        let (pool, mut stream) = Werk::new().lines(2).spawn();
-        pool.submit(agent_with_response("a", "done"));
-        pool.submit(agent_with_response("b", "done"));
-        drop(pool);
+    async fn spawn_drops_handle_completes_backlog_and_ends_stream() {
+        let (producing, mut stream) = Werk::new().lines(2).spawn();
+        producing.hire(agent_with_response("a", "done"));
+        producing.hire(agent_with_response("b", "done"));
+        drop(producing);
 
         let mut seen = 0;
         while let Some((_, r)) = stream.next().await {
@@ -539,11 +548,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn drain_lets_in_flight_agents_finish_unlike_cancel() {
-        let (pool, mut stream) = Werk::new().lines(2).spawn();
-        pool.submit(agent_with_delay("a", 30, "done"));
-        pool.submit(agent_with_delay("b", 30, "done"));
-        pool.drain();
+    async fn close_lets_in_flight_workers_finish_unlike_interrupt() {
+        let (producing, mut stream) = Werk::new().lines(2).spawn();
+        producing.hire(agent_with_delay("a", 30, "done"));
+        producing.hire(agent_with_delay("b", 30, "done"));
+        producing.close();
 
         let mut seen = 0;
         while let Some((_, r)) = stream.next().await {
@@ -555,28 +564,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_cancel_stops_in_flight_agents() {
-        let (pool, mut stream) = Werk::new().lines(2).spawn();
-        pool.submit(agent_with_delay("slow", 200, "never"));
+    async fn spawn_interrupt_stops_in_flight_workers() {
+        let (producing, mut stream) = Werk::new().lines(2).spawn();
+        producing.hire(agent_with_delay("slow", 200, "never"));
 
         tokio::time::sleep(Duration::from_millis(20)).await;
-        pool.cancel();
+        producing.interrupt();
 
-        let (_, result) = stream.next().await.expect("result after cancel");
+        let (_, result) = stream.next().await.expect("result after interrupt");
         let out = result.unwrap();
         assert_eq!(out.outcome, crate::output::Outcome::Cancelled);
-        assert!(pool.is_cancelled());
-        drop(pool);
+        assert!(producing.is_interrupted());
+        drop(producing);
         assert!(stream.next().await.is_none());
     }
 
     #[tokio::test]
-    async fn preloaded_agents_run_without_explicit_submit() {
-        let (pool, stream) = Werk::new()
+    async fn preloaded_workers_produce_without_explicit_hire() {
+        let (producing, stream) = Werk::new()
             .lines(2)
             .workers(["a", "b"].iter().map(|n| agent_with_response(n, "ok")))
             .spawn();
-        drop(pool);
+        drop(producing);
         let results = stream.collect().await;
         assert_eq!(results.len(), 2);
     }

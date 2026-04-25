@@ -14,7 +14,7 @@ use crate::error::Result;
 use crate::output::Output;
 
 /// RAII token: flips the shared cancel flag when its last clone drops, so
-/// abandoning the handle without an explicit `.cancel()` still unblocks
+/// abandoning the handle without an explicit `.interrupt()` still unblocks
 /// the loop.
 struct CancelGuard {
     cancel: Arc<AtomicBool>,
@@ -30,7 +30,7 @@ impl Drop for CancelGuard {
 /// task. Obtained from [`Agent::retain`](crate::Agent::retain).
 ///
 /// While any clone of the handle is alive, the loop idles after producing
-/// output; dropping the last clone (or calling [`cancel`](Self::cancel))
+/// output; dropping the last clone (or calling [`interrupt`](Self::interrupt))
 /// signals the loop to exit.
 #[derive(Clone)]
 pub struct AgentWorking {
@@ -54,14 +54,14 @@ impl AgentWorking {
 
     /// Signal the agent to stop. The loop observes this at the next turn
     /// boundary or idle-wait poll and exits.
-    pub fn cancel(&self) {
+    pub fn interrupt(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
 
-    /// Returns `true` if a cancel signal has been raised (explicitly via
-    /// [`cancel`](Self::cancel) or implicitly via the last handle being
+    /// Returns `true` if an interrupt signal has been raised (explicitly via
+    /// [`interrupt`](Self::interrupt) or implicitly via the last handle being
     /// dropped).
-    pub fn is_cancelled(&self) -> bool {
+    pub fn is_interrupted(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
     }
 }
@@ -105,10 +105,10 @@ impl Agent {
     ///   [`Output`](crate::output::Output) once the loop exits.
     ///
     /// The loop idles after each terminal output as long as any handle is
-    /// alive. Dropping the last handle calls [`AgentWorking::cancel`] for you
-    /// (RAII safety); an explicit `.cancel()` does the same thing. For a
+    /// alive. Dropping the last handle calls [`AgentWorking::interrupt`] for you
+    /// (RAII safety); an explicit `.interrupt()` does the same thing. For a
     /// pure one-shot run without a handle, use [`Agent::run`] instead: a
-    /// `let (_, out) = agent.retain(); out.await?` pattern will cancel
+    /// `let (_, out) = agent.retain(); out.await?` pattern will interrupt
     /// before the first turn completes.
     ///
     /// Requires a running tokio runtime (`tokio::spawn` is invoked
@@ -155,9 +155,9 @@ mod tests {
     async fn retain_returns_handle_and_future() {
         let (handle, output) = one_shot_agent("hello");
         let clone = handle.clone();
-        // AgentWorking is Clone; OutputFuture is a Future. Cancel so the
+        // AgentWorking is Clone; OutputFuture is a Future. Interrupt so the
         // keep-alive loop terminates.
-        clone.cancel();
+        clone.interrupt();
         let _: Result<Output> = output.await;
     }
 
@@ -170,7 +170,7 @@ mod tests {
         events
             .wait_for(|e| matches!(e.kind, EventKind::AgentStarted { .. }))
             .await;
-        handle.cancel();
+        handle.interrupt();
         let _ = output.await;
     }
 
@@ -186,7 +186,7 @@ mod tests {
         assert!(matches!(cmd.priority, QueuePriority::Next));
         assert!(matches!(cmd.source, CommandSource::UserInput));
         assert!(cmd.agent_name.is_none());
-        handle.cancel();
+        handle.interrupt();
         let _ = output.await;
     }
 
@@ -211,7 +211,7 @@ mod tests {
             "injected instruction must appear in turn 2's user message; got {last_user:?}",
         );
 
-        handle.cancel();
+        handle.interrupt();
         let out = output.await.expect("output");
         assert!(matches!(
             out.outcome,
@@ -229,29 +229,29 @@ mod tests {
             .dequeue_if(Some("anyone"), |_| true)
             .expect("queued command");
         assert_eq!(cmd.content, "relay");
-        handle.cancel();
+        handle.interrupt();
         let _ = output.await;
     }
 
     #[tokio::test]
-    async fn clone_shares_cancel() {
+    async fn clone_shares_interrupt() {
         let (handle, output) = one_shot_agent("done");
         let other = handle.clone();
-        assert!(!handle.is_cancelled());
-        other.cancel();
-        assert!(handle.is_cancelled() && other.is_cancelled());
+        assert!(!handle.is_interrupted());
+        other.interrupt();
+        assert!(handle.is_interrupted() && other.is_interrupted());
         let _ = output.await;
     }
 
     #[tokio::test]
-    async fn cancel_during_idle_preserves_completed_status() {
+    async fn interrupt_during_idle_preserves_completed_status() {
         let events = EventLog::new();
         let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
 
         events
             .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
             .await;
-        handle.cancel();
+        handle.interrupt();
         events
             .wait_for(|e| matches!(e.kind, EventKind::AgentResumed))
             .await;
@@ -260,22 +260,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancel_from_spawned_task() {
+    async fn interrupt_from_spawned_task() {
         let events = EventLog::new();
         let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
 
         events
             .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
             .await;
-        let canceller = handle.clone();
+        let interrupter = handle.clone();
         tokio::spawn(async move {
-            canceller.cancel();
+            interrupter.interrupt();
         });
         let _ = output.await.expect("output");
     }
 
     #[tokio::test]
-    async fn dropping_last_handle_triggers_cancel() {
+    async fn dropping_last_handle_triggers_interrupt() {
         let events = EventLog::new();
         let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
 
@@ -288,7 +288,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dropping_one_of_two_handles_does_not_cancel() {
+    async fn dropping_one_of_two_handles_does_not_interrupt() {
         let events = EventLog::new();
         let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
 
@@ -297,16 +297,16 @@ mod tests {
             .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
             .await;
         drop(handle);
-        // Cancel is NOT set while another handle is alive.
-        assert!(!survivor.is_cancelled());
+        // Interrupt is NOT set while another handle is alive.
+        assert!(!survivor.is_interrupted());
         // cleanup
-        survivor.cancel();
+        survivor.interrupt();
         let _ = output.await;
     }
 
     #[tokio::test]
-    async fn dropping_future_alone_does_not_cancel() {
-        // The future holds no CancelGuard, so dropping it doesn't cancel. The
+    async fn dropping_future_alone_does_not_interrupt() {
+        // The future holds no CancelGuard, so dropping it doesn't interrupt. The
         // loop keeps running: cleanup belongs to the handle.
         let events = EventLog::new();
         let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
@@ -315,8 +315,8 @@ mod tests {
             .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
             .await;
         drop(output);
-        assert!(!handle.is_cancelled());
-        handle.cancel();
+        assert!(!handle.is_interrupted());
+        handle.interrupt();
         events
             .wait_for(|e| matches!(e.kind, EventKind::AgentFinished { .. }))
             .await;
@@ -337,7 +337,7 @@ mod tests {
         events
             .wait_for(|e| matches!(e.kind, EventKind::AgentResumed))
             .await;
-        handle.cancel();
+        handle.interrupt();
         let _ = output.await;
     }
 

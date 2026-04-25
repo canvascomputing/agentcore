@@ -3,7 +3,7 @@
 //! Uses a real LLM provider (`make test_integration`). The test plays the
 //! role of an external controller: it retains an agent via `.retain()`, feeds
 //! it two instructions through `send` (one via the original handle, one via
-//! a clone), cancels via a third clone on a spawned task, then awaits the
+//! a clone), interrupts via a third clone on a spawned task, then awaits the
 //! returned output future.
 
 use super::common;
@@ -85,10 +85,10 @@ async fn external_sender_delivers_two_instructions_and_clone_cancels(
     })
     .await?;
 
-    let canceler = agent.clone();
+    let interrupter = agent.clone();
     tokio::spawn(async move {
-        eprintln!("[test] cancelling via cloned handle from spawned task");
-        canceler.cancel();
+        eprintln!("[test] interrupting via cloned handle from spawned task");
+        interrupter.interrupt();
     });
 
     let output = output.await?;

@@ -178,10 +178,10 @@ async fn main() {
         .lines(config.batch_size)
         .cancel_signal(cancel.clone())
         .workers(agents)
-        .run()
+        .produce()
         .await;
 
-    // Phase 3: Aggregate — `results` is in submission order, so indices align with `files`.
+    // Phase 3: Aggregate — `results` is in hire order, so indices align with `files`.
     let mut languages = BTreeSet::new();
     let mut file_summaries: Vec<Value> = Vec::new();
 

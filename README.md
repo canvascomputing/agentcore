@@ -55,7 +55,7 @@ Example applications built with this project:
 
 - [Terminal REPL](crates/use-cases/src/terminal_repl/): interactive terminal chat with less than 100 lines of code
 - [Project Scanner](crates/use-cases/src/project_scanner/): scan and analyze local files
-- [Divide and Conquer](crates/use-cases/src/divide_and_conquer/): partition a math problem across an agent pool
+- [Divide and Conquer](crates/use-cases/src/divide_and_conquer/): partition a math problem across a Werk of workers
 - [Deep Research](crates/use-cases/src/deep_research/): multi-agent research with web search (requires `BRAVE_API_KEY`)
 - [Model Pricing Tracker](crates/use-cases/src/model_pricing_tracker/): check model prices
 
@@ -77,7 +77,7 @@ make use_case name=<name>    # run one
 - [Policies](#policies): retries, token caps, and turn limits
 - [Output](#output): validated, schema-based responses
 - [Sub-agents](#sub-agents): nested workers
-- [Werks](#werks): parallel execution
+- [Werke](#werke): parallel execution
 - [Todo](#todo): planned work
 
 ### Providers
@@ -140,16 +140,16 @@ let (agent, output) = Agent::new()
 agent.send("What does src/main.rs do?");
 agent.send("Now summarize src/lib.rs.");
 
-agent.cancel(); // stop the agent when there are no more instructions to send
+agent.interrupt(); // stop the agent when there are no more instructions to send
 ```
 
-The agent waits for the next `send` after each reply. Call `cancel()` to stop it.
+The agent waits for the next `send` after each reply. Call `interrupt()` to stop it.
 
 | Method | Description |
 |--------|-------------|
 | `AgentWorking::send(...)` | Send a instruction |
-| `AgentWorking::cancel()` | Stop the agent |
-| `AgentWorking::is_cancelled()` | Check if the agent was cancelled |
+| `AgentWorking::interrupt()` | Stop the agent |
+| `AgentWorking::is_interrupted()` | Check if the agent was interrupted |
 | `AgentWorking::clone()` | Get another handle to the same agent |
 
 
@@ -416,7 +416,7 @@ The following fields are inherited, shared or owned by the sub-agents:
 
 ### Werke
 
-Run many agents in parallel with a `Werk`. Wait for the execution of all agents in a fixed sized pool. Results arrive in *submission order*:
+Run many agents in parallel with a `Werk`. Wait for the execution of all workers on a fixed number of production lines. Results arrive in *hire order*:
 
 ```rust
 use agentwerk::tools::ReadFileTool;
@@ -437,7 +437,7 @@ let workers = docs.iter().map(|doc| {
 let results = Werk::new()
     .lines(10)
     .workers(workers)
-    .run()
+    .produce()
     .await;
 
 for (doc, result) in docs.iter().zip(results.iter()) {
@@ -445,21 +445,21 @@ for (doc, result) in docs.iter().zip(results.iter()) {
 }
 ```
 
-#### Dynamic Number of Agents
+#### Dynamic Number of Workers
 
-Start a dynamic pool of agents, which might grow over time. Results are reported in *completion order*:
+Start a Werk that hires workers over time. Results are reported in *completion order*:
 
 ```rust
-let (pool, mut results) = Werk::new()
+let (producing, mut results) = Werk::new()
     .lines(10)
     .spawn();
 
 let docs = ["document A", "document B"];
 for doc in &docs {
-    pool.submit(template.clone().instruction_prompt(format!("Summarize {doc}")));
+    producing.hire(template.clone().instruction_prompt(format!("Summarize {doc}")));
 }
 
-pool.drain();
+producing.close();
 
 while let Some((i, result)) = results.next().await {
     let out = result?;
@@ -469,11 +469,11 @@ while let Some((i, result)) = results.next().await {
 
 | Method | Description |
 |--------|-------------|
-| `WerkProducing::submit(...)` | Enqueue another agent |
-| `WerkProducing::drain()` | Stop adding new agents and let running agents finish |
-| `WerkProducing::cancel()` | Interrupt all agents work and drain the pool |
-| `WerkProducing::is_cancelled()` | Check if the pool was cancelled |
-| `WerkProducing::clone()` | Get another handle to the same pool |
+| `WerkProducing::hire(...)` | Hire another worker |
+| `WerkProducing::close()` | Stop hiring and let in-flight workers finish |
+| `WerkProducing::interrupt()` | Stop all workers and close the workshop |
+| `WerkProducing::is_interrupted()` | Check if the workshop was interrupted |
+| `WerkProducing::clone()` | Get another handle to the same workshop |
 
 ### Todo
 

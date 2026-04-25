@@ -7,9 +7,9 @@
 //! - [`AgentWorking`] — cheap to clone. Public surface:
 //!   - `send(instruction)` — enqueue a new instruction; picked up at the
 //!     next turn boundary or immediately if the agent is parked idle.
-//!   - `cancel()` — flip the shared cancel signal.
-//!   - `is_cancelled()` — read that signal.
-//!   - Dropping the last handle auto-cancels (RAII leak protection).
+//!   - `interrupt()` — flip the shared cancel signal.
+//!   - `is_interrupted()` — read that signal.
+//!   - Dropping the last handle auto-interrupts (RAII leak protection).
 //! - [`OutputFuture`] — resolves to the final `Output` when the
 //!   loop exits. Polling it twice returns an error.
 //!
@@ -31,7 +31,7 @@ use agentwerk::testutil::{text_response, MockProvider};
 use agentwerk::{Agent, Event};
 
 #[tokio::test]
-async fn output_resolves_with_final_text_after_cancel() {
+async fn output_resolves_with_final_text_after_interrupt() {
     let events = EventLog::new();
     let (handle, output) = Agent::new()
         .name("demo")
@@ -43,11 +43,11 @@ async fn output_resolves_with_final_text_after_cancel() {
         .retain();
 
     // Wait until the loop has produced its terminal output and parked idle;
-    // cancelling before that would abort turn 1 with `Cancelled` status.
+    // interrupting before that would abort turn 1 with `Cancelled` status.
     events
         .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
         .await;
-    handle.cancel();
+    handle.interrupt();
     let output = output.await.expect("run should succeed");
     assert_eq!(output.response_raw, "hello world");
     assert_eq!(output.outcome, Outcome::Completed);
@@ -74,12 +74,12 @@ async fn send_injects_an_instruction_into_the_next_turn() {
         "injected instruction must appear in turn 2's user message; got {last_user:?}",
     );
 
-    handle.cancel();
+    handle.interrupt();
     let _ = output.await;
 }
 
 #[tokio::test]
-async fn is_cancelled_returns_true_after_cancel() {
+async fn is_interrupted_returns_true_after_interrupt() {
     let (handle, output) = Agent::new()
         .model_name("mock")
         .provider(Arc::new(MockProvider::text("done")))
@@ -87,21 +87,21 @@ async fn is_cancelled_returns_true_after_cancel() {
         .instruction_prompt("x")
         .retain();
 
-    assert!(!handle.is_cancelled());
-    handle.cancel();
-    assert!(handle.is_cancelled());
+    assert!(!handle.is_interrupted());
+    handle.interrupt();
+    assert!(handle.is_interrupted());
     let _ = output.await;
 }
 
 #[tokio::test]
-async fn cancel_breaks_an_idle_agent_out_of_its_wait() {
+async fn interrupt_breaks_an_idle_agent_out_of_its_wait() {
     let events = EventLog::new();
     let (_provider, handle, output) = retain_agent(vec![text_response("first")], &events);
 
     events
         .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
         .await;
-    handle.cancel();
+    handle.interrupt();
     events
         .wait_for(|e| matches!(e.kind, EventKind::AgentResumed))
         .await;
@@ -110,14 +110,14 @@ async fn cancel_breaks_an_idle_agent_out_of_its_wait() {
 }
 
 #[tokio::test]
-async fn send_and_cancel_on_a_clone_reach_the_original_task() {
+async fn send_and_interrupt_on_a_clone_reach_the_original_task() {
     let events = EventLog::new();
     let (provider, original, output) = retain_agent(
         vec![text_response("first"), text_response("second")],
         &events,
     );
     let sender = original.clone();
-    let canceller = original.clone();
+    let interrupter = original.clone();
 
     events
         .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
@@ -128,11 +128,11 @@ async fn send_and_cancel_on_a_clone_reach_the_original_task() {
     let second = provider.last_request().expect("second request");
     assert!(last_user_text(&second).unwrap().contains("via-clone"));
 
-    assert!(!original.is_cancelled());
-    canceller.cancel();
+    assert!(!original.is_interrupted());
+    interrupter.interrupt();
     assert!(
-        original.is_cancelled() && sender.is_cancelled(),
-        "cancel from one clone must be visible from every clone",
+        original.is_interrupted() && sender.is_interrupted(),
+        "interrupt from one clone must be visible from every clone",
     );
 
     let _ = output.await.expect("output");

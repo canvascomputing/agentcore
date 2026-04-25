@@ -79,7 +79,7 @@ async fn main() {
         running.send(line);
     }
 
-    running.cancel();
+    running.interrupt();
     let result = match early_result {
         Some(r) => r,
         None => (&mut output).await,

@@ -74,12 +74,12 @@ async fn main() {
     });
 
     let started = Instant::now();
-    let (pool, mut stream) = Werk::new()
+    let (producing, mut stream) = Werk::new()
         .lines(args.concurrency)
         .cancel_signal(cancel)
         .workers(agents)
         .spawn();
-    pool.drain();
+    producing.close();
 
     let mut partial_sums: Vec<Option<i128>> = vec![None; total_chunks];
     let mut failures = 0usize;
