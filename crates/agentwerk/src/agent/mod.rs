@@ -5,9 +5,9 @@ pub(crate) mod compact;
 pub(crate) mod error;
 pub(crate) mod r#loop;
 pub(crate) mod prompts;
-pub(crate) mod queue;
 mod retain;
 pub(crate) mod spec;
+pub(crate) mod work;
 
 pub use agent::Agent;
 pub use error::AgentError;

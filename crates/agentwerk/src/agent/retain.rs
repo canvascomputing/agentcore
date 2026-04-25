@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 
 use crate::agent::agent::Agent;
 use crate::agent::error::AgentError;
-use crate::agent::queue::{CommandQueue, CommandSource, QueuePriority, QueuedCommand};
+use crate::agent::work::{CommandSource, IncomingWork, QueuePriority, Work};
 use crate::error::Result;
 use crate::output::Output;
 
@@ -34,7 +34,7 @@ impl Drop for CancelGuard {
 /// signals the loop to exit.
 #[derive(Clone)]
 pub struct AgentWorking {
-    queue: Arc<CommandQueue>,
+    queue: Arc<IncomingWork>,
     cancel: Arc<AtomicBool>,
     #[allow(dead_code)]
     guard: Arc<CancelGuard>,
@@ -44,7 +44,7 @@ impl AgentWorking {
     /// Hand the running agent a new task. Picked up at the next turn
     /// boundary, or immediately if the agent is parked idle.
     pub fn task(&self, task: impl Into<String>) {
-        self.queue.enqueue(QueuedCommand {
+        self.queue.add(Work {
             content: task.into(),
             priority: QueuePriority::Next,
             source: CommandSource::UserInput,
@@ -116,7 +116,7 @@ impl Agent {
     /// `.task(...)` set in the builder or follow-up
     /// [`AgentWorking::task`] calls on the returned handle.
     pub fn retain(self) -> (AgentWorking, OutputFuture) {
-        let queue = Arc::new(CommandQueue::new());
+        let queue = Arc::new(IncomingWork::new());
         let cancel = Arc::new(AtomicBool::new(false));
         let guard = Arc::new(CancelGuard {
             cancel: cancel.clone(),
@@ -124,7 +124,7 @@ impl Agent {
 
         let prepared = self
             .interrupt_signal(cancel.clone())
-            .command_queue(queue.clone())
+            .incoming_work(queue.clone())
             .keep_alive();
 
         let join = tokio::spawn(async move { prepared.work().await });
@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn task_enqueues_user_input_command() {
+    async fn task_adds_user_input_work() {
         let (handle, output) = one_shot_agent("done");
         handle.task("hi");
         let cmd = handle

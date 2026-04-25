@@ -415,7 +415,7 @@ The following fields are inherited, shared or owned by the coworkers:
 | Behavior | Fields |
 |---|---|
 | Inherited | `provider`, `model`, `working_dir`, `event_handler`, `interrupt_signal` |
-| Shared | `command_queue`, `session_store` |
+| Shared | `incoming_work`, `session_store` |
 | Per coworker | `role`, `task`, `behavior`, `context`, `tools`, `contract`, `max_turns`, `max_request_tokens`, `max_input_tokens`, `max_output_tokens`, `max_contract_retries`, `max_request_retries`, `request_retry_delay` |
 
 ### Werk

@@ -185,7 +185,7 @@ impl ToolLike for AgentTool {
 
             if args.background.unwrap_or(false) {
                 let id = generate_agent_name(&args.description);
-                let queue = runtime.command_queue.clone();
+                let queue = runtime.incoming_work.clone();
                 let agent_id = id.clone();
                 let caller_for_child = caller.clone();
                 tokio::spawn(async move {
@@ -194,7 +194,7 @@ impl ToolLike for AgentTool {
                         Err(e) => format!("Failed: {e}"),
                     };
                     if let Some(q) = queue {
-                        q.enqueue_notification(&agent_id, &summary);
+                        q.add_notification(&agent_id, &summary);
                     }
                 });
                 Ok(ToolResult::success(format!(
@@ -214,7 +214,7 @@ impl ToolLike for AgentTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::queue::CommandQueue;
+    use crate::agent::work::IncomingWork;
     use crate::testutil::*;
     use std::sync::Arc;
 
@@ -251,7 +251,7 @@ mod tests {
             .role("")
             .tool(AgentTool);
 
-        let queue = Arc::new(CommandQueue::new());
+        let queue = Arc::new(IncomingWork::new());
 
         let provider = Arc::new(MockProvider::new(vec![
             tool_response(
@@ -286,8 +286,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_tool_background_with_schema_enqueues_json() {
-        // Background path: the child's `response_raw` is what `enqueue_notification`
+    async fn agent_tool_background_with_schema_adds_json() {
+        // Background path: the child's `response_raw` is what `add_notification`
         // ships in the queue. With the new design, a schema-constrained child's
         // `response_raw` IS the validated JSON text — so the queued notification
         // must carry the JSON verbatim (modulo the `"Task <id> completed:"` prefix).
@@ -297,7 +297,7 @@ mod tests {
             .role("")
             .tool(AgentTool);
 
-        let queue = Arc::new(CommandQueue::new());
+        let queue = Arc::new(IncomingWork::new());
         let valid_json = r#"{"answer":42}"#;
 
         // Background spawn means the child's first turn races the parent's

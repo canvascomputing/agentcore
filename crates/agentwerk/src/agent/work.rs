@@ -10,14 +10,14 @@ pub(crate) enum QueuePriority {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct QueuedCommand {
+pub(crate) struct Work {
     pub(crate) content: String,
     pub(crate) priority: QueuePriority,
     pub(crate) source: CommandSource,
     pub(crate) agent_name: Option<String>,
 }
 
-impl QueuedCommand {
+impl Work {
     /// A command with no agent_name is visible to all agents.
     /// A targeted command is only visible to the named agent.
     fn is_visible_to(&self, agent_name: Option<&str>) -> bool {
@@ -56,23 +56,23 @@ pub(crate) enum CommandSource {
 }
 
 /// Thread-safe priority queue for commands.
-pub(crate) struct CommandQueue {
-    inner: Arc<Mutex<VecDeque<QueuedCommand>>>,
+pub(crate) struct IncomingWork {
+    inner: Arc<Mutex<VecDeque<Work>>>,
 }
 
-impl CommandQueue {
+impl IncomingWork {
     pub(crate) fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
-    pub(crate) fn enqueue(&self, command: QueuedCommand) {
-        self.inner.lock().unwrap().push_back(command);
+    pub(crate) fn add(&self, work: Work) {
+        self.inner.lock().unwrap().push_back(work);
     }
 
-    pub(crate) fn enqueue_notification(&self, task_id: &str, summary: &str) {
-        self.enqueue(QueuedCommand {
+    pub(crate) fn add_notification(&self, task_id: &str, summary: &str) {
+        self.add(Work {
             content: format!("Task {task_id} completed: {summary}"),
             priority: QueuePriority::Later,
             source: CommandSource::TaskNotification,
@@ -83,9 +83,9 @@ impl CommandQueue {
     /// Dequeue the highest-priority command visible to the given agent that also
     /// satisfies `pred`. Ties break by insertion order. Commands failing the
     /// predicate are skipped (not removed).
-    pub(crate) fn dequeue_if<F>(&self, agent_name: Option<&str>, pred: F) -> Option<QueuedCommand>
+    pub(crate) fn dequeue_if<F>(&self, agent_name: Option<&str>, pred: F) -> Option<Work>
     where
-        F: Fn(&QueuedCommand) -> bool,
+        F: Fn(&Work) -> bool,
     {
         let mut queue = self.inner.lock().unwrap();
         let idx = queue
@@ -102,8 +102,8 @@ impl CommandQueue {
 mod tests {
     use super::*;
 
-    fn cmd(target: Option<&str>, priority: QueuePriority) -> QueuedCommand {
-        QueuedCommand {
+    fn cmd(target: Option<&str>, priority: QueuePriority) -> Work {
+        Work {
             content: "x".into(),
             priority,
             source: CommandSource::UserInput,
@@ -134,17 +134,17 @@ mod tests {
 
     #[test]
     fn dequeue_if_returns_none_when_empty() {
-        let q = CommandQueue::new();
+        let q = IncomingWork::new();
         assert!(q.dequeue_if(Some("alice"), |_| true).is_none());
     }
 
     #[test]
     fn dequeue_if_skips_items_with_later_priority() {
-        let q = CommandQueue::new();
-        q.enqueue(cmd(Some("alice"), QueuePriority::Later));
+        let q = IncomingWork::new();
+        q.add(cmd(Some("alice"), QueuePriority::Later));
 
         // Predicate rejects Later → nothing returned, item still in queue.
-        let pred = |c: &QueuedCommand| c.priority != QueuePriority::Later;
+        let pred = |c: &Work| c.priority != QueuePriority::Later;
         assert!(q.dequeue_if(Some("alice"), pred).is_none());
 
         // Without the filter it dequeues.
@@ -153,9 +153,9 @@ mod tests {
 
     #[test]
     fn dequeue_if_prefers_higher_priority_among_visible_items() {
-        let q = CommandQueue::new();
-        q.enqueue(cmd(Some("alice"), QueuePriority::Later));
-        q.enqueue(cmd(Some("alice"), QueuePriority::Next));
+        let q = IncomingWork::new();
+        q.add(cmd(Some("alice"), QueuePriority::Later));
+        q.add(cmd(Some("alice"), QueuePriority::Next));
 
         let first = q.dequeue_if(Some("alice"), |_| true).unwrap();
         assert_eq!(first.priority, QueuePriority::Next);
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn as_user_message_plain_source_is_content_only() {
-        let cmd = QueuedCommand {
+        let cmd = Work {
             content: "hello".into(),
             priority: QueuePriority::Next,
             source: CommandSource::UserInput,
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn as_user_message_peer_message_prepends_header() {
-        let cmd = QueuedCommand {
+        let cmd = Work {
             content: "ping".into(),
             priority: QueuePriority::Next,
             source: CommandSource::PeerMessage {
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn as_user_message_peer_message_without_summary() {
-        let cmd = QueuedCommand {
+        let cmd = Work {
             content: "ping".into(),
             priority: QueuePriority::Next,
             source: CommandSource::PeerMessage {

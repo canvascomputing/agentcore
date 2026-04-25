@@ -24,8 +24,8 @@ use crate::util::{
 use super::compact;
 use super::error::AgentError;
 use super::prompts::{self as prompts};
-use super::queue::{CommandQueue, QueuePriority};
 use super::spec::AgentSpec;
+use super::work::{IncomingWork, QueuePriority};
 
 /// Externals plus per-agent resolutions shared by the loop. Externals
 /// (provider, handlers, queue, store) inherit tree-wide so a child sub-agent
@@ -37,7 +37,7 @@ pub(crate) struct LoopRuntime {
     pub interrupt_signal: Arc<AtomicBool>,
     pub working_dir: PathBuf,
     pub default_context: String,
-    pub command_queue: Option<Arc<CommandQueue>>,
+    pub incoming_work: Option<Arc<IncomingWork>>,
     pub session_store: Option<Arc<Mutex<SessionStore>>>,
     pub tool_registry: Arc<ToolRegistry>,
     pub templates: HashMap<String, Value>,
@@ -333,7 +333,7 @@ pub(crate) fn run_loop(
                 }
                 state.messages.push(Message::User { content: blocks });
                 transcribe(state.messages.last().unwrap(), None);
-                if let Some(queue) = runtime.command_queue.as_ref() {
+                if let Some(queue) = runtime.incoming_work.as_ref() {
                     while let Some(cmd) =
                         queue.dequeue_if(Some(&spec.name), |c| c.priority != QueuePriority::Later)
                     {
@@ -356,7 +356,7 @@ pub(crate) fn run_loop(
 
             // Drain queued messages even without tool use
             let before = state.messages.len();
-            if let Some(queue) = runtime.command_queue.as_ref() {
+            if let Some(queue) = runtime.incoming_work.as_ref() {
                 while let Some(cmd) =
                     queue.dequeue_if(Some(&spec.name), |c| c.priority != QueuePriority::Later)
                 {
@@ -378,7 +378,7 @@ pub(crate) fn run_loop(
                         break false;
                     }
                     let before = state.messages.len();
-                    if let Some(queue) = runtime.command_queue.as_ref() {
+                    if let Some(queue) = runtime.incoming_work.as_ref() {
                         while let Some(cmd) = queue
                             .dequeue_if(Some(&spec.name), |c| c.priority != QueuePriority::Later)
                         {
@@ -498,7 +498,7 @@ pub(crate) fn run_loop(
 mod tests {
     use super::super::agent::Agent;
     use super::*;
-    use crate::agent::queue::{CommandSource, QueuedCommand};
+    use crate::agent::work::{CommandSource, Work};
     use crate::error::Error;
     use crate::provider::types::ContentBlock;
     use crate::testutil::*;
@@ -682,7 +682,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn command_queue_drains_next_priority() {
+    async fn incoming_work_drains_next_priority() {
         use std::sync::Arc;
         let provider = MockProvider::new(vec![
             tool_response("t", "c1", serde_json::json!({})),
@@ -694,8 +694,8 @@ mod tests {
             .role("")
             .tool(MockTool::new("t", false, "ok"));
 
-        let queue = Arc::new(CommandQueue::new());
-        queue.enqueue(QueuedCommand {
+        let queue = Arc::new(IncomingWork::new());
+        queue.add(Work {
             content: "extra instruction".into(),
             priority: QueuePriority::Next,
             source: CommandSource::UserInput,
@@ -718,7 +718,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn command_queue_requeues_later_priority() {
+    async fn incoming_work_requeues_later_priority() {
         use std::sync::Arc;
         let provider = MockProvider::new(vec![
             tool_response("t", "c1", serde_json::json!({})),
@@ -730,8 +730,8 @@ mod tests {
             .role("")
             .tool(MockTool::new("t", false, "ok"));
 
-        let queue = Arc::new(CommandQueue::new());
-        queue.enqueue(QueuedCommand {
+        let queue = Arc::new(IncomingWork::new());
+        queue.add(Work {
             content: "later task".into(),
             priority: QueuePriority::Later,
             source: CommandSource::TaskNotification,
@@ -858,7 +858,7 @@ mod tests {
             event_handler: Arc::new(|_| {}),
             interrupt_signal: Arc::new(AtomicBool::new(false)),
             working_dir: PathBuf::from("/tmp"),
-            command_queue: None,
+            incoming_work: None,
             session_store: None,
             default_context: env.to_string(),
             tool_registry: Arc::new(ToolRegistry::new()),
@@ -1113,12 +1113,12 @@ mod tests {
     // Wake sources (W1-W6):   does a queue item wake an idle listener?
     // Lifecycle (L1-L6):      do one-shot / timeout / cancel / events behave?
 
-    use crate::agent::queue::CommandQueue;
+    use crate::agent::work::IncomingWork;
 
     const AGENT_NAME: &str = "test-agent";
 
-    fn peer_msg(target: Option<&str>, from: &str, content: &str) -> QueuedCommand {
-        QueuedCommand {
+    fn peer_msg(target: Option<&str>, from: &str, content: &str) -> Work {
+        Work {
             content: content.into(),
             priority: QueuePriority::Next,
             source: CommandSource::PeerMessage {
@@ -1129,8 +1129,8 @@ mod tests {
         }
     }
 
-    fn task_notification(target: Option<&str>, content: &str) -> QueuedCommand {
-        QueuedCommand {
+    fn task_notification(target: Option<&str>, content: &str) -> Work {
+        Work {
             content: content.into(),
             priority: QueuePriority::Next,
             source: CommandSource::TaskNotification,
@@ -1138,8 +1138,8 @@ mod tests {
         }
     }
 
-    fn user_input(target: Option<&str>, content: &str) -> QueuedCommand {
-        QueuedCommand {
+    fn user_input(target: Option<&str>, content: &str) -> Work {
+        Work {
             content: content.into(),
             priority: QueuePriority::Next,
             source: CommandSource::UserInput,
@@ -1149,18 +1149,18 @@ mod tests {
 
     /// Build a harness whose agent name is `AGENT_NAME` and which shares a
     /// fresh queue we return to the test for direct manipulation.
-    fn listener_harness(provider: Arc<MockProvider>) -> (TestHarness, Arc<CommandQueue>) {
-        let queue = Arc::new(CommandQueue::new());
+    fn listener_harness(provider: Arc<MockProvider>) -> (TestHarness, Arc<IncomingWork>) {
+        let queue = Arc::new(IncomingWork::new());
         let harness = TestHarness::with_provider_and_queue(provider, queue.clone());
         (harness, queue)
     }
 
     /// Enqueue `cmd` after `delay_ms`. Used to drive wake-during-wait tests.
-    fn enqueue_after(queue: &Arc<CommandQueue>, delay_ms: u64, cmd: QueuedCommand) {
+    fn add_after(queue: &Arc<IncomingWork>, delay_ms: u64, cmd: Work) {
         let q = queue.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-            q.enqueue(cmd);
+            q.add(cmd);
         });
     }
 
@@ -1183,7 +1183,7 @@ mod tests {
     #[tokio::test]
     async fn wake_on_peer_message_targeted_at_me() {
         let (harness, queue) = listener_harness(two_text_responses());
-        enqueue_after(&queue, 120, peer_msg(Some(AGENT_NAME), "peer", "hi"));
+        add_after(&queue, 120, peer_msg(Some(AGENT_NAME), "peer", "hi"));
         cancel_after(harness.interrupt_signal_for_test(), 400);
 
         let agent = simple_agent().keep_alive();
@@ -1198,7 +1198,7 @@ mod tests {
     #[tokio::test]
     async fn wake_on_task_notification_broadcast() {
         let (harness, queue) = listener_harness(two_text_responses());
-        enqueue_after(&queue, 120, task_notification(None, "Task foo completed"));
+        add_after(&queue, 120, task_notification(None, "Task foo completed"));
         cancel_after(harness.interrupt_signal_for_test(), 400);
 
         let agent = simple_agent().keep_alive();
@@ -1213,7 +1213,7 @@ mod tests {
     #[tokio::test]
     async fn wake_on_user_input_targeted_at_me() {
         let (harness, queue) = listener_harness(two_text_responses());
-        enqueue_after(&queue, 120, user_input(Some(AGENT_NAME), "hello"));
+        add_after(&queue, 120, user_input(Some(AGENT_NAME), "hello"));
         cancel_after(harness.interrupt_signal_for_test(), 400);
 
         let agent = simple_agent().keep_alive();
@@ -1228,7 +1228,7 @@ mod tests {
     #[tokio::test]
     async fn wake_on_user_input_broadcast() {
         let (harness, queue) = listener_harness(two_text_responses());
-        enqueue_after(&queue, 120, user_input(None, "anyone?"));
+        add_after(&queue, 120, user_input(None, "anyone?"));
         cancel_after(harness.interrupt_signal_for_test(), 400);
 
         let agent = simple_agent().keep_alive();
@@ -1278,7 +1278,7 @@ mod tests {
     #[tokio::test]
     async fn idle_and_resumed_events_fire_in_order() {
         let (harness, queue) = listener_harness(two_text_responses());
-        enqueue_after(&queue, 120, peer_msg(Some(AGENT_NAME), "peer", "hi"));
+        add_after(&queue, 120, peer_msg(Some(AGENT_NAME), "peer", "hi"));
         cancel_after(harness.interrupt_signal_for_test(), 400);
 
         let agent = simple_agent().keep_alive();
@@ -1308,7 +1308,7 @@ mod tests {
     #[tokio::test]
     async fn drain_before_exit_picks_up_preloaded_message() {
         let (harness, queue) = listener_harness(two_text_responses());
-        queue.enqueue(peer_msg(Some(AGENT_NAME), "peer", "pre-loaded"));
+        queue.add(peer_msg(Some(AGENT_NAME), "peer", "pre-loaded"));
 
         // No keep_alive — the drain-before-exit safety net must still catch it.
         let agent = simple_agent();
@@ -1325,8 +1325,8 @@ mod tests {
         let (harness, queue) = listener_harness(two_text_responses());
         // Preload two messages. Both must arrive in a single drained turn,
         // not in two separate turns.
-        queue.enqueue(peer_msg(Some(AGENT_NAME), "alice", "first"));
-        queue.enqueue(peer_msg(Some(AGENT_NAME), "bob", "second"));
+        queue.add(peer_msg(Some(AGENT_NAME), "alice", "first"));
+        queue.add(peer_msg(Some(AGENT_NAME), "bob", "second"));
 
         cancel_after(harness.interrupt_signal_for_test(), 300);
 
@@ -1341,19 +1341,19 @@ mod tests {
 
     #[test]
     fn compile_uses_externally_supplied_queue_and_cancel() {
-        let queue = Arc::new(CommandQueue::new());
+        let queue = Arc::new(IncomingWork::new());
         let cancel = Arc::new(AtomicBool::new(false));
         let agent = Agent::new()
             .model_name("mock")
             .provider(Arc::new(MockProvider::text("x")))
             .task("")
             .interrupt_signal(cancel.clone())
-            .command_queue(queue.clone());
+            .incoming_work(queue.clone());
 
         let (_spec, rt) = agent.compile(None);
 
         assert!(
-            Arc::ptr_eq(rt.command_queue.as_ref().unwrap(), &queue),
+            Arc::ptr_eq(rt.incoming_work.as_ref().unwrap(), &queue),
             "LoopRuntime should reuse the externally supplied queue"
         );
         assert!(
@@ -1371,7 +1371,7 @@ mod tests {
 
         let (_spec, rt) = agent.compile(None);
         assert!(
-            rt.command_queue.is_some(),
+            rt.incoming_work.is_some(),
             "default queue must be allocated so peer messaging still works"
         );
     }

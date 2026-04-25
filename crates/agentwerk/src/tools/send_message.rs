@@ -1,4 +1,4 @@
-//! Peer-to-peer agent messaging. Routes a message through the shared `CommandQueue` so a running sibling agent picks it up at the next turn boundary.
+//! Peer-to-peer agent messaging. Routes a message through the shared `IncomingWork` so a running sibling agent picks it up at the next turn boundary.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -6,7 +6,7 @@ use std::pin::Pin;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::agent::queue::{CommandSource, QueuePriority, QueuedCommand};
+use crate::agent::work::{CommandSource, QueuePriority, Work};
 use crate::error::Result;
 use crate::tools::error::ToolError;
 use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
@@ -92,7 +92,7 @@ impl ToolLike for SendMessageTool {
                 .as_ref()
                 .ok_or_else(|| tool_err("caller LoopSpec not available in ToolContext"))?;
             let queue = runtime
-                .command_queue
+                .incoming_work
                 .as_ref()
                 .ok_or_else(|| tool_err("Command queue not available on LoopRuntime"))?;
 
@@ -100,7 +100,7 @@ impl ToolLike for SendMessageTool {
                 return Ok(ToolResult::error("Cannot send a message to yourself"));
             }
 
-            queue.enqueue(QueuedCommand {
+            queue.add(Work {
                 content: args.message,
                 priority: QueuePriority::Next,
                 source: CommandSource::PeerMessage {
@@ -125,20 +125,20 @@ fn tool_err(message: impl Into<String>) -> ToolError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::queue::CommandQueue;
+    use crate::agent::work::IncomingWork;
     use crate::agent::{Agent, AgentSpec};
     use crate::testutil::*;
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    fn harness_ctx() -> (ToolContext, Arc<CommandQueue>, Arc<AgentSpec>) {
-        let queue = Arc::new(CommandQueue::new());
+    fn harness_ctx() -> (ToolContext, Arc<IncomingWork>, Arc<AgentSpec>) {
+        let queue = Arc::new(IncomingWork::new());
         let caller = Agent::new()
             .name("alice")
             .model_name("mock")
             .role("")
             .provider(Arc::new(MockProvider::text("unused")))
-            .command_queue(queue.clone());
+            .incoming_work(queue.clone());
         let (spec, runtime) = caller.compile(None);
         let ctx = ToolContext::new(PathBuf::from("."))
             .runtime(Arc::new(runtime))
@@ -147,7 +147,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_enqueues_targeted_command() {
+    async fn send_adds_targeted_work() {
         let tool = SendMessageTool;
         let (ctx, queue, _) = harness_ctx();
 

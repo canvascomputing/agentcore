@@ -21,9 +21,9 @@ use crate::event::{default_logger, Event};
 use crate::output::{Output, OutputSchema};
 
 use super::prompts;
-use super::queue::CommandQueue;
 use super::r#loop::{run_loop, LoopRuntime, LoopState};
 use super::spec::AgentSpec;
+use super::work::IncomingWork;
 
 /// An agent. Cheap to clone: the static template is shared, per-run fields are not.
 ///
@@ -53,7 +53,7 @@ pub struct Agent {
     pub(crate) working_dir: Option<PathBuf>,
     pub(crate) event_handler: Option<Arc<dyn Fn(Event) + Send + Sync>>,
     pub(crate) interrupt_signal: Option<Arc<AtomicBool>>,
-    pub(crate) command_queue: Option<Arc<CommandQueue>>,
+    pub(crate) incoming_work: Option<Arc<IncomingWork>>,
     pub(crate) session_dir: Option<PathBuf>,
 }
 
@@ -64,7 +64,7 @@ impl Default for Agent {
             provider: None,
             task: String::new(),
             event_handler: None,
-            command_queue: None,
+            incoming_work: None,
             interrupt_signal: None,
             working_dir: None,
             session_dir: None,
@@ -310,8 +310,8 @@ impl Agent {
     }
 
     /// Install an externally-owned command queue so an `AgentWorking` can inject instructions.
-    pub(crate) fn command_queue(mut self, q: Arc<CommandQueue>) -> Self {
-        self.command_queue = Some(q);
+    pub(crate) fn incoming_work(mut self, q: Arc<IncomingWork>) -> Self {
+        self.incoming_work = Some(q);
         self
     }
 
@@ -440,10 +440,10 @@ impl Agent {
 
         // Every root run carries a command queue so background sub-agents can post
         // notifications back. An externally supplied queue wins so a handle can reach the loop.
-        let command_queue = Some(
-            self.command_queue
+        let incoming_work = Some(
+            self.incoming_work
                 .clone()
-                .unwrap_or_else(|| Arc::new(CommandQueue::new())),
+                .unwrap_or_else(|| Arc::new(IncomingWork::new())),
         );
 
         let session_store = self.session_dir.as_ref().map(|dir| {
@@ -458,7 +458,7 @@ impl Agent {
             event_handler,
             interrupt_signal,
             working_dir,
-            command_queue,
+            incoming_work,
             session_store,
             default_context,
             tool_registry: build_tools(spec),
@@ -485,7 +485,7 @@ impl Agent {
                 .working_dir
                 .clone()
                 .unwrap_or_else(|| parent.working_dir.clone()),
-            command_queue: parent.command_queue.clone(),
+            incoming_work: parent.incoming_work.clone(),
             session_store: parent.session_store.clone(),
             default_context: parent.default_context.clone(),
             tool_registry: build_tools(spec),
