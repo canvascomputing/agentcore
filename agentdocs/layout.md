@@ -46,7 +46,7 @@ Where code lives and the rules that govern placement.
 - `tool.rs` defines `ToolLike`, `Tool`, `ToolRegistry`, and `ToolContext`.
 - `read_file.rs`, `write_file.rs`, `edit_file.rs`, `glob.rs`, `grep.rs`, and `list_directory.rs` are filesystem tools.
 - `bash.rs` is the shell tool (restricted via `new()`, unrestricted via `unrestricted()`).
-- `spawn_agent.rs`, `send_message.rs`, `task_tools.rs`, and `tool_search.rs` are orchestration tools.
+- `agent.rs`, `send_message.rs`, `task_tools.rs`, and `tool_search.rs` are orchestration tools.
 - `web_fetch.rs` is the web fetch tool.
 
 ## Internal modules

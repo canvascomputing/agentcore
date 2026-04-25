@@ -21,7 +21,7 @@ Fast file pattern matching tool that works with any codebase size.
 
 - Returns matching file paths sorted by modification time (newest first).
 - Use this when you need to find files by name or extension patterns.
-- For open-ended searches that may require multiple rounds, use spawn_agent instead.";
+- For open-ended searches that may require multiple rounds, use agent instead.";
 
 impl ToolLike for GlobTool {
     fn name(&self) -> &str {

@@ -56,7 +56,7 @@ async fn orchestrator_sends_message_to_backgrounded_worker(
 
     let orchestrator_identity = format!(
         "You coordinate work. Do exactly these two steps in order:\n\
-         1. Call spawn_agent with agent=\"worker\", background=true, \
+         1. Call agent with agent=\"worker\", background=true, \
             description=\"worker\", instruction=\"wait for a message\".\n\
          2. Call send_message with to=\"worker\", message=\"the secret is {secret}\".\n\
          Then end your turn with a short confirmation."
@@ -118,7 +118,7 @@ async fn orchestrator_sends_message_to_backgrounded_worker(
     );
     assert!(
         output.statistics.tool_calls >= 2,
-        "orchestrator should call at least spawn_agent + send_message, got {}",
+        "orchestrator should call at least agent + send_message, got {}",
         output.statistics.tool_calls
     );
 

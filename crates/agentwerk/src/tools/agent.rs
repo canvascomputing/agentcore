@@ -19,7 +19,7 @@ const DEFAULT_IDENTITY: &str = "You are a focused helper agent. Answer concisely
 /// when an agent declares `.sub_agents([...])`. The sub-agent inherits the
 /// caller's provider, model, working directory, event handler, and cancel
 /// signal; tools and prompts come from the registered template.
-pub struct SpawnAgentTool;
+pub struct AgentTool;
 
 /// Tool-control fields. Per-agent config overrides (identity, model, max_*, …)
 /// live in the same JSON object and are applied via `Agent::apply_overrides`.
@@ -55,9 +55,9 @@ Write prompts that prove you understood the problem and what specifically needs 
 - Foreground (default): blocks until the agent completes. Use when you need results before proceeding.
 - Background: returns immediately with an agent ID. Use when you have independent work to do in parallel.";
 
-impl ToolLike for SpawnAgentTool {
+impl ToolLike for AgentTool {
     fn name(&self) -> &str {
-        "spawn_agent"
+        "agent"
     }
 
     fn description(&self) -> &str {
@@ -148,7 +148,7 @@ impl ToolLike for SpawnAgentTool {
                 .runtime
                 .as_ref()
                 .ok_or_else(|| ToolError::ExecutionFailed {
-                    tool_name: "spawn_agent".into(),
+                    tool_name: "agent".into(),
                     message: "LoopRuntime not available in ToolContext".into(),
                 })?
                 .clone();
@@ -156,7 +156,7 @@ impl ToolLike for SpawnAgentTool {
                 .caller_spec
                 .as_ref()
                 .ok_or_else(|| ToolError::ExecutionFailed {
-                    tool_name: "spawn_agent".into(),
+                    tool_name: "agent".into(),
                     message: "caller LoopSpec not available in ToolContext".into(),
                 })?
                 .clone();
@@ -219,16 +219,16 @@ mod tests {
     use std::sync::Arc;
 
     #[tokio::test]
-    async fn spawn_agent_foreground() {
+    async fn agent_tool_foreground() {
         let agent = Agent::new()
             .name("orchestrator")
             .model_name("mock")
             .role("Coordinate work.")
-            .tool(SpawnAgentTool);
+            .tool(AgentTool);
 
         let harness = TestHarness::new(MockProvider::new(vec![
             tool_response(
-                "spawn_agent",
+                "agent",
                 "sa1",
                 serde_json::json!({
                     "description": "researcher",
@@ -244,18 +244,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_agent_background_delivers_notification() {
+    async fn agent_tool_background_delivers_notification() {
         let agent = Agent::new()
             .name("orchestrator")
             .model_name("mock")
             .role("")
-            .tool(SpawnAgentTool);
+            .tool(AgentTool);
 
         let queue = Arc::new(CommandQueue::new());
 
         let provider = Arc::new(MockProvider::new(vec![
             tool_response(
-                "spawn_agent",
+                "agent",
                 "sa1",
                 serde_json::json!({
                     "description": "bg-worker",
@@ -286,7 +286,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_agent_background_with_schema_enqueues_json() {
+    async fn agent_tool_background_with_schema_enqueues_json() {
         // Background path: the child's `response_raw` is what `enqueue_notification`
         // ships in the queue. With the new design, a schema-constrained child's
         // `response_raw` IS the validated JSON text — so the queued notification
@@ -295,7 +295,7 @@ mod tests {
             .name("orchestrator")
             .model_name("mock")
             .role("")
-            .tool(SpawnAgentTool);
+            .tool(AgentTool);
 
         let queue = Arc::new(CommandQueue::new());
         let valid_json = r#"{"answer":42}"#;
@@ -307,7 +307,7 @@ mod tests {
         // got. The queue notification still carries the child's JSON.
         let provider = Arc::new(MockProvider::new(vec![
             tool_response(
-                "spawn_agent",
+                "agent",
                 "sa1",
                 serde_json::json!({
                     "description": "bg-classifier",
@@ -343,7 +343,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_agent_named_sub_agent() {
+    async fn agent_tool_named_sub_agent() {
         let sub = Agent::new()
             .name("specialist")
             .model_name("mock")
@@ -357,7 +357,7 @@ mod tests {
 
         let provider = Arc::new(MockProvider::new(vec![
             tool_response(
-                "spawn_agent",
+                "agent",
                 "sa1",
                 serde_json::json!({
                     "description": "use specialist",
@@ -378,7 +378,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_agent_propagates_max_input_tokens() {
+    async fn agent_tool_propagates_max_input_tokens() {
         use crate::event::EventKind;
         use crate::provider::TokenUsage;
 
@@ -403,7 +403,7 @@ mod tests {
 
         let provider = Arc::new(MockProvider::new(vec![
             tool_response(
-                "spawn_agent",
+                "agent",
                 "sa1",
                 serde_json::json!({
                     "description": "tight",
@@ -436,7 +436,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_agent_propagates_max_output_tokens() {
+    async fn agent_tool_propagates_max_output_tokens() {
         use crate::event::EventKind;
         use crate::provider::TokenUsage;
 
@@ -461,7 +461,7 @@ mod tests {
 
         let provider = Arc::new(MockProvider::new(vec![
             tool_response(
-                "spawn_agent",
+                "agent",
                 "sa1",
                 serde_json::json!({
                     "description": "tight",
@@ -494,16 +494,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_agent_unknown_agent_errors() {
+    async fn agent_tool_unknown_agent_errors() {
         let agent = Agent::new()
             .name("orchestrator")
             .model_name("mock")
             .role("")
-            .tool(SpawnAgentTool);
+            .tool(AgentTool);
 
         let provider = Arc::new(MockProvider::new(vec![
             tool_response(
-                "spawn_agent",
+                "agent",
                 "sa1",
                 serde_json::json!({
                     "description": "use unknown",

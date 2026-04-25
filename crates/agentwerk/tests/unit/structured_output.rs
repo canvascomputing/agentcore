@@ -37,7 +37,7 @@ use agentwerk::provider::{ContentBlock, Message, ModelRequest};
 use agentwerk::testutil::{
     text_response, tool_response, truncated_response, MockProvider, MockTool, TestHarness,
 };
-use agentwerk::tools::SpawnAgentTool;
+use agentwerk::tools::AgentTool;
 use agentwerk::{Agent, Error};
 
 fn answer_schema() -> serde_json::Value {
@@ -553,7 +553,7 @@ async fn sub_agent_with_schema_returns_json_in_tool_result() {
     let provider = MockProvider::new(vec![
         // parent turn 1: spawn the registered reviewer
         tool_response(
-            "spawn_agent",
+            "agent",
             "sa1",
             serde_json::json!({
                 "description": "ask reviewer",
@@ -592,12 +592,12 @@ async fn ad_hoc_spawned_agent_declares_schema_via_overrides() {
         .model_name("mock")
         .role("")
         .behavior("")
-        .tool(SpawnAgentTool);
+        .tool(AgentTool);
 
     let provider = MockProvider::new(vec![
         // parent turn 1: ad-hoc spawn with output_schema in args
         tool_response(
-            "spawn_agent",
+            "agent",
             "sa1",
             serde_json::json!({
                 "description": "ad-hoc classifier",
@@ -629,7 +629,7 @@ async fn ad_hoc_spawned_agent_declares_schema_via_overrides() {
 }
 
 // (Background sub-agent + schema is covered by an inline test in
-// `spawn_agent.rs` — that test has crate-private access to the command queue
+// `agent.rs` — that test has crate-private access to the command queue
 // and can assert directly on the notification content. From here the queue
 // is unreachable, so an integration test would only duplicate coverage
 // while introducing tokio-spawn races between parent and child mock pops.)

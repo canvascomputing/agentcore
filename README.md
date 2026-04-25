@@ -255,7 +255,7 @@ let greet = Tool::new("greet", "Say hello")
 | | `ListDirectoryTool` | List directory entries with type and size |
 | **Web** | `WebFetchTool` | Fetch a URL and return its content as text |
 | **Utility** | `BashTool` | Execute shell commands matching a glob pattern |
-| | `SpawnAgentTool` | Delegate work to a sub-agent |
+| | `AgentTool` | Delegate work to a coworker agent |
 | | `SendMessageTool` | Send messages to other agents |
 | | `TaskTool` | Perform task management |
 | | `ToolSearchTool` | Discover available tools by keyword |
@@ -264,7 +264,7 @@ let greet = Tool::new("greet", "Say hello")
 use agentwerk::tools::{
     ReadFileTool, WriteFileTool, EditFileTool,
     GlobTool, GrepTool, ListDirectoryTool,
-    WebFetchTool, SpawnAgentTool, BashTool,
+    WebFetchTool, AgentTool, BashTool,
     SendMessageTool, TaskTool, ToolSearchTool,
 };
 
@@ -276,7 +276,7 @@ let agent = Agent::new()
     .tool(GrepTool)
     .tool(ListDirectoryTool)
     .tool(WebFetchTool)
-    .tool(SpawnAgentTool)
+    .tool(AgentTool)
     .tool(BashTool::new("git", "git *"))
     .tool(SendMessageTool)
     .tool(TaskTool::new(Path::new("/tmp/tasks")))
@@ -383,7 +383,7 @@ output.statistics.turns          // number of agent turns
 ### Sub-agents
 
 You can allow your agent to spawn its own colleagues.
-Internally agents have access to a `SpawnAgentTool` if you add a sub-agent.
+Internally agents have access to a `AgentTool` if you add a sub-agent.
 
 ```rust
 let researcher_base = Agent::new()

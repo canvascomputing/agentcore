@@ -254,7 +254,7 @@ async fn sub_agent_compaction_uses_own_model_window() {
     //   2. child  turn 1 — usage crosses child threshold  → child's  ContextCompacted
     //   3. parent turn 2 — usage crosses parent threshold → parent's ContextCompacted
     let parent_turn1 = tool_response(
-        "spawn_agent",
+        "agent",
         "sa1",
         serde_json::json!({
             "description": "delegate",

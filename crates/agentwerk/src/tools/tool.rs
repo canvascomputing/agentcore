@@ -16,7 +16,7 @@ use crate::provider::types::ContentBlock;
 use crate::tools::error::ToolError;
 
 /// Context passed to tool execution. `runtime` and `caller_spec` are ambient
-/// internals: `SpawnAgentTool` and `ToolSearchTool` read them to reach the
+/// internals: `AgentTool` and `ToolSearchTool` read them to reach the
 /// run's provider, handlers, and queue, and to inherit the caller's resolved
 /// model. External tool authors do not use them.
 #[derive(Clone)]

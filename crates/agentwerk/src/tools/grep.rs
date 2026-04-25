@@ -24,7 +24,7 @@ Search file contents using a substring pattern.
 - ALWAYS use this tool for content search. NEVER invoke grep or rg as a bash command.
 - Output modes: \"files\" (default, file paths only), \"content\" (matching lines with context), \"count\" (match counts per file).
 - Use the glob parameter to filter by file type (e.g., \"*.rs\", \"*.ts\").
-- For open-ended searches requiring multiple rounds, use spawn_agent instead.";
+- For open-ended searches requiring multiple rounds, use agent instead.";
 
 impl ToolLike for GrepTool {
     fn name(&self) -> &str {

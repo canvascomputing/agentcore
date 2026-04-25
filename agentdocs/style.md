@@ -133,7 +133,7 @@ Forbidden:
 - A free helper called from exactly one private method. Make it a private method or a nested `fn`.
 - An associated function that takes no `self` and does not return `Self` or `Result<Self>`. Move it to the module as a free function. Exception: a per-variant static lookup where the `Type::` prefix partitions otherwise-colliding names, such as `AnthropicProvider::lookup_context_window_size` vs `OpenAiProvider::lookup_context_window_size`.
 
-Naming: `snake_case`. Tool structs keep the `{Name}Tool` suffix: `ReadFileTool`, `BashTool`, `SpawnAgentTool`.
+Naming: `snake_case`. Tool structs keep the `{Name}Tool` suffix: `ReadFileTool`, `BashTool`, `AgentTool`.
 
 ## Doc comments (`///`)
 

@@ -30,8 +30,8 @@ Output ONLY a list like:\n\
 One line per model. Nothing else.";
 
 const ORCHESTRATOR_PROMPT: &str = "\
-You coordinate pricing research. You MUST use the spawn_agent tool with the 'agent' parameter.\n\n\
-Step 1: Call spawn_agent with {\"agent\": \"pricing_researcher\", \"description\": \"fetch pricing\", \
+You coordinate pricing research. You MUST use the agent tool with the 'agent' parameter.\n\n\
+Step 1: Call agent with {\"agent\": \"pricing_researcher\", \"description\": \"fetch pricing\", \
 \"instruction\": \"Fetch current model pricing from all provider websites\"}.\n\n\
 Step 2: After it returns, produce your structured output listing every model found. \
 Include provider, model_id, input_per_million, output_per_million for each.\n\n\
@@ -137,7 +137,7 @@ fn log_event(event: &Event) {
 fn tool_call_detail(tool_name: &str, input: &serde_json::Value) -> String {
     let key = match tool_name {
         "web_fetch" => "url",
-        "spawn_agent" => {
+        "agent" => {
             return input["agent"]
                 .as_str()
                 .or(input["description"].as_str())

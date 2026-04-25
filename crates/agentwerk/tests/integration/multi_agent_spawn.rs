@@ -1,4 +1,4 @@
-//! End-to-end: an agent spawns sub-agents through `SpawnAgentTool` against a live LLM. Guards that sub-agent invocation wires up correctly through the real provider path.
+//! End-to-end: an agent spawns sub-agents through `AgentTool` against a live LLM. Guards that sub-agent invocation wires up correctly through the real provider path.
 
 use super::common;
 
@@ -38,7 +38,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .model_name(&model)
         .name("orchestrator")
         .role(
-            "You coordinate research tasks. Use spawn_agent with agent: \"researcher\" to delegate questions. \
+            "You coordinate research tasks. Use agent with agent: \"researcher\" to delegate questions. \
              Summarize the results. Be concise.",
         )
         .instruction("What is the capital of France? Use the researcher agent to find out, then tell me.")

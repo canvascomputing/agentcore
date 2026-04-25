@@ -27,7 +27,7 @@ agentwerk is a Rust crate for building LLM agents. An agent reads input, calls a
 - No registration step, no global state.
 - Child agents inherit configuration from the parent by default.
 - `Werk` runs many clones of one template against different inputs.
-- `SpawnAgentTool` lets a running agent launch another.
+- `AgentTool` lets a running agent launch another.
 
 ## Provider-agnostic
 

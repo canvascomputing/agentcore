@@ -21,7 +21,7 @@ Use this to coordinate with peers you've spawned or that are running alongside \
 you. The recipient sees your agent name as the sender; you do not pass it.
 
 # When NOT to use
-- To spawn a new agent — use spawn_agent instead.
+- To spawn a new agent — use agent instead.
 - To return a result to your caller — just finish your turn normally.";
 
 /// Deliver a message to a peer agent in the same run-tree. Routes through

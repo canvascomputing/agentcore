@@ -12,7 +12,7 @@ use crate::error::Result;
 use crate::persistence::session::SessionStore;
 use crate::provider::model::Model;
 use crate::provider::Provider;
-use crate::tools::{SpawnAgentTool, ToolLike, ToolRegistry};
+use crate::tools::{AgentTool, ToolLike, ToolRegistry};
 use crate::util::generate_agent_name;
 
 use crate::event::{default_logger, Event};
@@ -481,11 +481,11 @@ impl Agent {
     }
 }
 
-/// Clone `spec.tools`, auto-wiring `SpawnAgentTool` when sub-agents exist and the slot is free.
+/// Clone `spec.tools`, auto-wiring `AgentTool` when sub-agents exist and the slot is free.
 fn build_tools(spec: &AgentSpec) -> Arc<ToolRegistry> {
     let mut tools = spec.tool_registry.clone();
-    if !spec.sub_agents.is_empty() && tools.get("spawn_agent").is_none() {
-        tools.register(SpawnAgentTool);
+    if !spec.sub_agents.is_empty() && tools.get("agent").is_none() {
+        tools.register(AgentTool);
     }
     Arc::new(tools)
 }

@@ -76,7 +76,7 @@ const REPORT_WRITER_PROMPT: &str = "You are a decision analyst. Given a question
      1. Spawn all three researchers in parallel: 'researcher_1', 'researcher_2', 'researcher_3'\n\
      2. Review and aggregate all research reports\n\
      3. Produce your final recommendation as structured output\n\n\
-     IMPORTANT: Call spawn_agent three times in your FIRST response — one call per researcher, \
+     IMPORTANT: Call agent three times in your FIRST response — one call per researcher, \
      all in the same message. Do NOT wait for one to finish before spawning the next.\n\n\
      Your output must be plain text only — no markdown, no bullet points, no special formatting. \
      The research field must be under 500 characters.";
@@ -232,7 +232,7 @@ fn tool_call_summary(tool_name: &str, input: &serde_json::Value) -> String {
                 q.into()
             }
         }
-        "spawn_agent" => input["agent"]
+        "agent" => input["agent"]
             .as_str()
             .or(input["description"].as_str())
             .unwrap_or("")

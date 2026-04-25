@@ -78,7 +78,7 @@ impl LoopState {
 /// Always resolves to `Ok(Output)`. The `outcome` is `Completed`, `Cancelled`,
 /// or `Failed`; on `Failed` the cause is the last entry of `output.errors`.
 ///
-/// Boxed because `SpawnAgentTool` re-enters this function for sub-agents.
+/// Boxed because `AgentTool` re-enters this function for sub-agents.
 pub(crate) fn run_loop(
     runtime: Arc<LoopRuntime>,
     spec: Arc<AgentSpec>,
@@ -835,8 +835,8 @@ mod tests {
 
         let req = harness.provider().last_request().unwrap();
         assert!(
-            req.tools.iter().any(|t| t.name == "spawn_agent"),
-            ".sub_agents() should register spawn_agent automatically"
+            req.tools.iter().any(|t| t.name == "agent"),
+            ".sub_agents() should register agent tool automatically"
         );
     }
 
