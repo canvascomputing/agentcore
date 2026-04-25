@@ -28,7 +28,7 @@ Where code lives and the rules that govern placement.
 - `spec.rs` holds the compiled `AgentSpec`, including the `hires: Vec<Agent>` field.
 - `loop.rs` holds `run_loop`, `LoopRuntime`, and `LoopState`.
 - `retain.rs` holds `AgentWorking`, `OutputFuture`, and the `Agent::retain` entry point.
-- `prompts.rs`, `compact.rs`, and `work.rs` hold prompt constants, the compaction hook, and the `IncomingWork`.
+- `prompts.rs`, `compact.rs`, and `work.rs` hold prompt constants, the compaction hook, and the `Work` inbox.
 
 ## The `provider/` module
 

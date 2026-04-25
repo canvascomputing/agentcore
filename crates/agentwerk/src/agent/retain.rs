@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 
 use crate::agent::agent::Agent;
 use crate::agent::error::AgentError;
-use crate::agent::work::{CommandSource, IncomingWork, QueuePriority, Work};
+use crate::agent::work::{Task, TaskSource, Work, WorkPriority};
 use crate::error::Result;
 use crate::output::Output;
 
@@ -34,7 +34,7 @@ impl Drop for CancelGuard {
 /// signals the loop to exit.
 #[derive(Clone)]
 pub struct AgentWorking {
-    queue: Arc<IncomingWork>,
+    work: Arc<Work>,
     cancel: Arc<AtomicBool>,
     #[allow(dead_code)]
     guard: Arc<CancelGuard>,
@@ -44,10 +44,10 @@ impl AgentWorking {
     /// Hand the running agent a new task. Picked up at the next turn
     /// boundary, or immediately if the agent is parked idle.
     pub fn task(&self, task: impl Into<String>) {
-        self.queue.add(Work {
+        self.work.add(Task {
             content: task.into(),
-            priority: QueuePriority::Next,
-            source: CommandSource::UserInput,
+            priority: WorkPriority::Next,
+            source: TaskSource::UserInput,
             agent_name: None,
         });
     }
@@ -116,7 +116,7 @@ impl Agent {
     /// `.task(...)` set in the builder or follow-up
     /// [`AgentWorking::task`] calls on the returned handle.
     pub fn retain(self) -> (AgentWorking, OutputFuture) {
-        let queue = Arc::new(IncomingWork::new());
+        let work = Arc::new(Work::new());
         let cancel = Arc::new(AtomicBool::new(false));
         let guard = Arc::new(CancelGuard {
             cancel: cancel.clone(),
@@ -124,14 +124,14 @@ impl Agent {
 
         let prepared = self
             .interrupt_signal(cancel.clone())
-            .incoming_work(queue.clone())
+            .incoming_work(work.clone())
             .keep_alive();
 
         let join = tokio::spawn(async move { prepared.work().await });
 
         (
             AgentWorking {
-                queue,
+                work,
                 cancel,
                 guard,
             },
@@ -180,14 +180,14 @@ mod tests {
     async fn task_adds_user_input_work() {
         let (handle, output) = one_shot_agent("done");
         handle.task("hi");
-        let cmd = handle
-            .queue
-            .dequeue_if(Some("anyone"), |_| true)
-            .expect("queued command");
-        assert_eq!(cmd.content, "hi");
-        assert!(matches!(cmd.priority, QueuePriority::Next));
-        assert!(matches!(cmd.source, CommandSource::UserInput));
-        assert!(cmd.agent_name.is_none());
+        let task = handle
+            .work
+            .take_if(Some("anyone"), |_| true)
+            .expect("pending task");
+        assert_eq!(task.content, "hi");
+        assert!(matches!(task.priority, WorkPriority::Next));
+        assert!(matches!(task.source, TaskSource::UserInput));
+        assert!(task.agent_name.is_none());
         handle.interrupt();
         let _ = output.await;
     }
@@ -222,15 +222,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clone_shares_queue() {
+    async fn clone_shares_work() {
         let (handle, output) = one_shot_agent("done");
         let other = handle.clone();
         other.task("relay");
-        let cmd = handle
-            .queue
-            .dequeue_if(Some("anyone"), |_| true)
-            .expect("queued command");
-        assert_eq!(cmd.content, "relay");
+        let task = handle
+            .work
+            .take_if(Some("anyone"), |_| true)
+            .expect("pending task");
+        assert_eq!(task.content, "relay");
         handle.interrupt();
         let _ = output.await;
     }

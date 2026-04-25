@@ -23,7 +23,7 @@ use crate::output::{Output, OutputSchema};
 use super::prompts;
 use super::r#loop::{run_loop, LoopRuntime, LoopState};
 use super::spec::AgentSpec;
-use super::work::IncomingWork;
+use super::work::Work;
 
 /// An agent. Cheap to clone: the static template is shared, per-run fields are not.
 ///
@@ -53,7 +53,7 @@ pub struct Agent {
     pub(crate) working_dir: Option<PathBuf>,
     pub(crate) event_handler: Option<Arc<dyn Fn(Event) + Send + Sync>>,
     pub(crate) interrupt_signal: Option<Arc<AtomicBool>>,
-    pub(crate) incoming_work: Option<Arc<IncomingWork>>,
+    pub(crate) incoming_work: Option<Arc<Work>>,
     pub(crate) session_dir: Option<PathBuf>,
 }
 
@@ -309,9 +309,9 @@ impl Agent {
         self
     }
 
-    /// Install an externally-owned command queue so an `AgentWorking` can inject instructions.
-    pub(crate) fn incoming_work(mut self, q: Arc<IncomingWork>) -> Self {
-        self.incoming_work = Some(q);
+    /// Install an externally-owned work inbox so an `AgentWorking` can inject instructions.
+    pub(crate) fn incoming_work(mut self, w: Arc<Work>) -> Self {
+        self.incoming_work = Some(w);
         self
     }
 
@@ -438,12 +438,12 @@ impl Agent {
             .clone()
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
 
-        // Every root run carries a command queue so background sub-agents can post
-        // notifications back. An externally supplied queue wins so a handle can reach the loop.
+        // Every root run carries a work inbox so background sub-agents can post
+        // notifications back. An externally supplied inbox wins so a handle can reach the loop.
         let incoming_work = Some(
             self.incoming_work
                 .clone()
-                .unwrap_or_else(|| Arc::new(IncomingWork::new())),
+                .unwrap_or_else(|| Arc::new(Work::new())),
         );
 
         let session_store = self.session_dir.as_ref().map(|dir| {

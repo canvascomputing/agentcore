@@ -126,7 +126,7 @@ impl ToolLike for AgentTool {
                 },
                 "background": {
                     "type": "boolean",
-                    "description": "Run in background (default: false). Returns immediately with an agent id; posts completion to the command queue."
+                    "description": "Run in background (default: false). Returns immediately with an agent id; posts completion to the parent's work inbox."
                 }
             },
             "required": ["description", "task"]
@@ -185,7 +185,7 @@ impl ToolLike for AgentTool {
 
             if args.background.unwrap_or(false) {
                 let id = generate_agent_name(&args.description);
-                let queue = runtime.incoming_work.clone();
+                let work = runtime.incoming_work.clone();
                 let agent_id = id.clone();
                 let caller_for_child = caller.clone();
                 tokio::spawn(async move {
@@ -193,8 +193,8 @@ impl ToolLike for AgentTool {
                         Ok(o) => o.response_raw,
                         Err(e) => format!("Failed: {e}"),
                     };
-                    if let Some(q) = queue {
-                        q.add_notification(&agent_id, &summary);
+                    if let Some(w) = work {
+                        w.add_notification(&agent_id, &summary);
                     }
                 });
                 Ok(ToolResult::success(format!(
@@ -214,7 +214,7 @@ impl ToolLike for AgentTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::work::IncomingWork;
+    use crate::agent::work::Work;
     use crate::testutil::*;
     use std::sync::Arc;
 
@@ -251,7 +251,7 @@ mod tests {
             .role("")
             .tool(AgentTool);
 
-        let queue = Arc::new(IncomingWork::new());
+        let work = Arc::new(Work::new());
 
         let provider = Arc::new(MockProvider::new(vec![
             tool_response(
@@ -267,7 +267,7 @@ mod tests {
             text_response("response-b"),
         ]));
 
-        let harness = TestHarness::with_provider_and_queue(provider.clone(), queue.clone());
+        let harness = TestHarness::with_provider_and_work(provider.clone(), work.clone());
         let output = harness
             .run_agent(&agent, "Start background work")
             .await
@@ -276,9 +276,9 @@ mod tests {
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        let cmd = queue.dequeue_if(None, |_| true);
-        assert!(cmd.is_some(), "Expected notification from background agent");
-        let notification = cmd.unwrap().content;
+        let task = work.take_if(None, |_| true);
+        assert!(task.is_some(), "Expected notification from background agent");
+        let notification = task.unwrap().content;
         assert!(
             notification.contains("response-") || notification.contains("Failed"),
             "Notification should contain agent result: {notification}"
@@ -288,23 +288,24 @@ mod tests {
     #[tokio::test]
     async fn agent_tool_background_with_schema_adds_json() {
         // Background path: the child's `response_raw` is what `add_notification`
-        // ships in the queue. With the new design, a schema-constrained child's
-        // `response_raw` IS the validated JSON text — so the queued notification
-        // must carry the JSON verbatim (modulo the `"Task <id> completed:"` prefix).
+        // ships in the work inbox. With the new design, a schema-constrained
+        // child's `response_raw` IS the validated JSON text — so the
+        // notification must carry the JSON verbatim (modulo the
+        // `"Task <id> completed:"` prefix).
         let agent = Agent::new()
             .name("orchestrator")
             .model_name("mock")
             .role("")
             .tool(AgentTool);
 
-        let queue = Arc::new(IncomingWork::new());
+        let work = Arc::new(Work::new());
         let valid_json = r#"{"answer":42}"#;
 
         // Background spawn means the child's first turn races the parent's
         // turn 2 for the next mock response. Script both with the same valid
         // JSON so either interleaving succeeds: the child validates and
         // terminates; the parent (no schema) just returns whatever text it
-        // got. The queue notification still carries the child's JSON.
+        // got. The notification still carries the child's JSON.
         let provider = Arc::new(MockProvider::new(vec![
             tool_response(
                 "agent",
@@ -326,15 +327,15 @@ mod tests {
             text_response(valid_json),
         ]));
 
-        let harness = TestHarness::with_provider_and_queue(provider.clone(), queue.clone());
+        let harness = TestHarness::with_provider_and_work(provider.clone(), work.clone());
         let output = harness.run_agent(&agent, "go").await.unwrap();
         assert!(!output.response_raw.is_empty());
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        let cmd = queue.dequeue_if(None, |_| true);
-        let notification = cmd
-            .expect("background agent must enqueue a notification")
+        let task = work.take_if(None, |_| true);
+        let notification = task
+            .expect("background agent must post a notification")
             .content;
         assert!(
             notification.contains(valid_json),

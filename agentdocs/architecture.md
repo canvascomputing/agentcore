@@ -15,7 +15,7 @@ The invariants that shape how code fits together. Layout says where code lives; 
 
 **Each run has two buckets: externals in `LoopRuntime`, mutation in `LoopState`.**
 
-- `LoopRuntime` holds the provider, event handler, cancel signal, command queue, session store, tool registry, and working directory.
+- `LoopRuntime` holds the provider, event handler, cancel signal, work inbox, session store, tool registry, and working directory.
 - `LoopState` holds messages, token counters, turn number, schema retries, and collected errors.
 - `LoopRuntime` is shared behind an `Arc`; `LoopState` is owned by the loop and threaded through by `&mut`.
 - Sub-agents reuse the parent's runtime; they never share a state.
@@ -98,8 +98,8 @@ The invariants that shape how code fits together. Layout says where code lives; 
 
 **`Agent::retain` spawns the loop on tokio and returns `(AgentWorking, OutputFuture)`. The loop idles between instructions while any handle is alive.**
 
-- `retain` flips `keep_alive: true` on the spec and installs a fresh `IncomingWork` plus `interrupt_signal` before calling `work` on a `tokio::spawn`.
-- `AgentWorking::task(s)` enqueues a follow-up task; the loop picks it up at its next idle poll or turn boundary.
+- `retain` flips `keep_alive: true` on the spec and installs a fresh `Work` inbox plus `interrupt_signal` before calling `work` on a `tokio::spawn`.
+- `AgentWorking::task(s)` posts a follow-up task; the loop picks it up at its next idle poll or turn boundary.
 - `OutputFuture` resolves once the loop exits; awaiting it does not keep the loop alive: only `AgentWorking` clones do.
 - `CancelGuard` flips the cancel flag when the last `AgentWorking` clone drops, so an abandoned handle still unblocks the loop.
 
@@ -114,12 +114,12 @@ The invariants that shape how code fits together. Layout says where code lives; 
 
 ## Incoming work carries dynamic tasks
 
-**`IncomingWork` is a per-run inbox. The loop drains it between turns; `AgentWorking` and orchestration tools enqueue.**
+**`Work` is a per-run inbox of `Task`s. The loop drains it between turns; `AgentWorking` and orchestration tools post into it.**
 
-- The queue lives on `LoopRuntime` and is shared by the parent and every sub-agent in the run-tree.
-- `AgentWorking::task` enqueues with `QueuePriority::Next` so the next turn picks it up before any backlog.
-- Background sub-agents use the queue to post notifications back to the parent; routing by `agent_name` keeps the inbox per-agent.
-- The queue is `pub(crate)` only: the public API exposes it through `AgentWorking` and the orchestration tools, never directly.
+- The inbox lives on `LoopRuntime` and is shared by the parent and every sub-agent in the run-tree.
+- `AgentWorking::task` posts with `WorkPriority::Next` so the next turn picks it up before any backlog.
+- Background sub-agents use the inbox to post notifications back to the parent; routing by `agent_name` keeps the inbox per-agent.
+- The inbox is `pub(crate)` only: the public API exposes it through `AgentWorking` and the orchestration tools, never directly.
 
 ## Persistence stays internal
 

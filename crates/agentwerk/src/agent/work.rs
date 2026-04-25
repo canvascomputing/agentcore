@@ -1,25 +1,25 @@
-//! In-process command queue that feeds a running agent with late-arriving input (user messages, peer messages, task notifications).
+//! In-process work inbox that feeds a running agent with late-arriving input (user messages, peer messages, task notifications).
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum QueuePriority {
+pub(crate) enum WorkPriority {
     Next = 0,
     Later = 1,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Work {
+pub(crate) struct Task {
     pub(crate) content: String,
-    pub(crate) priority: QueuePriority,
-    pub(crate) source: CommandSource,
+    pub(crate) priority: WorkPriority,
+    pub(crate) source: TaskSource,
     pub(crate) agent_name: Option<String>,
 }
 
-impl Work {
-    /// A command with no agent_name is visible to all agents.
-    /// A targeted command is only visible to the named agent.
+impl Task {
+    /// A task with no agent_name is visible to all agents.
+    /// A targeted task is only visible to the named agent.
     fn is_visible_to(&self, agent_name: Option<&str>) -> bool {
         match (&self.agent_name, agent_name) {
             (None, _) => true,
@@ -33,7 +33,7 @@ impl Work {
     /// sent them; other sources deliver content verbatim.
     pub(crate) fn as_user_message(&self) -> String {
         match &self.source {
-            CommandSource::PeerMessage { from, summary } => {
+            TaskSource::PeerMessage { from, summary } => {
                 let header = match summary {
                     Some(s) => format!("[message from {from}: {s}]"),
                     None => format!("[message from {from}]"),
@@ -46,7 +46,7 @@ impl Work {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum CommandSource {
+pub(crate) enum TaskSource {
     UserInput,
     TaskNotification,
     PeerMessage {
@@ -55,46 +55,46 @@ pub(crate) enum CommandSource {
     },
 }
 
-/// Thread-safe priority queue for commands.
-pub(crate) struct IncomingWork {
-    inner: Arc<Mutex<VecDeque<Work>>>,
+/// Thread-safe priority inbox of pending tasks.
+pub(crate) struct Work {
+    inner: Arc<Mutex<VecDeque<Task>>>,
 }
 
-impl IncomingWork {
+impl Work {
     pub(crate) fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
-    pub(crate) fn add(&self, work: Work) {
-        self.inner.lock().unwrap().push_back(work);
+    pub(crate) fn add(&self, task: Task) {
+        self.inner.lock().unwrap().push_back(task);
     }
 
-    pub(crate) fn add_notification(&self, task_id: &str, summary: &str) {
-        self.add(Work {
-            content: format!("Task {task_id} completed: {summary}"),
-            priority: QueuePriority::Later,
-            source: CommandSource::TaskNotification,
+    pub(crate) fn add_notification(&self, item_id: &str, summary: &str) {
+        self.add(Task {
+            content: format!("Item {item_id} completed: {summary}"),
+            priority: WorkPriority::Later,
+            source: TaskSource::TaskNotification,
             agent_name: None,
         });
     }
 
-    /// Dequeue the highest-priority command visible to the given agent that also
-    /// satisfies `pred`. Ties break by insertion order. Commands failing the
+    /// Pop the highest-priority task visible to the given agent that also
+    /// satisfies `pred`. Ties break by insertion order. Tasks failing the
     /// predicate are skipped (not removed).
-    pub(crate) fn dequeue_if<F>(&self, agent_name: Option<&str>, pred: F) -> Option<Work>
+    pub(crate) fn take_if<F>(&self, agent_name: Option<&str>, pred: F) -> Option<Task>
     where
-        F: Fn(&Work) -> bool,
+        F: Fn(&Task) -> bool,
     {
-        let mut queue = self.inner.lock().unwrap();
-        let idx = queue
+        let mut pending = self.inner.lock().unwrap();
+        let idx = pending
             .iter()
             .enumerate()
             .filter(|(_, c)| c.is_visible_to(agent_name) && pred(c))
             .min_by_key(|(i, c)| (c.priority, *i))?
             .0;
-        queue.remove(idx)
+        pending.remove(idx)
     }
 }
 
@@ -102,106 +102,106 @@ impl IncomingWork {
 mod tests {
     use super::*;
 
-    fn cmd(target: Option<&str>, priority: QueuePriority) -> Work {
-        Work {
+    fn task(target: Option<&str>, priority: WorkPriority) -> Task {
+        Task {
             content: "x".into(),
             priority,
-            source: CommandSource::UserInput,
+            source: TaskSource::UserInput,
             agent_name: target.map(|s| s.into()),
         }
     }
 
     #[test]
     fn is_visible_to_broadcast_visible_to_any_agent() {
-        let c = cmd(None, QueuePriority::Next);
-        assert!(c.is_visible_to(Some("alice")));
-        assert!(c.is_visible_to(Some("bob")));
-        assert!(c.is_visible_to(None));
+        let t = task(None, WorkPriority::Next);
+        assert!(t.is_visible_to(Some("alice")));
+        assert!(t.is_visible_to(Some("bob")));
+        assert!(t.is_visible_to(None));
     }
 
     #[test]
     fn is_visible_to_targeted_visible_only_to_named() {
-        let c = cmd(Some("alice"), QueuePriority::Next);
-        assert!(c.is_visible_to(Some("alice")));
-        assert!(!c.is_visible_to(Some("bob")));
+        let t = task(Some("alice"), WorkPriority::Next);
+        assert!(t.is_visible_to(Some("alice")));
+        assert!(!t.is_visible_to(Some("bob")));
     }
 
     #[test]
     fn is_visible_to_targeted_invisible_to_none_reader() {
-        let c = cmd(Some("alice"), QueuePriority::Next);
-        assert!(!c.is_visible_to(None));
+        let t = task(Some("alice"), WorkPriority::Next);
+        assert!(!t.is_visible_to(None));
     }
 
     #[test]
-    fn dequeue_if_returns_none_when_empty() {
-        let q = IncomingWork::new();
-        assert!(q.dequeue_if(Some("alice"), |_| true).is_none());
+    fn take_if_returns_none_when_empty() {
+        let w = Work::new();
+        assert!(w.take_if(Some("alice"), |_| true).is_none());
     }
 
     #[test]
-    fn dequeue_if_skips_items_with_later_priority() {
-        let q = IncomingWork::new();
-        q.add(cmd(Some("alice"), QueuePriority::Later));
+    fn take_if_skips_items_with_later_priority() {
+        let w = Work::new();
+        w.add(task(Some("alice"), WorkPriority::Later));
 
-        // Predicate rejects Later → nothing returned, item still in queue.
-        let pred = |c: &Work| c.priority != QueuePriority::Later;
-        assert!(q.dequeue_if(Some("alice"), pred).is_none());
+        // Predicate rejects Later → nothing returned, item still in inbox.
+        let pred = |t: &Task| t.priority != WorkPriority::Later;
+        assert!(w.take_if(Some("alice"), pred).is_none());
 
-        // Without the filter it dequeues.
-        assert!(q.dequeue_if(Some("alice"), |_| true).is_some());
+        // Without the filter it takes the item.
+        assert!(w.take_if(Some("alice"), |_| true).is_some());
     }
 
     #[test]
-    fn dequeue_if_prefers_higher_priority_among_visible_items() {
-        let q = IncomingWork::new();
-        q.add(cmd(Some("alice"), QueuePriority::Later));
-        q.add(cmd(Some("alice"), QueuePriority::Next));
+    fn take_if_prefers_higher_priority_among_visible_items() {
+        let w = Work::new();
+        w.add(task(Some("alice"), WorkPriority::Later));
+        w.add(task(Some("alice"), WorkPriority::Next));
 
-        let first = q.dequeue_if(Some("alice"), |_| true).unwrap();
-        assert_eq!(first.priority, QueuePriority::Next);
-        let second = q.dequeue_if(Some("alice"), |_| true).unwrap();
-        assert_eq!(second.priority, QueuePriority::Later);
+        let first = w.take_if(Some("alice"), |_| true).unwrap();
+        assert_eq!(first.priority, WorkPriority::Next);
+        let second = w.take_if(Some("alice"), |_| true).unwrap();
+        assert_eq!(second.priority, WorkPriority::Later);
     }
 
     #[test]
     fn as_user_message_plain_source_is_content_only() {
-        let cmd = Work {
+        let t = Task {
             content: "hello".into(),
-            priority: QueuePriority::Next,
-            source: CommandSource::UserInput,
+            priority: WorkPriority::Next,
+            source: TaskSource::UserInput,
             agent_name: None,
         };
-        assert_eq!(cmd.as_user_message(), "hello");
+        assert_eq!(t.as_user_message(), "hello");
     }
 
     #[test]
     fn as_user_message_peer_message_prepends_header() {
-        let cmd = Work {
+        let t = Task {
             content: "ping".into(),
-            priority: QueuePriority::Next,
-            source: CommandSource::PeerMessage {
+            priority: WorkPriority::Next,
+            source: TaskSource::PeerMessage {
                 from: "alice".into(),
                 summary: Some("greeting".into()),
             },
             agent_name: Some("bob".into()),
         };
         assert_eq!(
-            cmd.as_user_message(),
+            t.as_user_message(),
             "[message from alice: greeting]\nping"
         );
     }
 
     #[test]
     fn as_user_message_peer_message_without_summary() {
-        let cmd = Work {
+        let t = Task {
             content: "ping".into(),
-            priority: QueuePriority::Next,
-            source: CommandSource::PeerMessage {
+            priority: WorkPriority::Next,
+            source: TaskSource::PeerMessage {
                 from: "alice".into(),
                 summary: None,
             },
             agent_name: Some("bob".into()),
         };
-        assert_eq!(cmd.as_user_message(), "[message from alice]\nping");
+        assert_eq!(t.as_user_message(), "[message from alice]\nping");
     }
 }

@@ -1,4 +1,4 @@
-//! Peer-to-peer agent messaging. Routes a message through the shared `IncomingWork` so a running sibling agent picks it up at the next turn boundary.
+//! Peer-to-peer agent messaging. Routes a message through the shared `Work` so a running sibling agent picks it up at the next turn boundary.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -6,7 +6,7 @@ use std::pin::Pin;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::agent::work::{CommandSource, QueuePriority, Work};
+use crate::agent::work::{Task, TaskSource, WorkPriority};
 use crate::error::Result;
 use crate::tools::error::ToolError;
 use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
@@ -25,8 +25,8 @@ you. The recipient sees your agent name as the sender; you do not pass it.
 - To return a result to your caller — just finish your turn normally.";
 
 /// Deliver a message to a peer agent in the same run-tree. Routes through
-/// the shared command queue and is injected into the recipient's next turn.
-/// If no agent with the given name is running, the message sits in the queue
+/// the shared work inbox and is injected into the recipient's next turn.
+/// If no agent with the given name is running, the message sits in the inbox
 /// indefinitely; the caller is responsible for using a correct name.
 pub struct SendMessageTool;
 
@@ -91,19 +91,19 @@ impl ToolLike for SendMessageTool {
                 .caller_spec
                 .as_ref()
                 .ok_or_else(|| tool_err("caller LoopSpec not available in ToolContext"))?;
-            let queue = runtime
+            let work = runtime
                 .incoming_work
                 .as_ref()
-                .ok_or_else(|| tool_err("Command queue not available on LoopRuntime"))?;
+                .ok_or_else(|| tool_err("Work inbox not available on LoopRuntime"))?;
 
             if args.to == caller.name {
                 return Ok(ToolResult::error("Cannot send a message to yourself"));
             }
 
-            queue.add(Work {
+            work.add(Task {
                 content: args.message,
-                priority: QueuePriority::Next,
-                source: CommandSource::PeerMessage {
+                priority: WorkPriority::Next,
+                source: TaskSource::PeerMessage {
                     from: caller.name.clone(),
                     summary: args.summary,
                 },
@@ -125,31 +125,31 @@ fn tool_err(message: impl Into<String>) -> ToolError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::work::IncomingWork;
+    use crate::agent::work::Work;
     use crate::agent::{Agent, AgentSpec};
     use crate::testutil::*;
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    fn harness_ctx() -> (ToolContext, Arc<IncomingWork>, Arc<AgentSpec>) {
-        let queue = Arc::new(IncomingWork::new());
+    fn harness_ctx() -> (ToolContext, Arc<Work>, Arc<AgentSpec>) {
+        let work = Arc::new(Work::new());
         let caller = Agent::new()
             .name("alice")
             .model_name("mock")
             .role("")
             .provider(Arc::new(MockProvider::text("unused")))
-            .incoming_work(queue.clone());
+            .incoming_work(work.clone());
         let (spec, runtime) = caller.compile(None);
         let ctx = ToolContext::new(PathBuf::from("."))
             .runtime(Arc::new(runtime))
             .caller_spec(spec.clone());
-        (ctx, queue, spec)
+        (ctx, work, spec)
     }
 
     #[tokio::test]
     async fn send_adds_targeted_work() {
         let tool = SendMessageTool;
-        let (ctx, queue, _) = harness_ctx();
+        let (ctx, work, _) = harness_ctx();
 
         let input = serde_json::json!({
             "to": "bob",
@@ -159,13 +159,13 @@ mod tests {
         let out = tool.call(input, &ctx).await.unwrap();
         assert!(matches!(out, ToolResult::Success(_)));
 
-        let cmd = queue
-            .dequeue_if(Some("bob"), |_| true)
-            .expect("queued for bob");
-        assert_eq!(cmd.agent_name.as_deref(), Some("bob"));
-        assert_eq!(cmd.content, "hi");
-        match cmd.source {
-            CommandSource::PeerMessage { from, summary } => {
+        let task = work
+            .take_if(Some("bob"), |_| true)
+            .expect("posted for bob");
+        assert_eq!(task.agent_name.as_deref(), Some("bob"));
+        assert_eq!(task.content, "hi");
+        match task.source {
+            TaskSource::PeerMessage { from, summary } => {
                 assert_eq!(from, "alice");
                 assert_eq!(summary.as_deref(), Some("greeting"));
             }
@@ -176,7 +176,7 @@ mod tests {
     #[tokio::test]
     async fn send_to_self_errors() {
         let tool = SendMessageTool;
-        let (ctx, _queue, _) = harness_ctx();
+        let (ctx, _work, _) = harness_ctx();
 
         let input = serde_json::json!({ "to": "alice", "message": "hi" });
         let out = tool.call(input, &ctx).await.unwrap();
@@ -186,7 +186,7 @@ mod tests {
     #[tokio::test]
     async fn sender_is_derived_not_passed() {
         let tool = SendMessageTool;
-        let (ctx, queue, _) = harness_ctx();
+        let (ctx, work, _) = harness_ctx();
 
         let input = serde_json::json!({
             "to": "bob",
@@ -195,9 +195,9 @@ mod tests {
         });
         let _ = tool.call(input, &ctx).await.unwrap();
 
-        let cmd = queue.dequeue_if(Some("bob"), |_| true).unwrap();
-        match cmd.source {
-            CommandSource::PeerMessage { from, .. } => assert_eq!(from, "alice"),
+        let task = work.take_if(Some("bob"), |_| true).unwrap();
+        match task.source {
+            TaskSource::PeerMessage { from, .. } => assert_eq!(from, "alice"),
             _ => panic!("expected PeerMessage"),
         }
     }

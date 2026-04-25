@@ -12,7 +12,7 @@ use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-use crate::agent::work::IncomingWork;
+use crate::agent::work::Work;
 use crate::agent::Agent;
 use crate::error::Result;
 use crate::event::{Event, EventKind};
@@ -314,7 +314,7 @@ pub struct TestHarness {
     // Only read from the cfg(test) branch in `run_agent` — in non-test builds
     // the field is always None and the reader is compiled out.
     #[allow(dead_code)]
-    incoming_work: Option<Arc<IncomingWork>>,
+    incoming_work: Option<Arc<Work>>,
 }
 
 impl TestHarness {
@@ -334,12 +334,12 @@ impl TestHarness {
     }
 
     #[cfg(test)]
-    pub(crate) fn with_provider_and_queue(
+    pub(crate) fn with_provider_and_work(
         provider: Arc<MockProvider>,
-        queue: Arc<IncomingWork>,
+        work: Arc<Work>,
     ) -> Self {
         let mut h = Self::with_provider(provider);
-        h.incoming_work = Some(queue);
+        h.incoming_work = Some(work);
         h
     }
 
@@ -362,11 +362,11 @@ impl TestHarness {
         for (k, v) in &self.templates {
             prepared = prepared.template(k.clone(), v.clone());
         }
-        // If the harness carries a pre-built command queue, install it on the
+        // If the harness carries a pre-built work inbox, install it on the
         // agent so `Agent::compile` wires it onto the LoopRuntime.
         #[cfg(test)]
-        if let Some(queue) = &self.incoming_work {
-            prepared = prepared.incoming_work(queue.clone());
+        if let Some(work) = &self.incoming_work {
+            prepared = prepared.incoming_work(work.clone());
         }
         prepared.work().await
     }

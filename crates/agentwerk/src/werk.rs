@@ -172,7 +172,7 @@ async fn dispatch(
 ///
 /// While any clone of the handle is alive, the workshop accepts new hires.
 /// Dropping the last clone (or calling [`close`](Self::close) on it) closes
-/// the workshop gracefully: queued and in-flight workers finish, then the output
+/// the workshop gracefully: pending and in-flight workers finish, then the output
 /// stream ends. Use [`cancel`](Self::cancel) to interrupt instead.
 #[derive(Clone)]
 pub struct WerkProducing {

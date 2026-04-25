@@ -629,8 +629,8 @@ async fn ad_hoc_spawned_agent_declares_schema_via_overrides() {
 }
 
 // (Background sub-agent + schema is covered by an inline test in
-// `agent.rs` — that test has crate-private access to the command queue
-// and can assert directly on the notification content. From here the queue
+// `agent.rs` — that test has crate-private access to the work inbox
+// and can assert directly on the notification content. From here the inbox
 // is unreachable, so an integration test would only duplicate coverage
 // while introducing tokio-spawn races between parent and child mock pops.)
 

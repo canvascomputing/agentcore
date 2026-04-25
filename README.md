@@ -67,17 +67,17 @@ make use_case name=<name>    # run one
 
 ## API
 
-- [Providers](#providers): multi-provider support
-- [Agents](#agents): the base interface
-- [Models](#models): context window auto-detection
-- [Prompting](#prompting): identity, instruction, context, behavior
-- [Tools](#tools): built-in file, search, shell, and web tools
-- [Events](#events): agent and provider activity
-- [Policies](#policies): retries, token caps, and turn limits
-- [Output](#output): validated, schema-based responses
-- [Coworkers](#coworkers): agents hire staff
-- [Werk](#werk): parallel execution
-- [Todo](#todo): planned work
+- [Providers](#providers): pick a supplier
+- [Agents](#agents): the worker
+- [Models](#models): the worker's brain
+- [Prompting](#prompting): brief the worker
+- [Tools](#tools): the toolbox
+- [Events](#events): floor activity
+- [Policies](#policies): working rules
+- [Output](#output): the finished result
+- [Coworkers](#coworkers): hiring staff
+- [Werk](#werk): scale up the line
+- [Todo](#todo): on the roadmap
 
 ### Providers
 
@@ -122,6 +122,14 @@ let output = Agent::new()
     .task("Summarize src/main.rs")
     .await?;
 ```
+
+| Method | Description |
+|--------|-------------|
+| `Agent::new()` | Start a new agent builder |
+| `Agent::provider(...)` | Attach a provider |
+| `Agent::model_name(...)` | Pick a model by name |
+| `Agent::tool(...)` | Register a tool the agent can call |
+| `Agent::task(...)` | Set the task and run; awaiting returns the `Output` |
 
 ### Models
 

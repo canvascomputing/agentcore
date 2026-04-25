@@ -17,7 +17,7 @@ use crate::tools::error::ToolError;
 
 /// Context passed to tool execution. `runtime` and `caller_spec` are ambient
 /// internals: `AgentTool` and `ToolSearchTool` read them to reach the
-/// run's provider, handlers, and queue, and to inherit the caller's resolved
+/// run's provider, handlers, and inbox, and to inherit the caller's resolved
 /// model. External tool authors do not use them.
 #[derive(Clone)]
 pub struct ToolContext {
