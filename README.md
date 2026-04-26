@@ -245,8 +245,10 @@ let greet = Tool::new("greet", "Say hello")
     }));
 ```
 
-> You can configure `.read_only(true)` when a tool has no side effects as an optional optimization.
-> If set, the tool will run parallelized.
+You can configure `.read_only(true)` when a tool has no side effects as an optional optimization. If set, the tool will run parallelized.
+
+> Every registered tool, description, and input schema are sent to the model on each request. 
+> You do not need to list, describe, or even mention the tools in your `.task(...)` prompt.
 
 #### Built-in tools
 

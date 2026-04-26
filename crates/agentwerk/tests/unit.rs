@@ -9,3 +9,6 @@ mod structured_output;
 
 #[path = "unit/running_agent.rs"]
 mod running_agent;
+
+#[path = "unit/tool_definitions.rs"]
+mod tool_definitions;
