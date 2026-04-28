@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::future::{Future, IntoFuture};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -75,15 +75,76 @@ impl Default for Agent {
     }
 }
 
-fn load_prompt_file(path: PathBuf) -> String {
-    std::fs::read_to_string(&path)
+fn read_prompt_file(path: &Path) -> String {
+    std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("failed to read prompt file {}: {e}", path.display()))
 }
 
-fn load_json_file(path: PathBuf) -> Value {
-    let content = load_prompt_file(path.clone());
+fn read_json_file(path: &Path) -> Value {
+    let content = read_prompt_file(path);
     serde_json::from_str(&content)
         .unwrap_or_else(|e| panic!("invalid JSON in {}: {e}", path.display()))
+}
+
+/// Lets builders accept either inline text (`&str`, `String`) or a file
+/// path (`&Path`, `PathBuf`). Path inputs are read from disk and panic on
+/// I/O failure — same semantics as the previous `_file` helpers.
+pub trait IntoPrompt {
+    fn into_prompt(self) -> String;
+}
+
+impl IntoPrompt for &str {
+    fn into_prompt(self) -> String {
+        self.to_string()
+    }
+}
+
+impl IntoPrompt for String {
+    fn into_prompt(self) -> String {
+        self
+    }
+}
+
+impl IntoPrompt for &String {
+    fn into_prompt(self) -> String {
+        self.clone()
+    }
+}
+
+impl IntoPrompt for &Path {
+    fn into_prompt(self) -> String {
+        read_prompt_file(self)
+    }
+}
+
+impl IntoPrompt for PathBuf {
+    fn into_prompt(self) -> String {
+        read_prompt_file(&self)
+    }
+}
+
+/// Lets [`Agent::contract`] accept either an inline JSON [`Value`] or a
+/// file path. Path inputs are read and parsed; either failure panics.
+pub trait IntoContract {
+    fn into_contract(self) -> Value;
+}
+
+impl IntoContract for Value {
+    fn into_contract(self) -> Value {
+        self
+    }
+}
+
+impl IntoContract for &Path {
+    fn into_contract(self) -> Value {
+        read_json_file(self)
+    }
+}
+
+impl IntoContract for PathBuf {
+    fn into_contract(self) -> Value {
+        read_json_file(&self)
+    }
 }
 
 impl Agent {
@@ -130,14 +191,10 @@ impl Agent {
     }
 
     /// The agent's persistent role — who it is and how it behaves.
-    pub fn role(self, p: impl Into<String>) -> Self {
-        self.with_spec(|c| c.role = p.into())
-    }
-
-    /// Load the role prompt from a file.
-    pub fn role_file(self, path: impl Into<PathBuf>) -> Self {
-        let s = load_prompt_file(path.into());
-        self.with_spec(|c| c.role = s)
+    /// Accepts inline text (`&str`, `String`) or a path (`&Path`, `PathBuf`)
+    /// to read the role prompt from a file.
+    pub fn role(self, p: impl IntoPrompt) -> Self {
+        self.with_spec(|c| c.role = p.into_prompt())
     }
 
     /// Maximum output tokens per request (`max_tokens` on the wire).
@@ -165,16 +222,13 @@ impl Agent {
         self.with_spec(|c| c.tool_registry.register(tool))
     }
 
-    /// Register a structured output contract (JSON Schema). Panics if invalid.
-    pub fn contract(self, value: Value) -> Self {
-        let contract =
-            OutputSchema::new(value).unwrap_or_else(|e| panic!("invalid output contract: {e}"));
+    /// Register a structured output contract (JSON Schema). Accepts an
+    /// inline [`Value`] or a path (`&Path`, `PathBuf`) to read the schema
+    /// from a JSON file. Panics if the schema is invalid.
+    pub fn contract(self, value: impl IntoContract) -> Self {
+        let contract = OutputSchema::new(value.into_contract())
+            .unwrap_or_else(|e| panic!("invalid output contract: {e}"));
         self.with_spec(|c| c.contract = Some(contract))
-    }
-
-    /// Load a structured output contract (JSON Schema) from a file.
-    pub fn contract_file(self, path: impl Into<PathBuf>) -> Self {
-        self.contract(load_json_file(path.into()))
     }
 
     /// Maximum retries for structured output compliance. Default is 10.
@@ -200,31 +254,19 @@ impl Agent {
         self.with_spec(|c| c.keep_alive = true)
     }
 
-    /// Override the default behavior prompt.
-    pub fn behavior(self, content: impl Into<String>) -> Self {
-        let content = content.into();
-        self.with_spec(|c| c.behavior = content)
-    }
-
-    /// Load a behavior prompt override from a file.
-    pub fn behavior_file(self, path: impl Into<PathBuf>) -> Self {
-        let content = load_prompt_file(path.into());
+    /// Override the default behavior prompt. Accepts inline text or a path.
+    pub fn behavior(self, content: impl IntoPrompt) -> Self {
+        let content = content.into_prompt();
         self.with_spec(|c| c.behavior = content)
     }
 
     /// Override the context prompt sent as the first user message.
     ///
-    /// Passing a non-empty string replaces the default environment block verbatim;
-    /// passing `""` opts out of the context message entirely. Compose on top of
-    /// the default via [`Agent::default_context`].
-    pub fn context(self, content: impl Into<String>) -> Self {
-        self.with_spec(|c| c.context = Some(content.into()))
-    }
-
-    /// Load a context prompt override from a file.
-    pub fn context_file(self, path: impl Into<PathBuf>) -> Self {
-        let content = load_prompt_file(path.into());
-        self.with_spec(|c| c.context = Some(content))
+    /// Accepts inline text or a path. A non-empty string replaces the default
+    /// environment block verbatim; `""` opts out of the context message
+    /// entirely. Compose on top of the default via [`Agent::default_context`].
+    pub fn context(self, content: impl IntoPrompt) -> Self {
+        self.with_spec(|c| c.context = Some(content.into_prompt()))
     }
 
     /// The default context prompt: environment metadata (working directory,
@@ -266,15 +308,9 @@ impl Agent {
         Ok(self.model(crate::provider::environment::model_from_env()?))
     }
 
-    /// The task for this run — what to do right now.
-    pub fn work(mut self, p: impl Into<String>) -> Self {
-        self.task = p.into();
-        self
-    }
-
-    /// Load the task from a file.
-    pub fn work_file(mut self, path: impl Into<PathBuf>) -> Self {
-        self.task = load_prompt_file(path.into());
+    /// The task for this run — what to do right now. Accepts inline text or a path.
+    pub fn work(mut self, p: impl IntoPrompt) -> Self {
+        self.task = p.into_prompt();
         self
     }
 
@@ -689,13 +725,13 @@ mod tests {
     }
 
     #[test]
-    fn role_file_loads_content() {
+    fn role_path_loads_file_content() {
         let dir = std::env::temp_dir().join("agentwerk_test_werk_role");
         let path = dir.join("role.txt");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&path, "You are a test agent").unwrap();
 
-        let agent = Agent::new().role_file(&path);
+        let agent = Agent::new().role(path.as_path());
         assert_eq!(agent.spec.role, "You are a test agent");
 
         std::fs::remove_file(&path).ok();
@@ -705,7 +741,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "failed to read prompt file")]
     fn missing_prompt_file_panics() {
-        let _ = Agent::new().role_file("/nonexistent/xxx.txt");
+        let _ = Agent::new().role(Path::new("/nonexistent/xxx.txt"));
     }
 
     #[test]
@@ -723,7 +759,7 @@ mod tests {
     }
 
     #[test]
-    fn contract_file_loads_valid_schema() {
+    fn contract_path_loads_valid_schema() {
         let dir = std::env::temp_dir().join("agentwerk_test_werk_contract");
         let path = dir.join("contract.json");
         std::fs::create_dir_all(&dir).unwrap();
@@ -733,7 +769,7 @@ mod tests {
         )
         .unwrap();
 
-        let agent = Agent::new().contract_file(&path);
+        let agent = Agent::new().contract(path.as_path());
         assert!(agent.spec.contract.is_some());
 
         std::fs::remove_file(&path).ok();
@@ -742,8 +778,8 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "failed to read prompt file")]
-    fn contract_file_missing_file_panics() {
-        let _ = Agent::new().contract_file("/nonexistent/contract.json");
+    fn contract_missing_file_panics() {
+        let _ = Agent::new().contract(Path::new("/nonexistent/contract.json"));
     }
 
     #[test]

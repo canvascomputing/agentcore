@@ -25,7 +25,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -518,7 +518,7 @@ async fn main() {
             .name(format!("{specialty}-{i}"))
             .provider(provider.clone())
             .model(&model)
-            .role_file(prompts.role_file)
+            .role(Path::new(prompts.role_file))
             .tool(ReadFileTool)
             .tool(report_issue_tool(
                 file.clone(),
@@ -530,7 +530,7 @@ async fn main() {
             .template("budget", json!(AUDIT_TOOL_BUDGET))
             .template("file", json!(file))
             .working_dir(config.dir.clone())
-            .work_file(prompts.task_file)
+            .work(Path::new(prompts.task_file))
             .event_handler(audit_logger(
                 file.clone(),
                 specialty.clone(),

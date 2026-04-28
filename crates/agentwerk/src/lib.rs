@@ -62,7 +62,7 @@ pub use provider::{Model, Provider};
 
 pub use tools::Tool;
 
-pub use agent::{Agent, AgentWorking, OutputFuture};
+pub use agent::{Agent, AgentWorking, IntoContract, IntoPrompt, OutputFuture};
 pub use event::Event;
 pub use output::Output;
 pub use werk::{Werk, WerkOutputStream, Werking};

@@ -8,7 +8,7 @@ pub(crate) mod prompts;
 pub(crate) mod spec;
 pub(crate) mod work;
 
-pub use agent::{Agent, AgentWorking, OutputFuture};
+pub use agent::{Agent, AgentWorking, IntoContract, IntoPrompt, OutputFuture};
 pub use error::AgentError;
 pub use prompts::DEFAULT_BEHAVIOR;
 pub(crate) use r#loop::LoopRuntime;

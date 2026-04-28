@@ -165,18 +165,14 @@ let output = Agent::new()
     .await?;
 ```
 
-The following methods on `Agent` configure prompts:
+The following methods on `Agent` configure prompts. Each accepts inline text (`&str` / `String`) or a path (`&Path` / `PathBuf`); a path is read from disk:
 
 | Method | Description |
 |--------|-------------|
 | `Agent::role(...)` | Persistent identity of the agent |
-| `Agent::role_file(...)` | Read the identity prompt from a file |
 | `Agent::work(...)` | Instruct the agent to perform a task; awaiting drives the loop |
-| `Agent::work_file(...)` | Read the task from a file |
 | `Agent::context(...)` | Override the context prompt (default: `Agent::default_context()`, containing working directory, platform, OS version, date) |
-| `Agent::context_file(...)` | Read the context prompt from a file |
 | `Agent::behavior(...)` | Override the default behavioral directives (`DEFAULT_BEHAVIOR`) |
-| `Agent::behavior_file(...)` | Read the behavior prompt from a file |
 
 Compose a custom context prompt:
 
@@ -188,8 +184,10 @@ Agent::new().context(format!("{default}\n\nExtra notes."));
 Read identity prompt from a file:
 
 ```rust
+use std::path::Path;
+
 Agent::new()
-    .role_file("prompts/identity.md")
+    .role(Path::new("prompts/identity.md"))
 ```
 
 Use `{key}` placeholders in the identity prompt and fill them with template variables:
@@ -374,10 +372,12 @@ let output = Agent::new()
 println!("{}", output.response.unwrap()["category"]);
 ```
 
-You can also load the contract from a file:
+You can also load the contract from a file by passing a path:
 
 ```rust
-Agent::new().contract_file("contracts/category.json")
+use std::path::Path;
+
+Agent::new().contract(Path::new("contracts/category.json"))
 ```
 
 #### Statistics
