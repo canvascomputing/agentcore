@@ -2,7 +2,7 @@
 //! function-call-shaped units.
 //!
 //! [`Agent`] is the entry point. Build with `Agent::new()`, chain
-//! configurations, and end on `.task(...).await`. The same agent can be
+//! configurations, and end on `.work(...).await`. The same agent can be
 //! cloned and run again with a new instruction: the static template (tools,
 //! sub-agents, behavior prompts) is shared, the per-run fields are not.
 //!
@@ -19,7 +19,7 @@
 //! let output = Agent::new()
 //!     .provider(provider)
 //!     .model("claude-sonnet-4-20250514")
-//!     .task("Find all Rust source files.")
+//!     .work("Find all Rust source files.")
 //!     .await
 //!     .unwrap();
 //!
@@ -42,7 +42,7 @@
 //!
 //! - Every fallible call returns [`Result`] (alias for `Result<T, Error>`).
 //! - The loop emits [`Event`]s; observers, not hooks.
-//! - Agents are cheap to clone and may be `.task(...).await`-ed again.
+//! - Agents are cheap to clone and may be `.work(...).await`-ed again.
 
 pub mod agent;
 pub mod error;
@@ -62,7 +62,7 @@ pub use provider::{Model, Provider};
 
 pub use tools::Tool;
 
-pub use agent::Agent;
+pub use agent::{Agent, AgentWorking, OutputFuture};
 pub use event::Event;
 pub use output::Output;
-pub use werk::Werk;
+pub use werk::{Werk, WerkOutputStream, Werking};

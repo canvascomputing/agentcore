@@ -145,10 +145,9 @@ fn serialize_event(event: &Event) -> Option<(&'static str, serde_json::Value)> {
                 "failure_kind": format!("{kind:?}"),
             }),
         ),
-        TokensReported { model, usage } => (
-            "tokens_reported",
-            json!({ "model": model, "usage": usage }),
-        ),
+        TokensReported { model, usage } => {
+            ("tokens_reported", json!({ "model": model, "usage": usage }))
+        }
         TextChunkReceived { .. } => return None,
         RequestStarted { model } => ("request_started", json!({ "model": model })),
         RequestFinished { model } => ("request_finished", json!({ "model": model })),
@@ -265,9 +264,7 @@ fn scan_source_files(root: &std::path::Path) -> Vec<String> {
         }
         matches!(
             path.extension().and_then(|s| s.to_str()),
-            Some(
-                "rs" | "py" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "go" | "java" | "rb"
-            )
+            Some("rs" | "py" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "go" | "java" | "rb")
         )
     }
     fn skip_dir(name: &str) -> bool {
@@ -533,7 +530,7 @@ async fn main() {
             .template("budget", json!(AUDIT_TOOL_BUDGET))
             .template("file", json!(file))
             .working_dir(config.dir.clone())
-            .task_file(prompts.task_file)
+            .work_file(prompts.task_file)
             .event_handler(audit_logger(
                 file.clone(),
                 specialty.clone(),
@@ -543,16 +540,25 @@ async fn main() {
             ))
     });
 
+    let agent_index_by_name: std::collections::HashMap<String, usize> = assignments
+        .iter()
+        .enumerate()
+        .map(|(i, a)| (format!("{}-{i}", a.specialty), i))
+        .collect();
+
     let (producing, mut stream) = Werk::new()
         .lines(config.batch_size)
         .interrupt_signal(cancel.clone())
-        .open();
-    producing.hire_all(agents);
-    producing.close();
+        .keep_working(std::iter::empty::<Agent>());
+    producing.staff_more(agents);
+    drop(producing);
 
     let mut audit_status = StatusBreakdown::default();
 
-    while let Some((i, result)) = stream.next().await {
+    while let Some((name, result)) = stream.next().await {
+        let i = *agent_index_by_name
+            .get(&name)
+            .expect("stream name must map back to an assignment");
         let a = &assignments[i];
         let file = &a.file;
         let specialty = &a.specialty;
@@ -740,18 +746,12 @@ fn log_agent_event(tag: &str, kind: &EventKind) {
         EventKind::ToolCallFinished {
             tool_name, output, ..
         } => {
-            eprintln!(
-                "│ {tag:<48}     ← {tool_name}: {}",
-                preview(output, 100)
-            );
+            eprintln!("│ {tag:<48}     ← {tool_name}: {}", preview(output, 100));
         }
         EventKind::ToolCallFailed {
             tool_name, message, ..
         } => {
-            eprintln!(
-                "│ {tag:<48}     ✗ {tool_name}: {}",
-                preview(message, 120)
-            );
+            eprintln!("│ {tag:<48}     ✗ {tool_name}: {}", preview(message, 120));
         }
         EventKind::TokensReported { usage, .. } => {
             eprintln!(

@@ -4,11 +4,12 @@ use std::collections::HashMap;
 use std::future::{Future, IntoFuture};
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::Value;
+use tokio::task::JoinHandle;
 
 use crate::error::Result;
 use crate::persistence::session::SessionStore;
@@ -20,10 +21,11 @@ use crate::util::generate_agent_name;
 use crate::event::{default_logger, Event};
 use crate::output::{Output, OutputSchema};
 
+use super::error::AgentError;
 use super::prompts;
 use super::r#loop::{run_loop, LoopRuntime, LoopState};
 use super::spec::AgentSpec;
-use super::work::Work;
+use super::work::{Task, TaskSource, Work, WorkPriority};
 
 /// An agent. Cheap to clone: the static template is shared, per-run fields are not.
 ///
@@ -40,7 +42,7 @@ use super::work::Work;
 ///     .model("claude-sonnet-4-20250514")
 ///     .role("You are a helpful assistant.");
 ///
-/// let first = agent.clone().task("Greet me.").await.unwrap();
+/// let first = agent.clone().work("Greet me.").await.unwrap();
 /// assert_eq!(first.response_raw, "Hello!");
 /// # });
 /// ```
@@ -192,7 +194,7 @@ impl Agent {
 
     /// Park the agent idle after a terminal output until a peer message arrives or `interrupt_signal` fires.
     ///
-    /// [`Agent::retain`] sets this implicitly. Call it only on a sub-agent template
+    /// [`Agent::keep_working`] sets this implicitly. Call it only on a sub-agent template
     /// that should idle in the background after the orchestrator spawns it.
     pub fn keep_alive(self) -> Self {
         self.with_spec(|c| c.keep_alive = true)
@@ -233,17 +235,17 @@ impl Agent {
         prompts::default_context(&cwd)
     }
 
-    /// Hire one sub-agent, callable by name from this agent.
-    pub fn hire(self, worker: Agent) -> Self {
-        self.with_spec(|c| c.hires.push(worker))
+    /// Register one sub-agent, callable by name from this agent.
+    pub fn staff(self, sub: Agent) -> Self {
+        self.with_spec(|c| c.staff.push(sub))
     }
 
-    /// Hire many sub-agents at once. Equivalent to chaining `.hire(w)` for each.
-    pub fn hire_all<I>(self, workers: I) -> Self
+    /// Register many sub-agents at once. Equivalent to chaining `.staff(s)` for each.
+    pub fn staff_more<I>(self, subs: I) -> Self
     where
         I: IntoIterator<Item = Agent>,
     {
-        self.with_spec(|c| c.hires.extend(workers))
+        self.with_spec(|c| c.staff.extend(subs))
     }
 
     /// Install the provider this agent calls out to.
@@ -265,13 +267,13 @@ impl Agent {
     }
 
     /// The task for this run — what to do right now.
-    pub fn task(mut self, p: impl Into<String>) -> Self {
+    pub fn work(mut self, p: impl Into<String>) -> Self {
         self.task = p.into();
         self
     }
 
     /// Load the task from a file.
-    pub fn task_file(mut self, path: impl Into<PathBuf>) -> Self {
+    pub fn work_file(mut self, path: impl Into<PathBuf>) -> Self {
         self.task = load_prompt_file(path.into());
         self
     }
@@ -306,7 +308,7 @@ impl Agent {
         self
     }
 
-    /// Install an externally-owned work inbox so an `AgentWorking` can inject instructions.
+    /// Install an externally-owned work inbox so a [`Working`](crate::Working) handle can inject instructions.
     pub(crate) fn incoming_work(mut self, w: Arc<Work>) -> Self {
         self.incoming_work = Some(w);
         self
@@ -327,8 +329,8 @@ impl Agent {
     /// `Agent` (via the [`IntoFuture`] impl) is the public entry point.
     ///
     /// Requires `.provider()` (or [`Agent::provider_from_env`]), `.model()`
-    /// (or [`Agent::model_from_env`]), and `.task()`.
-    pub(crate) async fn work(&self) -> Result<Output> {
+    /// (or [`Agent::model_from_env`]), and `.work(...)`.
+    pub(crate) async fn execute(&self) -> Result<Output> {
         let (spec, runtime) = self.compile(None);
         let runtime = Arc::new(runtime);
         let task = self.interpolate(&self.task);
@@ -337,8 +339,8 @@ impl Agent {
         run_loop(runtime, spec, state).await
     }
 
-    /// Work as a child under a parent's run-tree. `parent_spec` supplies the model fallback.
-    pub(crate) async fn work_child(
+    /// Execute as a child under a parent's run-tree. `parent_spec` supplies the model fallback.
+    pub(crate) async fn execute_child(
         &self,
         parent_spec: &AgentSpec,
         parent_runtime: &LoopRuntime,
@@ -401,7 +403,7 @@ impl Agent {
             (Some(m), _) => m.clone(),
             (None, Some((parent_spec, _))) => parent_spec.model().clone(),
             (None, None) => panic!(
-                "Agent::task(...).await requires .model(...) on root agents (sub-agents inherit)"
+                "Agent::work(...).await requires .model(...) on root agents (sub-agents inherit)"
             ),
         };
 
@@ -419,7 +421,7 @@ impl Agent {
     /// Build the root `LoopRuntime`. Requires `self.provider` to be set.
     fn build_runtime(&self, spec: &AgentSpec) -> LoopRuntime {
         let provider = self.provider.clone().unwrap_or_else(|| {
-            panic!("Agent::task(...).await requires .provider() (or .provider_from_env()) on root agents")
+            panic!("Agent::work(...).await requires .provider() (or .provider_from_env()) on root agents")
         });
 
         let working_dir = self
@@ -493,23 +495,161 @@ impl Agent {
 
 /// `Agent` is awaitable: `agent.await` drives the loop and yields the
 /// [`Output`]. This is the public terminal — the chain ends on
-/// `.task(...).await`.
+/// `.work(...).await`.
 impl IntoFuture for Agent {
     type Output = Result<Output>;
     type IntoFuture = Pin<Box<dyn Future<Output = Result<Output>> + Send>>;
 
     fn into_future(self) -> Self::IntoFuture {
-        Box::pin(async move { self.work().await })
+        Box::pin(async move { self.execute().await })
     }
 }
 
 /// Clone `spec.tools`, auto-wiring `AgentTool` when sub-agents exist and the slot is free.
 fn build_tools(spec: &AgentSpec) -> Arc<ToolRegistry> {
     let mut tools = spec.tool_registry.clone();
-    if !spec.hires.is_empty() && tools.get("agent").is_none() {
+    if !spec.staff.is_empty() && tools.get("agent").is_none() {
         tools.register(AgentTool);
     }
     Arc::new(tools)
+}
+
+/// RAII token: flips the shared cancel flag when its last clone drops, so
+/// abandoning the handle without an explicit `.interrupt()` still unblocks
+/// the loop.
+struct CancelGuard {
+    cancel: Arc<AtomicBool>,
+}
+
+impl Drop for CancelGuard {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Cheap, clonable handle to an agent whose loop runs on a background tokio
+/// task. Obtained from [`Agent::keep_working`].
+///
+/// While any clone of the handle is alive, the loop idles after producing
+/// output; dropping the last clone (or calling [`interrupt`](Self::interrupt))
+/// signals the loop to exit.
+#[derive(Clone)]
+pub struct AgentWorking {
+    work: Arc<Work>,
+    cancel: Arc<AtomicBool>,
+    #[allow(dead_code)]
+    guard: Arc<CancelGuard>,
+}
+
+impl AgentWorking {
+    /// Hand the running agent another task. Picked up at the next step
+    /// boundary, or immediately if the agent is parked idle.
+    pub fn work(&self, task: impl Into<String>) {
+        self.work.add(Task {
+            content: task.into(),
+            priority: WorkPriority::Next,
+            source: TaskSource::UserInput,
+            agent_name: None,
+        });
+    }
+
+    /// Queue several tasks at once. Order is preserved; the loop picks them
+    /// up one by one at step boundaries.
+    pub fn work_more<I>(&self, tasks: I)
+    where
+        I: IntoIterator,
+        I::Item: Into<String>,
+    {
+        for task in tasks {
+            self.work(task);
+        }
+    }
+
+    /// Signal the agent to stop. The loop observes this at the next step
+    /// boundary or idle-wait poll and exits.
+    pub fn interrupt(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// Returns `true` if an interrupt signal has been raised (explicitly via
+    /// [`interrupt`](Self::interrupt) or implicitly via the last handle being
+    /// dropped).
+    pub fn is_interrupted(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+}
+
+/// Resolves to the agent's final [`Output`](crate::output::Output) once the
+/// background loop exits.
+///
+/// Only [`AgentWorking`] clones keep the agent alive; dropping this
+/// (without awaiting) just abandons the result. Whether the loop keeps
+/// running is decided by whether any handles remain.
+///
+/// Implements [`IntoFuture`]: `.await` consumes the value by move, so a
+/// double-await is a compile error rather than a runtime failure.
+pub struct OutputFuture {
+    join: JoinHandle<Result<Output>>,
+}
+
+impl IntoFuture for OutputFuture {
+    type Output = Result<Output>;
+    type IntoFuture = Pin<Box<dyn Future<Output = Result<Output>> + Send + 'static>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move {
+            match self.join.await {
+                Ok(result) => result,
+                Err(e) => Err(AgentError::AgentCrashed {
+                    message: e.to_string(),
+                }
+                .into()),
+            }
+        })
+    }
+}
+
+impl Agent {
+    /// Start the agent on a background tokio task and return a pair:
+    ///
+    /// - [`AgentWorking`]: cheap, clonable handle for injecting new
+    ///   instructions, cancelling, or inspecting state.
+    /// - [`OutputFuture`]: resolves to the final
+    ///   [`Output`](crate::output::Output) once the loop exits.
+    ///
+    /// The loop idles after each terminal output as long as any handle is
+    /// alive. Dropping the last handle calls [`AgentWorking::interrupt`] for you
+    /// (RAII safety); an explicit `.interrupt()` does the same thing. For a
+    /// pure one-shot run without a handle, await the agent directly: a
+    /// `agent.work(task).await` runs the loop synchronously.
+    ///
+    /// Requires a running tokio runtime (`tokio::spawn` is invoked
+    /// synchronously). Requires `.provider()` and either an initial
+    /// `.work(...)` set in the builder or follow-up
+    /// [`AgentWorking::work`] calls on the returned handle.
+    pub fn keep_working(self) -> (AgentWorking, OutputFuture) {
+        let work = Arc::new(Work::new());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let guard = Arc::new(CancelGuard {
+            cancel: cancel.clone(),
+        });
+
+        let prepared = self
+            .interrupt_signal(cancel.clone())
+            .incoming_work(work.clone())
+            .keep_alive();
+
+        let join = tokio::spawn(async move { prepared.execute().await });
+
+        (
+            AgentWorking {
+                work,
+                cancel,
+                guard,
+            },
+            OutputFuture { join },
+        )
+    }
 }
 
 #[cfg(test)]
@@ -569,13 +709,13 @@ mod tests {
     }
 
     #[test]
-    fn hire_all_extends_hires_in_order() {
+    fn staff_more_extends_staff_in_order() {
         let a = Agent::new().name("a").model("mock");
         let b = Agent::new().name("b").model("mock");
-        let agent = Agent::new().hire_all([a, b]);
+        let agent = Agent::new().staff_more([a, b]);
         let names: Vec<String> = agent
             .spec
-            .hires
+            .staff
             .iter()
             .map(|h| h.spec.name.clone())
             .collect();
@@ -638,7 +778,317 @@ mod tests {
     #[tokio::test]
     #[should_panic(expected = ".provider()")]
     async fn missing_provider_panics_on_await() {
-        let agent = Agent::new().name("test").model("mock").role("x").task("do");
+        let agent = Agent::new().name("test").model("mock").role("x").work("do");
         let _ = agent.await;
+    }
+}
+
+#[cfg(test)]
+mod keep_working_tests {
+    use super::*;
+    use std::sync::Mutex as StdMutex;
+    use std::time::Duration;
+
+    use crate::event::EventKind;
+    use crate::output::Outcome;
+    use crate::provider::types::{ContentBlock, Message, ModelResponse};
+    use crate::provider::ModelRequest;
+    use crate::testutil::{text_response, MockProvider};
+
+    #[tokio::test]
+    async fn keep_working_returns_handle_and_future() {
+        let (handle, output) = one_shot_agent("hello");
+        let clone = handle.clone();
+        // AgentWorking is Clone; OutputFuture is a Future. Interrupt so the
+        // keep-alive loop terminates.
+        clone.interrupt();
+        let _: Result<Output> = output.await;
+    }
+
+    #[tokio::test]
+    async fn keep_working_starts_loop_immediately() {
+        let events = EventLog::new();
+        let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
+        // AgentStarted is the first event emitted by run_loop: observable
+        // before we await the future.
+        events
+            .wait_for(|e| matches!(e.kind, EventKind::AgentStarted { .. }))
+            .await;
+        handle.interrupt();
+        let _ = output.await;
+    }
+
+    #[tokio::test]
+    async fn work_adds_user_input_work() {
+        let (handle, output) = one_shot_agent("done");
+        handle.work("hi");
+        let task = handle
+            .work
+            .take_if(Some("anyone"), |_| true)
+            .expect("pending task");
+        assert_eq!(task.content, "hi");
+        assert!(matches!(task.priority, WorkPriority::Next));
+        assert!(matches!(task.source, TaskSource::UserInput));
+        assert!(task.agent_name.is_none());
+        handle.interrupt();
+        let _ = output.await;
+    }
+
+    #[tokio::test]
+    async fn work_more_queues_tasks_in_order() {
+        let (handle, output) = one_shot_agent("done");
+        handle.work_more(["one", "two", "three"]);
+        let mut seen = Vec::new();
+        while let Some(task) = handle.work.take_if(Some("anyone"), |_| true) {
+            seen.push(task.content);
+        }
+        assert_eq!(seen, vec!["one", "two", "three"]);
+        handle.interrupt();
+        let _ = output.await;
+    }
+
+    #[tokio::test]
+    async fn work_reaches_next_provider_request() {
+        let events = EventLog::new();
+        let (provider, handle, output) = keep_alive_agent_with_provider(
+            vec![text_response("first"), text_response("second")],
+            &events,
+        );
+
+        events
+            .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
+            .await;
+        handle.work("follow-up");
+        wait_until(|| provider.requests() >= 2).await;
+
+        let second = provider.last_request().expect("second request");
+        let last_user = last_user_text(&second).expect("user message in second request");
+        assert!(
+            last_user.contains("follow-up"),
+            "injected instruction must appear in step 2's user message; got {last_user:?}",
+        );
+
+        handle.interrupt();
+        let out = output.await.expect("output");
+        assert!(matches!(
+            out.outcome,
+            Outcome::Completed | Outcome::Cancelled
+        ));
+    }
+
+    #[tokio::test]
+    async fn clone_shares_work() {
+        let (handle, output) = one_shot_agent("done");
+        let other = handle.clone();
+        other.work("relay");
+        let task = handle
+            .work
+            .take_if(Some("anyone"), |_| true)
+            .expect("pending task");
+        assert_eq!(task.content, "relay");
+        handle.interrupt();
+        let _ = output.await;
+    }
+
+    #[tokio::test]
+    async fn clone_shares_interrupt() {
+        let (handle, output) = one_shot_agent("done");
+        let other = handle.clone();
+        assert!(!handle.is_interrupted());
+        other.interrupt();
+        assert!(handle.is_interrupted() && other.is_interrupted());
+        let _ = output.await;
+    }
+
+    #[tokio::test]
+    async fn interrupt_during_idle_preserves_completed_status() {
+        let events = EventLog::new();
+        let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
+
+        events
+            .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
+            .await;
+        handle.interrupt();
+        events
+            .wait_for(|e| matches!(e.kind, EventKind::AgentResumed))
+            .await;
+        let out = output.await.expect("output");
+        assert_eq!(out.outcome, Outcome::Completed);
+    }
+
+    #[tokio::test]
+    async fn interrupt_from_spawned_task() {
+        let events = EventLog::new();
+        let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
+
+        events
+            .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
+            .await;
+        let interrupter = handle.clone();
+        tokio::spawn(async move {
+            interrupter.interrupt();
+        });
+        let _ = output.await.expect("output");
+    }
+
+    #[tokio::test]
+    async fn dropping_last_handle_triggers_interrupt() {
+        let events = EventLog::new();
+        let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
+
+        events
+            .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
+            .await;
+        drop(handle);
+        let out = output.await.expect("output");
+        assert_eq!(out.outcome, Outcome::Completed);
+    }
+
+    #[tokio::test]
+    async fn dropping_one_of_two_handles_does_not_interrupt() {
+        let events = EventLog::new();
+        let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
+
+        let survivor = handle.clone();
+        events
+            .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
+            .await;
+        drop(handle);
+        // Interrupt is NOT set while another handle is alive.
+        assert!(!survivor.is_interrupted());
+        // cleanup
+        survivor.interrupt();
+        let _ = output.await;
+    }
+
+    #[tokio::test]
+    async fn dropping_future_alone_does_not_interrupt() {
+        // The future holds no CancelGuard, so dropping it doesn't interrupt. The
+        // loop keeps running: cleanup belongs to the handle.
+        let events = EventLog::new();
+        let (handle, output) = keep_alive_agent(vec![text_response("first")], &events);
+
+        events
+            .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
+            .await;
+        drop(output);
+        assert!(!handle.is_interrupted());
+        handle.interrupt();
+        events
+            .wait_for(|e| matches!(e.kind, EventKind::AgentFinished { .. }))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn keep_alive_idle_and_resumed_events_still_fire() {
+        let events = EventLog::new();
+        let (provider, handle, output) = keep_alive_agent_with_provider(
+            vec![text_response("first"), text_response("second")],
+            &events,
+        );
+        events
+            .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
+            .await;
+        handle.work("wake up");
+        wait_until(|| provider.requests() >= 2).await;
+        events
+            .wait_for(|e| matches!(e.kind, EventKind::AgentResumed))
+            .await;
+        handle.interrupt();
+        let _ = output.await;
+    }
+
+    fn one_shot_agent(text: &str) -> (AgentWorking, OutputFuture) {
+        Agent::new()
+            .name("demo")
+            .model("mock")
+            .provider(Arc::new(MockProvider::text(text)))
+            .role("")
+            .work("x")
+            .keep_working()
+    }
+
+    fn keep_alive_agent(
+        responses: Vec<ModelResponse>,
+        events: &EventLog,
+    ) -> (AgentWorking, OutputFuture) {
+        let (_, h, o) = keep_alive_agent_with_provider(responses, events);
+        (h, o)
+    }
+
+    fn keep_alive_agent_with_provider(
+        responses: Vec<ModelResponse>,
+        events: &EventLog,
+    ) -> (Arc<MockProvider>, AgentWorking, OutputFuture) {
+        let provider = Arc::new(MockProvider::new(responses));
+        let (h, o) = Agent::new()
+            .name("root")
+            .model("mock")
+            .provider(provider.clone())
+            .role("")
+            .work("initial")
+            .event_handler(events.handler())
+            .keep_working();
+        (provider, h, o)
+    }
+
+    struct EventLog {
+        events: Arc<StdMutex<Vec<Event>>>,
+    }
+
+    impl EventLog {
+        fn new() -> Self {
+            Self {
+                events: Arc::new(StdMutex::new(Vec::new())),
+            }
+        }
+
+        fn handler(&self) -> Arc<dyn Fn(Event) + Send + Sync> {
+            let events = self.events.clone();
+            Arc::new(move |e| events.lock().unwrap().push(e))
+        }
+
+        async fn wait_for<F: Fn(&Event) -> bool>(&self, pred: F) {
+            for _ in 0..200 {
+                if self.events.lock().unwrap().iter().any(&pred) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            let seen: Vec<_> = self
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|e| format!("{}:{:?}", e.agent_name, e.kind))
+                .collect();
+            panic!("timed out after 5s waiting for event; saw: {seen:#?}");
+        }
+    }
+
+    async fn wait_until<F: FnMut() -> bool>(mut pred: F) {
+        for _ in 0..200 {
+            if pred() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("timed out after 5s waiting for condition");
+    }
+
+    fn last_user_text(req: &ModelRequest) -> Option<String> {
+        req.messages.iter().rev().find_map(|m| match m {
+            Message::User { content } => Some(
+                content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            _ => None,
+        })
     }
 }

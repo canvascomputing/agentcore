@@ -1,4 +1,4 @@
-//! End-to-end: `Werk::produce` runs several real-LLM agents concurrently. Guards line capping and result correlation against a live provider.
+//! End-to-end: `Werk::work` runs several real-LLM agents concurrently. Guards line capping and result correlation against a live provider.
 
 use super::common;
 
@@ -32,14 +32,19 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
             .clone()
             .name(format!("summarize-{file}"))
             .provider(provider.clone())
-            .task(format!("Read and summarize: {file}"))
+            .work(format!("Read and summarize: {file}"))
     });
 
-    let results = Werk::new().lines(2).hire_and_fire(agents).await;
+    let results = Werk::new().lines(2).work(agents).await;
 
     assert_eq!(results.len(), files.len());
-    for result in &results {
-        let output = result.as_ref().expect("agent failed");
+    for file in files {
+        let key = format!("summarize-{file}");
+        let output = results
+            .get(&key)
+            .unwrap_or_else(|| panic!("missing result for {key}"))
+            .as_ref()
+            .expect("agent failed");
         let json = output.response.as_ref().expect("missing structured output");
         assert!(
             json["summary"].is_string(),
@@ -48,7 +53,13 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    common::print_result(results[0].as_ref().unwrap());
+    let any_output = results
+        .values()
+        .next()
+        .expect("at least one result")
+        .as_ref()
+        .unwrap();
+    common::print_result(any_output);
 
     Ok(())
 }

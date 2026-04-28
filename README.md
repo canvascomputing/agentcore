@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .provider_from_env()?
         .model("mistral-large-2512")
         .tool(GlobTool)
-        .task("Find all Rust source files.")
+        .work("Find all Rust source files.")
         .await?;
 
     println!("{}", output.response_raw);
@@ -67,17 +67,17 @@ make use_case name=<name>    # run one
 
 ## API
 
-- [Providers](#providers): choose which LLM supplier to connect to
-- [Agents](#agents): the worker that carries out a task
-- [Models](#models): the reasoning engine behind each worker
-- [Prompting](#prompting): brief the worker on role, behavior, and context
-- [Tools](#tools): equipment the worker can reach for
-- [Events](#events): visibility into what happens on the floor during a run
-- [Policies](#policies): the rules and limits a worker operates under
-- [Output](#output): the finished result handed back at the end
-- [Coworkers](#coworkers): delegate parts of a job to specialists
-- [Werk](#werk): run a full crew of workers in parallel
-- [Todo](#todo): the project's roadmap of planned features
+- [Providers](#providers): the LLM services agentwerk connects to
+- [Agents](#agents): the unit that carries out a task
+- [Models](#models): the reasoning engine driving an agent
+- [Prompting](#prompting): the role, behavior, and context given to an agent
+- [Tools](#tools): the functions an agent can call
+- [Events](#events): the stream of activity emitted during a run
+- [Policies](#policies): the rules and limits applied to a run
+- [Output](#output): the result returned at the end of a run
+- [Coworkers](#coworkers): the subordinate agents a parent can delegate to
+- [Werk](#werk): a set of agents executing in parallel
+- [Todo](#todo): planned features and roadmap
 
 ### Providers
 
@@ -106,7 +106,7 @@ Or pick a provider for your agent from environment variables (see [Environment](
 let output = Agent::new()
     .provider_from_env()?
     .model("mistral-small-2603")
-    .task("...")
+    .work("...")
     .await?;
 ```
 
@@ -119,7 +119,7 @@ let output = Agent::new()
     .provider(provider)
     .model("mistral-medium-2508")
     .tool(ReadFileTool)
-    .task("Summarize src/main.rs")
+    .work("Summarize src/main.rs")
     .await?;
 ```
 
@@ -129,7 +129,7 @@ let output = Agent::new()
 | `Agent::provider(...)` | Attach a provider |
 | `Agent::model(...)` | Pick a model by name or pass a configured `Model` |
 | `Agent::tool(...)` | Register a tool the agent can call |
-| `Agent::task(...)` | Set the task and run; awaiting returns the `Output` |
+| `Agent::work(...)` | Set the task and run; awaiting returns the `Output` |
 
 ### Models
 
@@ -161,7 +161,7 @@ let output = Agent::new()
     .model("mistral-medium-2508")
     .role("You are a helpful assistant.")
     .tool(ReadFileTool)
-    .task("What does src/main.rs do?")
+    .work("What does src/main.rs do?")
     .await?;
 ```
 
@@ -171,8 +171,8 @@ The following methods on `Agent` configure prompts:
 |--------|-------------|
 | `Agent::role(...)` | Persistent identity of the agent |
 | `Agent::role_file(...)` | Read the identity prompt from a file |
-| `Agent::task(...)` | Instruct the agent to perform a task, returns `AgentWorking` |
-| `Agent::task_file(...)` | Read the task from a file |
+| `Agent::work(...)` | Instruct the agent to perform a task; awaiting drives the loop |
+| `Agent::work_file(...)` | Read the task from a file |
 | `Agent::context(...)` | Override the context prompt (default: `Agent::default_context()`, containing working directory, platform, OS version, date) |
 | `Agent::context_file(...)` | Read the context prompt from a file |
 | `Agent::behavior(...)` | Override the default behavioral directives (`DEFAULT_BEHAVIOR`) |
@@ -201,29 +201,30 @@ Agent::new()
     .template("language", json!("German"))
 ```
 
-#### Workers on Retainer
+#### Workers on Standby
 
-Use `retain` when you want to keep sending instructions to your agent:
+Use `keep_working` when you want to keep sending instructions to your agent in the background:
 
 ```rust
-let (agent, output) = Agent::new()
+let (handle, output) = Agent::new()
     .provider(provider)
     .model("mistral-medium-2508")
     .role("You are a codebase Q&A assistant.")
     .tool(ReadFileTool)
-    .retain(); // start the agent and send more instructions later
+    .keep_working(); // start the agent and send more instructions later
 
-agent.task("What does src/main.rs do?");
-agent.task("Now summarize src/lib.rs.");
+handle.work("What does src/main.rs do?");
+handle.work("Now summarize src/lib.rs.");
 
-agent.interrupt(); // stop the agent when there are no more instructions to send
+handle.interrupt(); // stop the agent when there are no more instructions to send
 ```
 
-The worker stays on standby for the next task. Call `interrupt()` to send them home.
+The worker stays on standby for the next task. Call `interrupt()` to send them home, or just drop the last handle.
 
 | Method | Description |
 |--------|-------------|
-| `AgentWorking::task(...)` | Hand the agent a new task |
+| `AgentWorking::work(...)` | Hand the agent a new task |
+| `AgentWorking::work_more(...)` | Queue several tasks at once |
 | `AgentWorking::interrupt()` | Stop the agent |
 | `AgentWorking::is_interrupted()` | Check if the agent was interrupted |
 | `AgentWorking::clone()` | Get another handle to the same agent |
@@ -247,8 +248,8 @@ let greet = Tool::new("greet", "Say hello")
 
 You can configure `.read_only(true)` when a tool has no side effects as an optional optimization. If set, the tool will run parallelized.
 
-> Every registered tool, description, and input schema are sent to the model on each request. 
-> You do not need to list, describe, or even mention the tools in your `.task(...)` prompt.
+> Every registered tool, description, and input schema are sent to the model on each request.
+> You do not need to list, describe, or even mention the tools in your `.work(...)` prompt.
 
 #### Built-in tools
 
@@ -288,7 +289,7 @@ let output = Agent::new()
     .tool(SendMessageTool)
     .tool(TodoListTool::new(Path::new("/tmp/todos")))
     .tool(ToolSearchTool)
-    .task("Explore the repo and summarize what you find.")
+    .work("Explore the repo and summarize what you find.")
     .await?;
 ```
 
@@ -358,7 +359,7 @@ Working rules cap the agent's run, protecting your company against typical LLM f
 The `Output` is the worker's finished result:
 
 ```rust
-let output = agent.task("Summarize src/main.rs").await?;
+let output = agent.work("Summarize src/main.rs").await?;
 println!("{}", output.response_raw);
 ```
 
@@ -367,7 +368,7 @@ You can enforce a contract (JSON Schema) on the agent's structured response:
 ```rust
 let output = Agent::new()
     .contract(json!({ "type": "object", "properties": { "category": { "type": "string" } } }))
-    .task("Classify this issue.")
+    .work("Classify this issue.")
     .await?;
 
 println!("{}", output.response.unwrap()["category"]);
@@ -393,7 +394,7 @@ output.statistics.steps          // number of agent steps
 
 ### Coworkers
 
-A worker can hire their own colleagues. Once you hire at least one coworker, they pick up an `AgentTool` to hand work off:
+A worker can staff their own colleagues. Once you staff at least one coworker, the parent picks up an `AgentTool` to hand work off:
 
 ```rust
 let researcher_base = Agent::new()
@@ -408,16 +409,16 @@ let r2 = researcher_base.clone().name("researcher_2");
 let output = Agent::new()
     .name("orchestrator")
     .role("You are a research orchestrator.")
-    .hire(r1)
-    .hire(r2)
-    .task("Research the economic impact of quantum computing.")
+    .staff(r1)
+    .staff(r2)
+    .work("Research the economic impact of quantum computing.")
     .await?;
 ```
 
 | Method | Description |
 |--------|-------------|
-| `Agent::hire(...)` | Hire one coworker to hand off to |
-| `Agent::hire_all(...)` | Hire many coworkers at once |
+| `Agent::staff(...)` | Register one coworker to hand off to |
+| `Agent::staff_more(...)` | Register many coworkers at once |
 
 #### Inheritance
 
@@ -431,7 +432,7 @@ The following fields are inherited, shared or owned by the coworkers:
 
 ### Werk
 
-Run many agents in parallel with a `Werk`. Wait for the execution of all workers on a fixed number of production lines. Results arrive in *hire order*:
+Run many agents in parallel with a `Werk`. Wait for the execution of all workers on a fixed number of production lines. Results arrive as a `HashMap` keyed by each agent's name:
 
 ```rust
 use agentwerk::tools::ReadFileTool;
@@ -446,56 +447,57 @@ let docs = ["document A", "document B"];
 let workers = docs.iter().map(|doc| {
     template
         .clone()
-        .task(format!("Summarize {doc}"))
+        .name(*doc)
+        .work(format!("Summarize {doc}"))
 });
 
 let results = Werk::new()
     .lines(10)
-    .hire_and_fire(workers)
+    .work(workers)
     .await;
 
-for (doc, result) in docs.iter().zip(results.iter()) {
-    println!("{doc}: {}", result.as_ref().unwrap().response_raw);
+for doc in &docs {
+    let out = results.get(*doc).unwrap().as_ref().unwrap();
+    println!("{doc}: {}", out.response_raw);
 }
 ```
 
 | Method | Description |
 |--------|-------------|
 | `Werk::lines(n)` | Number of assembly lines |
-| `Werk::open()` | Open the Werk for hiring; returns `WerkProducing` |
-| `Werk::hire_and_fire(workers)` | Put every worker on the line, returns a list of `Output` |
+| `Werk::work(workers)` | Put every worker on the line; returns `HashMap<String, Result<Output>>` |
+| `Werk::keep_working(initial)` | Open the Werk for staffing over time; returns `(Werking, WerkOutputStream)` |
 | `Werk::interrupt_signal(...)` | Share an external cancel signal with the Werk |
 
-#### Hiring on the Fly
+#### Staffing on the Fly
 
-Start a Werk that hires workers over time. Results are reported in *completion order*:
+Start a Werk that takes on workers over time. Results are reported in *completion order*:
 
 ```rust
-let (werk, mut results) = Werk::new()
+let (handle, mut results) = Werk::new()
     .lines(10)
-    .open();
+    .keep_working(std::iter::empty());
 
 let docs = ["document A", "document B"];
 for doc in &docs {
-    werk.hire(template.clone().task(format!("Summarize {doc}")));
+    handle.staff(template.clone().name(*doc).work(format!("Summarize {doc}")));
 }
 
-werk.close();
+drop(handle); // graceful: stream ends after backlog drains
 
-while let Some((i, result)) = results.next().await {
+while let Some((name, result)) = results.next().await {
     let out = result?;
-    println!("{}: {}", docs[i], out.response_raw);
+    println!("{name}: {}", out.response_raw);
 }
 ```
 
 | Method | Description |
 |--------|-------------|
-| `WerkProducing::hire(...)` | Hire another worker |
-| `WerkProducing::hire_all(...)` | Hire many workers at once |
-| `WerkProducing::clone()` | Get another handle to the same Werk |
-| `WerkProducing::close()` | Stop hiring; let the current shift finish |
-| `WerkProducing::interrupt()` | Pull everyone off the line and shut the Werk |
-| `WerkProducing::is_interrupted()` | Check if the Werk was interrupted |
+| `Werking::staff(...)` | Take on another worker |
+| `Werking::staff_more(...)` | Take on many workers at once |
+| `Werking::clone()` | Get another handle to the same Werk |
+| `Werking::interrupt()` | Pull everyone off the line and shut the Werk |
+| `Werking::is_interrupted()` | Check if the Werk was interrupted |
 
 ### Todo
 
@@ -558,9 +560,7 @@ agentwerk relies on server-side tool calling. You can enable it through the foll
 | Server | Flag |
 |---|---|
 | vLLM | `--enable-auto-tool-choice --tool-call-parser <parser>` |
-| SGLang | `--tool-call-parser <parser>` |
-| llama.cpp `llama-server` | `--jinja` (enables tool calling) |
-| Ollama | tool calling enabled by default |
+| llama.cpp | `--jinja` (enables tool calling) |
 
 ### Environment
 
@@ -599,4 +599,3 @@ Use cases and integration tests use the following environment variables:
 | `LITELLM_API_KEY` | Auth key (optional) |
 | `LITELLM_MODEL` | Model (default: `claude-sonnet-4-20250514`) |
 | `LITELLM_PROVIDER` | LLM provider (default: `anthropic`, options: `anthropic`, `mistral`, `openai`) |
-

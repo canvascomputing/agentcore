@@ -79,12 +79,12 @@ async fn main() {
         .model_from_env()
         .expect("model name required")
         .role(ORCHESTRATOR_PROMPT)
-        .hire(pricing_researcher)
+        .staff(pricing_researcher)
         .contract(output_schema())
         .max_steps(10)
         .event_handler(Arc::new(|event| log_event(&event)))
         .interrupt_signal(setup_interrupt_signal())
-        .task("Gather current model pricing from all supported providers.")
+        .work("Gather current model pricing from all supported providers.")
         .await
     {
         Ok(out) => out,

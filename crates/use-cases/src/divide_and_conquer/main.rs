@@ -77,20 +77,23 @@ async fn main() {
     let (producing, mut stream) = Werk::new()
         .lines(args.concurrency)
         .interrupt_signal(cancel)
-        .open();
-    producing.hire_all(agents);
-    producing.close();
+        .keep_working(std::iter::empty::<Agent>());
+    producing.staff_more(agents);
+    drop(producing);
 
     let mut partial_sums: Vec<Option<i128>> = vec![None; total_chunks];
     let mut failures = 0usize;
     let mut done = 0usize;
 
-    while let Some((i, result)) = stream.next().await {
+    while let Some((name, result)) = stream.next().await {
         done += 1;
         let progress = format!("{done:>width$}/{total_chunks}");
+        let i: usize = name
+            .strip_prefix("chunk_")
+            .and_then(|s| s.parse().ok())
+            .expect("worker name should be 'chunk_<i>'");
         let (lo, hi) = partitions[i];
         let range = format!("{lo:>9}‥{hi:<9}");
-        let name = format!("chunk_{i}");
 
         let output = match result {
             Ok(output) => output,
@@ -217,7 +220,7 @@ fn build_worker(
         .provider(provider)
         .model(model)
         .role(WORKER_PROMPT)
-        .task(format!("Compute S = sum_{{k={lo}}}^{{{hi}}} k^2."))
+        .work(format!("Compute S = sum_{{k={lo}}}^{{{hi}}} k^2."))
         .tool(python_tool())
         .contract(schema)
         .max_steps(max_steps)

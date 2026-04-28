@@ -548,7 +548,7 @@ async fn sub_agent_with_schema_returns_json_in_tool_result() {
         .model("mock")
         .role("Coordinate.")
         .behavior("")
-        .hire(child);
+        .staff(child);
 
     let provider = MockProvider::new(vec![
         // parent step 1: spawn the registered reviewer

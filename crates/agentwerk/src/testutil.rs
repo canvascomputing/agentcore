@@ -352,7 +352,7 @@ impl TestHarness {
         let mut prepared = agent
             .clone()
             .provider(self.provider.clone())
-            .task(input)
+            .work(input)
             .working_dir(self.working_dir.clone())
             .event_handler(self.events.callback())
             .interrupt_signal(self.interrupt_signal.clone());
@@ -365,7 +365,7 @@ impl TestHarness {
         if let Some(work) = &self.incoming_work {
             prepared = prepared.incoming_work(work.clone());
         }
-        prepared.work().await
+        prepared.execute().await
     }
 
     pub fn events(&self) -> &EventCollector {

@@ -1,4 +1,4 @@
-//! Sub-agent invocation. Auto-registered when an agent has hires; lets a model delegate a subtask to a pre-configured child.
+//! Sub-agent invocation. Auto-registered when an agent has staff; lets a model delegate a subtask to a pre-configured child.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -16,7 +16,7 @@ use crate::util::generate_agent_name;
 const DEFAULT_IDENTITY: &str = "You are a focused helper agent. Answer concisely.";
 
 /// Spawn a sub-agent and return its [`Output`](crate::Output). Auto-registered
-/// when an agent calls `.hire(...)`. The sub-agent inherits the
+/// when an agent calls `.staff(...)`. The sub-agent inherits the
 /// caller's provider, model, working directory, event handler, and cancel
 /// signal; tools and prompts come from the registered template.
 pub struct AgentTool;
@@ -167,7 +167,7 @@ impl ToolLike for AgentTool {
             // this base, regardless of path.
             let base = match &args.agent {
                 Some(name) => match caller
-                    .hires
+                    .staff
                     .iter()
                     .find(|a: &&Agent| a.get_name() == name.as_str())
                     .cloned()
@@ -181,7 +181,7 @@ impl ToolLike for AgentTool {
                     .max_steps(10),
             };
 
-            let agent = base.apply_overrides(&input).task(&args.task);
+            let agent = base.apply_overrides(&input).work(&args.task);
 
             if args.background.unwrap_or(false) {
                 let id = generate_agent_name(&args.description);
@@ -189,7 +189,7 @@ impl ToolLike for AgentTool {
                 let agent_id = id.clone();
                 let caller_for_child = caller.clone();
                 tokio::spawn(async move {
-                    let summary = match agent.work_child(&caller_for_child, &runtime).await {
+                    let summary = match agent.execute_child(&caller_for_child, &runtime).await {
                         Ok(o) => o.response_raw,
                         Err(e) => format!("Failed: {e}"),
                     };
@@ -202,7 +202,7 @@ impl ToolLike for AgentTool {
                     args.description
                 )))
             } else {
-                match agent.work_child(&caller, &runtime).await {
+                match agent.execute_child(&caller, &runtime).await {
                     Ok(o) => Ok(ToolResult::success(o.response_raw)),
                     Err(e) => Ok(ToolResult::error(format!("Agent error: {e}"))),
                 }
@@ -357,7 +357,7 @@ mod tests {
             .name("orchestrator")
             .model("mock")
             .role("")
-            .hire(sub);
+            .staff(sub);
 
         let provider = Arc::new(MockProvider::new(vec![
             tool_response(
@@ -396,7 +396,7 @@ mod tests {
             .name("orchestrator")
             .model("mock")
             .role("")
-            .hire(sub);
+            .staff(sub);
 
         let mut child_turn = tool_response("t", "c1", serde_json::json!({}));
         child_turn.usage = TokenUsage {
@@ -454,7 +454,7 @@ mod tests {
             .name("orchestrator")
             .model("mock")
             .role("")
-            .hire(sub);
+            .staff(sub);
 
         let mut child_turn = tool_response("t", "c1", serde_json::json!({}));
         child_turn.usage = TokenUsage {

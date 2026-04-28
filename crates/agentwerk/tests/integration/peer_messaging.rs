@@ -68,12 +68,12 @@ async fn orchestrator_sends_message_to_backgrounded_worker(
         .model(&model)
         .name("orchestrator")
         .role(orchestrator_identity)
-        .hire(worker)
+        .staff(worker)
         .tool(SendMessageTool)
         .interrupt_signal(cancel.clone())
         .max_steps(6)
         .event_handler(event_handler)
-        .task(orchestrator_task)
+        .work(orchestrator_task)
         .await?;
 
     common::print_result(&output);

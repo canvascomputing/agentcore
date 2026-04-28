@@ -1,10 +1,10 @@
-//! End-to-end coverage for `Agent::retain()` / `AgentWorking`.
+//! End-to-end coverage for `Agent::keep_working()` / `AgentWorking`.
 //!
 //! Uses a real LLM provider (`make test_integration`). The test plays the
-//! role of an external controller: it retains an agent via `.retain()`, feeds
-//! it two instructions through `send` (one via the original handle, one via
-//! a clone), interrupts via a third clone on a spawned task, then awaits the
-//! returned output future.
+//! role of an external controller: it starts an agent via `.keep_working()`,
+//! feeds it two instructions through `work` (one via the original handle, one
+//! via a clone), interrupts via a third clone on a spawned task, then awaits
+//! the returned output future.
 
 use super::common;
 
@@ -60,10 +60,10 @@ async fn external_sender_delivers_two_instructions_and_clone_cancels(
              2. Otherwise, reply with exactly the single word 'ready' and end your turn. \
                 Do not invent numbers. Do not echo any example. Do not restate the rules.",
         )
-        .task("wait")
+        .work("wait")
         .max_steps(10)
         .event_handler(event_handler)
-        .retain();
+        .keep_working();
 
     wait_for(&events, |all| {
         all.iter().any(|e| matches!(e.kind, EventKind::AgentPaused))
@@ -71,7 +71,7 @@ async fn external_sender_delivers_two_instructions_and_clone_cancels(
     .await?;
 
     eprintln!("[test] sending secret_a={secret_a} via original handle");
-    agent.task(format!("the secret is {secret_a}"));
+    agent.work(format!("the secret is {secret_a}"));
     wait_for(&events, |all| {
         listener_text(all).contains(&secret_a.to_string())
     })
@@ -79,7 +79,7 @@ async fn external_sender_delivers_two_instructions_and_clone_cancels(
 
     let via_clone = agent.clone();
     eprintln!("[test] sending secret_b={secret_b} via cloned handle");
-    via_clone.task(format!("the secret is {secret_b}"));
+    via_clone.work(format!("the secret is {secret_b}"));
     wait_for(&events, |all| {
         listener_text(all).contains(&secret_b.to_string())
     })

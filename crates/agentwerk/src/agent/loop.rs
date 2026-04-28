@@ -817,7 +817,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hire_auto_wires_agent_tool() {
+    async fn staff_auto_wires_agent_tool() {
         let sub = Agent::new().name("helper").model("mock").role("I help.");
 
         let provider = MockProvider::text("ok");
@@ -825,7 +825,7 @@ mod tests {
             .name("parent")
             .model("mock")
             .role("I coordinate.")
-            .hire(sub);
+            .staff(sub);
 
         let harness = TestHarness::new(provider);
         harness.run_agent(&agent, "go").await.unwrap();
@@ -833,15 +833,15 @@ mod tests {
         let req = harness.provider().last_request().unwrap();
         assert!(
             req.tools.iter().any(|t| t.name == "agent"),
-            ".hire() should register agent tool automatically"
+            ".staff() should register agent tool automatically"
         );
     }
 
     #[tokio::test]
     #[should_panic(expected = ".provider()")]
     async fn missing_provider_panics_on_run() {
-        let agent = Agent::new().name("test").model("mock").role("x").task("do");
-        let _ = agent.work().await;
+        let agent = Agent::new().name("test").model("mock").role("x").work("do");
+        let _ = agent.execute().await;
     }
 
     #[allow(dead_code)]
@@ -1339,7 +1339,7 @@ mod tests {
         let agent = Agent::new()
             .model("mock")
             .provider(Arc::new(MockProvider::text("x")))
-            .task("")
+            .work("")
             .interrupt_signal(cancel.clone())
             .incoming_work(work.clone());
 
@@ -1360,7 +1360,7 @@ mod tests {
         let agent = Agent::new()
             .model("mock")
             .provider(Arc::new(MockProvider::text("x")))
-            .task("");
+            .work("");
 
         let (_spec, rt) = agent.compile(None);
         assert!(
@@ -1841,9 +1841,9 @@ mod retry_and_events_tests {
             .max_request_retries(3)
             .request_retry_delay(Duration::from_millis(1_000))
             .event_handler(handler)
-            .task("go");
+            .work("go");
 
-        let run_fut = agent.work();
+        let run_fut = agent.execute();
         let check_fut = async {
             for _ in 0..20 {
                 tokio::task::yield_now().await;
@@ -1904,7 +1904,7 @@ mod retry_and_events_tests {
             .max_request_retries(3)
             .request_retry_delay(Duration::from_millis(2_000))
             .event_handler(handler)
-            .task("go");
+            .work("go");
 
         let drain = || async {
             for _ in 0..20 {
@@ -1920,7 +1920,7 @@ mod retry_and_events_tests {
                 .count()
         };
 
-        let run_fut = agent.work();
+        let run_fut = agent.execute();
         let check_fut = async {
             drain().await;
             assert_eq!(retries(), 0, "T=0: no retries yet");
@@ -1982,7 +1982,7 @@ mod retry_and_events_tests {
             .max_request_retries(4)
             .request_retry_delay(Duration::from_millis(30_000))
             .interrupt_signal(cancel.clone())
-            .task("go");
+            .work("go");
 
         let cancel_setter = {
             let c = cancel.clone();
@@ -1993,7 +1993,7 @@ mod retry_and_events_tests {
         };
 
         let start = std::time::Instant::now();
-        let (run_result, _) = tokio::join!(agent.work(), cancel_setter);
+        let (run_result, _) = tokio::join!(agent.execute(), cancel_setter);
         let elapsed = start.elapsed();
 
         let output = run_result.unwrap();
@@ -2027,9 +2027,9 @@ mod retry_and_events_tests {
             .max_request_retries(3)
             .request_retry_delay(Duration::from_millis(1))
             .event_handler(handler)
-            .task("go");
+            .work("go");
 
-        let output = agent.work().await.unwrap();
+        let output = agent.execute().await.unwrap();
         assert_eq!(output.outcome, Outcome::Failed);
 
         let events = collected.lock().unwrap().clone();

@@ -33,20 +33,20 @@ The invariants that shape how code fits together. Layout says where code lives; 
 
 **A sub-agent is an `Agent` compiled against a parent's runtime. Inheritance is per-field.**
 
-- A parent declares its sub-agents with `.hire(...)` / `.hire_all(...)`; the resulting `AgentSpec.hires` is a `Vec<Agent>`.
+- A parent declares its sub-agents with `.staff(...)` / `.staff_more(...)`; the resulting `AgentSpec.staff` is a `Vec<Agent>`.
 - `Agent::compile(Some(parent))` fills the child's `model: None` with the parent's resolved model and reuses the parent's externals.
 - Child per-run fields (cancel signal, event handler, working directory) override the inherited values when set.
-- Tools and `hires` are not inherited: each `AgentSpec` declares its own registry and worker list.
-- `AgentTool` is the only path that calls `Agent::work_child`; the public API never exposes the parent slot.
+- Tools and `staff` are not inherited: each `AgentSpec` declares its own registry and worker list.
+- `AgentTool` is the only path that calls `Agent::execute_child`; the public API never exposes the parent slot.
 
 ## AgentTool registration
 
-**`AgentTool` is registered exactly when the spec carries `hires`. The slot is `"agent"`.**
+**`AgentTool` is registered exactly when the spec carries `staff`. The slot is `"agent"`.**
 
-- `build_tools(spec)` clones `spec.tool_registry`; if `spec.hires` is non-empty and no tool already occupies `"agent"`, it appends `AgentTool`.
+- `build_tools(spec)` clones `spec.tool_registry`; if `spec.staff` is non-empty and no tool already occupies `"agent"`, it appends `AgentTool`.
 - A caller that registers a custom tool under `"agent"` keeps theirs: explicit registration wins.
-- An agent with no hires never sees `AgentTool` in its registry, even after a child is added later, because each compile rebuilds the registry.
-- The sub-agent registry is rebuilt on every compile, so per-run mutation of `hires` is observed by the next call to `work`.
+- An agent with no staff never sees `AgentTool` in its registry, even after a child is added later, because each compile rebuilds the registry.
+- The sub-agent registry is rebuilt on every compile, so per-run mutation of `staff` is observed by the next call to `execute`.
 
 ## One error at the crate boundary
 
@@ -92,32 +92,32 @@ The invariants that shape how code fits together. Layout says where code lives; 
 - `check_guards` reads the flag at every step boundary; tools read it via `ToolContext::wait_for_cancel`.
 - `tokio::select!` pairs provider calls and tool futures with `wait_for_cancel` so a cancel drops the losing branch promptly.
 - `AgentWorking::interrupt` sets the flag explicitly; dropping the last handle sets it via `CancelGuard::drop`.
-- `Werk` installs its own signal on every dispatched worker so `WerkProducing::interrupt` reaches in-flight runs.
+- `Werk` installs its own signal on every dispatched agent so `Werking::interrupt` reaches in-flight runs.
 
-## Retain hands the loop a background task
+## keep_working hands the loop a background task
 
-**`Agent::retain` spawns the loop on tokio and returns `(AgentWorking, OutputFuture)`. The loop idles between instructions while any handle is alive.**
+**`Agent::keep_working` spawns the loop on tokio and returns `(AgentWorking, OutputFuture)`. The loop idles between instructions while any handle is alive.**
 
-- `retain` flips `keep_alive: true` on the spec and installs a fresh `Work` inbox plus `interrupt_signal` before calling `work` on a `tokio::spawn`.
-- `AgentWorking::task(s)` posts a follow-up task; the loop picks it up at its next idle poll or step boundary.
+- `keep_working` flips `keep_alive: true` on the spec and installs a fresh `Work` inbox plus `interrupt_signal` before calling `execute` on a `tokio::spawn`.
+- `AgentWorking::work(s)` posts a follow-up task; the loop picks it up at its next idle poll or step boundary. `work_more(...)` queues several at once.
 - `OutputFuture` resolves once the loop exits; awaiting it does not keep the loop alive: only `AgentWorking` clones do.
 - `CancelGuard` flips the cancel flag when the last `AgentWorking` clone drops, so an abandoned handle still unblocks the loop.
 
-## Werk dispatches a workshop
+## Werk runs a workshop
 
-**`Werk` runs many `Agent`s under a fixed line cap. `produce` waits for a fixed set; `spawn` returns a handle and a stream that accept new hires.**
+**`Werk` runs many `Agent`s under a fixed line cap. `work` waits for a fixed cohort; `keep_working` returns a handle and a stream that accept new staff.**
 
-- The dispatcher is a single `tokio::spawn` task that owns a `FuturesUnordered` of in-flight worker tasks bounded by `lines`.
-- Hire indices are monotonic and reserved at submission time, so preloaded workers occupy `0..n` and dynamic `WerkProducing::hire` calls continue the sequence.
-- `WerkProducing` is `Clone`: the workshop accepts new hires while any clone is alive; dropping the last one closes it.
-- `Werk::interrupt_signal` lets the caller share an external signal; otherwise the workshop owns one and overrides any per-worker signal.
+- The dispatcher is a single `tokio::spawn` task that owns a `FuturesUnordered` of in-flight agent tasks bounded by `lines`.
+- Each agent's name is captured at submission time and travels with it through the dispatcher, so results pair `(String, Result<Output>)`. `Werk::work` collects those into a `HashMap<String, Result<Output>>` keyed by name.
+- `Werking` is `Clone`: the workshop accepts new staff while any clone is alive; dropping the last one closes it gracefully.
+- `Werk::interrupt_signal` lets the caller share an external signal; otherwise the workshop owns one and overrides any per-agent signal.
 
 ## Incoming work carries dynamic tasks
 
 **`Work` is a per-run inbox of `Task`s. The loop drains it between steps; `AgentWorking` and orchestration tools post into it.**
 
 - The inbox lives on `LoopRuntime` and is shared by the parent and every sub-agent in the run-tree.
-- `AgentWorking::task` posts with `WorkPriority::Next` so the next step picks it up before any backlog.
+- `AgentWorking::work` posts with `WorkPriority::Next` so the next step picks it up before any backlog.
 - Background sub-agents use the inbox to post notifications back to the parent; routing by `agent_name` keeps the inbox per-agent.
 - The inbox is `pub(crate)` only: the public API exposes it through `AgentWorking` and the orchestration tools, never directly.
 

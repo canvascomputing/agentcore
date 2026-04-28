@@ -39,12 +39,12 @@ async fn main() {
         .model_from_env()
         .expect("model name required")
         .role(REPORT_WRITER_PROMPT)
-        .hire_all(researchers)
+        .staff_more(researchers)
         .contract(output_schema())
         .max_steps(10)
         .event_handler(Arc::new(|event| log_event(&event)))
         .interrupt_signal(setup_interrupt_signal())
-        .task(question)
+        .work(question)
         .await
     {
         Ok(output) => output,

@@ -23,7 +23,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
         )
         .tool(TodoListTool::new(tmp.path()))
         .max_steps(15)
-        .task(
+        .work(
             "Do the following steps in order:\n\
              1. Create three items: 'Design API', 'Write tests', 'Deploy'\n\
              2. Add a dependency: 'Design API' blocks 'Write tests'\n\

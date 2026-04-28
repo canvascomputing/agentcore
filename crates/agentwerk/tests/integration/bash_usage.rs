@@ -41,7 +41,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .tool(wc)
         .contract(output_schema)
         .max_steps(10)
-        .task(
+        .work(
             "List the files in the current directory, read the Cargo.toml file, \
              and count its lines. Report the result.",
         )

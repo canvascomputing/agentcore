@@ -1,11 +1,11 @@
 //! High-level unit tests for the `AgentWorking` / `OutputFuture` pair
-//! returned by `Agent::retain()`.
+//! returned by `Agent::keep_working()`.
 //!
 //! The agent loop runs on a background tokio task. The foreground code
 //! interacts with it through two values:
 //!
 //! - [`AgentWorking`] — cheap to clone. Public surface:
-//!   - `task(s)` — hand the agent a new task; picked up at the next step
+//!   - `work(s)` — hand the agent a new task; picked up at the next step
 //!     boundary or immediately if the agent is parked idle.
 //!   - `interrupt()` — flip the shared cancel signal.
 //!   - `is_interrupted()` — read that signal.
@@ -38,9 +38,9 @@ async fn output_resolves_with_final_text_after_interrupt() {
         .model("mock")
         .provider(Arc::new(MockProvider::text("hello world")))
         .role("")
-        .task("greet")
+        .work("greet")
         .event_handler(events.handler())
-        .retain();
+        .keep_working();
 
     // Wait until the loop has produced its terminal output and parked idle;
     // interrupting before that would abort step 1 with `Cancelled` status.
@@ -64,7 +64,7 @@ async fn task_injects_into_the_next_step() {
     events
         .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
         .await;
-    handle.task("follow-up");
+    handle.work("follow-up");
     wait_until(|| provider.requests() >= 2).await;
 
     let second = provider.last_request().expect("second request");
@@ -84,8 +84,8 @@ async fn is_interrupted_returns_true_after_interrupt() {
         .model("mock")
         .provider(Arc::new(MockProvider::text("done")))
         .role("")
-        .task("x")
-        .retain();
+        .work("x")
+        .keep_working();
 
     assert!(!handle.is_interrupted());
     handle.interrupt();
@@ -122,7 +122,7 @@ async fn task_and_interrupt_on_a_clone_reach_the_original_task() {
     events
         .wait_for(|e| matches!(e.kind, EventKind::AgentPaused))
         .await;
-    worker.task("via-clone");
+    worker.work("via-clone");
     wait_until(|| provider.requests() >= 2).await;
 
     let second = provider.last_request().expect("second request");
@@ -151,7 +151,8 @@ async fn dropping_the_last_handle_terminates_the_agent() {
     assert_eq!(out.outcome, Outcome::Completed);
 }
 
-/// Retain a fresh agent wired to a MockProvider and the given event log.
+/// Build a fresh agent wired to a MockProvider and the given event log, and
+/// hand it to the loop in keep-working mode.
 fn retain_agent(
     responses: Vec<ModelResponse>,
     events: &EventLog,
@@ -162,9 +163,9 @@ fn retain_agent(
         .model("mock")
         .provider(provider.clone())
         .role("")
-        .task("initial")
+        .work("initial")
         .event_handler(events.handler())
-        .retain();
+        .keep_working();
     (provider, h, o)
 }
 
