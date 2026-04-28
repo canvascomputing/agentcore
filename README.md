@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Example applications built with this project:
 
 - [Terminal REPL](crates/use-cases/src/terminal_repl/): interactive terminal chat with less than 100 lines of code
-- [Project Scanner](crates/use-cases/src/project_scanner/): orchestrator routes files to specialist agents that hunt for code issues
+- [Security Scanner](crates/use-cases/src/project_scanner/): deeply analyzes a directory for suspicious code
 - [Divide and Conquer](crates/use-cases/src/divide_and_conquer/): partition a math problem across a Werk of workers
 - [Deep Research](crates/use-cases/src/deep_research/): multi-agent research with web search (requires `BRAVE_API_KEY`)
 - [Model Pricing Tracker](crates/use-cases/src/model_pricing_tracker/): check model prices
