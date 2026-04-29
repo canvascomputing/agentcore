@@ -21,7 +21,7 @@
   ],
   "output": [
     "Plain text (foreground): the sub-agent's final response — typically free text, or the validated JSON when `contract` is set.",
-    "Plain text (background): a single line of the form `spawned <agent_id>`. The eventual output arrives later as a peer message in the caller's inbox; this tool does not block waiting for it.",
+    "Plain text (background): `Background agent '<description>' started (id: <task_id>)`. Use `read_outcome_tool` with the task id to check status or block for the result. The output also arrives automatically in the work inbox when the loop next drains.",
     "On failure: an error message describing why the spawn could not start (unknown `agent` name, missing runtime context, schema-invalid `contract`)."
   ],
   "read_only": true,

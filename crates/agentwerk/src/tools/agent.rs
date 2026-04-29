@@ -11,6 +11,7 @@ use crate::tools::tool_file::ToolFile;
 
 use crate::agent::Agent;
 use crate::error::Result;
+use crate::output::Outcome;
 use crate::tools::error::ToolError;
 use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
 use crate::util::generate_agent_name;
@@ -118,13 +119,23 @@ impl ToolLike for AgentTool {
                 let work = runtime.incoming_work.clone();
                 let agent_id = id.clone();
                 let caller_for_child = caller.clone();
+
+                if let Some(w) = work.as_ref() {
+                    w.spawned(&agent_id);
+                }
+
                 tokio::spawn(async move {
-                    let summary = match agent.execute_child(&caller_for_child, &runtime).await {
-                        Ok(o) => o.response_raw,
-                        Err(e) => format!("Failed: {e}"),
-                    };
+                    let (outcome, text, structured) =
+                        match agent.execute_child(&caller_for_child, &runtime).await {
+                            Ok(o) => (o.outcome, o.response_raw, o.response),
+                            Err(e) => (Outcome::Failed, format!("Failed: {e}"), None),
+                        };
                     if let Some(w) = work {
-                        w.add_notification(&agent_id, &summary);
+                        // settle BEFORE add_notification: a poller draining the
+                        // notification then calling read_outcome must see the
+                        // settled state.
+                        w.settled(&agent_id, outcome, text.clone(), structured);
+                        w.add_notification(&agent_id, &text);
                     }
                 });
                 Ok(ToolResult::success(format!(
@@ -216,6 +227,62 @@ mod tests {
             notification.contains("response-") || notification.contains("Failed"),
             "Notification should contain agent result: {notification}"
         );
+    }
+
+    #[tokio::test]
+    async fn agent_tool_background_records_settled_outcome() {
+        // The background spawn path must record the spawn id on Work and then
+        // settle it with the child's outcome — that's the plumbing the
+        // ReadOutcomeTool reads.
+        let agent = Agent::new()
+            .name("orchestrator")
+            .model("mock")
+            .role("")
+            .tool(AgentTool);
+
+        let work = Arc::new(Work::new());
+
+        let provider = Arc::new(MockProvider::new(vec![
+            tool_response(
+                "agent_tool",
+                "sa1",
+                serde_json::json!({
+                    "description": "bg-worker",
+                    "task": "Do work",
+                    "background": true
+                }),
+            ),
+            text_response("child-result"),
+            text_response("ok"),
+        ]));
+
+        let harness = TestHarness::with_provider_and_work(provider, work.clone());
+        harness.run_agent(&agent, "go").await.unwrap();
+
+        // Drain the inbox to find the id the parent saw.
+        let task = work.take_if(None, |_| true).expect("notification posted");
+        // Notification looks like "Item <id> completed: <text>"
+        let prefix = "Item ";
+        let after = task
+            .content
+            .strip_prefix(prefix)
+            .expect("notification prefix");
+        let id = after.split_whitespace().next().expect("id token");
+
+        // Wait briefly for the spawn to settle if it hasn't already.
+        for _ in 0..20 {
+            if let Some(Some(_)) = work.spawn_state(id) {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+        }
+
+        let state = work
+            .spawn_state(id)
+            .expect("id tracked")
+            .expect("settled state");
+        assert!(matches!(state.0, crate::output::Outcome::Completed));
+        assert!(state.1.contains("child-result"));
     }
 
     #[tokio::test]

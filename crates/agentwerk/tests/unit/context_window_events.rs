@@ -433,7 +433,6 @@ fn render_blocks(blocks: &[ContentBlock]) -> String {
         .join("\n")
 }
 
-
 fn compact_reasons(events: &[Event]) -> Vec<CompactReason> {
     events
         .iter()

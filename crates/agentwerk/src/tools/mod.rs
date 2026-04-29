@@ -8,6 +8,7 @@ mod glob;
 mod grep;
 mod list_directory;
 mod read_file;
+mod read_outcome;
 mod send_message;
 mod todo_list;
 mod tool;
@@ -20,8 +21,8 @@ mod write_file;
 // Re-export tool infrastructure
 pub use error::ToolError;
 pub use tool::{Tool, ToolContext, ToolDefinition, ToolLike, ToolResult};
-pub use tool_file::ToolFile;
 pub(crate) use tool::{ToolCall, ToolRegistry};
+pub use tool_file::ToolFile;
 
 // Re-export built-in tools
 pub use agent::AgentTool;
@@ -31,6 +32,7 @@ pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use list_directory::ListDirectoryTool;
 pub use read_file::ReadFileTool;
+pub use read_outcome::ReadOutcomeTool;
 pub use send_message::SendMessageTool;
 pub use todo_list::TodoListTool;
 pub use tool_search::ToolSearchTool;

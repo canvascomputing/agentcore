@@ -133,7 +133,10 @@ mod tests {
             .role("You are a senior reviewer.")
             .behavior("- MUST cite file:line.")
             .build();
-        assert_eq!(p.system, "You are a senior reviewer.\n\n- MUST cite file:line.");
+        assert_eq!(
+            p.system,
+            "You are a senior reviewer.\n\n- MUST cite file:line."
+        );
     }
 
     #[test]

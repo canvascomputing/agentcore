@@ -1,0 +1,44 @@
+{
+  "name": "read_outcome_tool",
+  "summary": [
+    "Read the result of a background agent launched with `agent_tool` (`background: true`).",
+    "Non-blocking by default — pass `timeout_secs` to wait until the agent finishes."
+  ],
+  "constraints": [
+    "Identify the agent with the `task_id` returned by `agent_tool` when it spawned the background run.",
+    "When the agent was launched with a `contract`, the result is the validated JSON object verbatim; otherwise the result is the agent's plain-text final reply.",
+    "A failed run still returns its final text (prefixed with `Failed:` for crashes) — there is no separate error channel. The verdict is implicit in the body."
+  ],
+  "anti_patterns": [
+    "To send a message to a still-running peer agent — use `send_message_tool`.",
+    "To spawn a new agent — use `agent_tool`."
+  ],
+  "cautions": [
+    "IMPORTANT: a result is delivered exactly once on the work inbox when the parent loop next drains it. Calling `read_outcome_tool` does not consume the inbox notification, but it lets the model read the result on demand without waiting for the next drain.",
+    "IMPORTANT: with `timeout_secs > 0`, the call blocks the parent's tool-execution slot for that long. Cancel signals are honored, but no other tools run in parallel."
+  ],
+  "output": [
+    "Plain text. One of:",
+    "- the completed agent's final text (or its validated JSON when a contract was set),",
+    "- `Task <id> is still running.` when the call is non-blocking and the agent has not finished,",
+    "- `Timed out waiting for task <id> after <n>s.` when `timeout_secs` elapses,",
+    "- `Cancelled while waiting for task <id>.` when the run is cancelled,",
+    "- `Unknown task id: <id>.` when the id was never recorded."
+  ],
+  "read_only": true,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "task_id": {
+        "type": "string",
+        "description": "Identifier returned by `agent_tool` for the background run."
+      },
+      "timeout_secs": {
+        "type": "number",
+        "minimum": 0,
+        "description": "Maximum seconds to wait for the agent to finish. Default `0` returns immediately with the current state."
+      }
+    },
+    "required": ["task_id"]
+  }
+}

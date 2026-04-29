@@ -263,6 +263,7 @@ You can configure `.read_only(true)` when a tool has no side effects as an optio
 | **Utility** | `BashTool` | Run shell commands matching a glob pattern |
 | | `AgentTool` | Hand a job off to a coworker |
 | | `SendMessageTool` | Pass a memo to coworkers |
+| | `ReadOutcomeTool` | Check or wait on a backgrounded coworker's result |
 | | `TodoListTool` | Keep a persistent todo list of items |
 | | `ToolSearchTool` | Browse the toolbox by keyword |
 
@@ -271,7 +272,7 @@ use agentwerk::tools::{
     ReadFileTool, WriteFileTool, EditFileTool,
     GlobTool, GrepTool, ListDirectoryTool,
     WebFetchTool, AgentTool, BashTool,
-    SendMessageTool, TodoListTool, ToolSearchTool,
+    SendMessageTool, ReadOutcomeTool, TodoListTool, ToolSearchTool,
 };
 
 let output = Agent::new()
@@ -285,6 +286,7 @@ let output = Agent::new()
     .tool(AgentTool)
     .tool(BashTool::new("git", "git *"))
     .tool(SendMessageTool)
+    .tool(ReadOutcomeTool)
     .tool(TodoListTool::new(Path::new("/tmp/todos")))
     .tool(ToolSearchTool)
     .work("Explore the repo and summarize what you find.")

@@ -22,10 +22,10 @@ use crate::event::{default_logger, Event};
 use crate::output::{Output, OutputSchema};
 
 use super::error::AgentError;
-use crate::prompts;
 use super::r#loop::{run_loop, LoopRuntime, LoopState};
 use super::spec::AgentSpec;
 use super::work::{Task, TaskSource, Work, WorkPriority};
+use crate::prompts;
 
 /// An agent. Cheap to clone: the static template is shared, per-run fields are not.
 ///

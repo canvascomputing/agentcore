@@ -1,7 +1,12 @@
 //! In-process work inbox that feeds a running agent with late-arriving input (user messages, peer messages, task notifications).
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
+
+use serde_json::Value;
+use tokio::sync::Notify;
+
+use crate::output::Outcome;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum WorkPriority {
@@ -55,15 +60,26 @@ pub(crate) enum TaskSource {
     },
 }
 
-/// Thread-safe priority inbox of pending tasks.
+/// Snapshot of a tracked background spawn: `None` while the child is still
+/// running, `Some` once it terminates. The triple carries the verdict, the
+/// raw response text, and the validated structured value if a contract was
+/// set on the child.
+pub(crate) type SpawnState = Option<(Outcome, String, Option<Value>)>;
+
+/// Thread-safe priority inbox of pending tasks. Also tracks the live and
+/// settled state of background sub-agents launched via `agent_tool`.
 pub(crate) struct Work {
     inner: Arc<Mutex<VecDeque<Task>>>,
+    spawns: Mutex<HashMap<String, SpawnState>>,
+    notify: Notify,
 }
 
 impl Work {
     pub(crate) fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(VecDeque::new())),
+            spawns: Mutex::new(HashMap::new()),
+            notify: Notify::new(),
         }
     }
 
@@ -78,6 +94,44 @@ impl Work {
             source: TaskSource::TaskNotification,
             agent_name: None,
         });
+    }
+
+    /// Record a background sub-agent as launched. Called before `tokio::spawn`
+    /// so the id is observable before the model receives the start
+    /// confirmation.
+    pub(crate) fn spawned(&self, id: &str) {
+        self.spawns
+            .lock()
+            .unwrap()
+            .entry(id.to_string())
+            .or_insert(None);
+    }
+
+    /// Record a background sub-agent's terminal verdict and wake every
+    /// blocked poll loop.
+    pub(crate) fn settled(
+        &self,
+        id: &str,
+        outcome: Outcome,
+        text: String,
+        structured: Option<Value>,
+    ) {
+        self.spawns
+            .lock()
+            .unwrap()
+            .insert(id.to_string(), Some((outcome, text, structured)));
+        self.notify.notify_waiters();
+    }
+
+    /// Snapshot of a tracked spawn. `None` for unknown ids, `Some(None)` for
+    /// running, `Some(Some(_))` once settled.
+    pub(crate) fn spawn_state(&self, id: &str) -> Option<SpawnState> {
+        self.spawns.lock().unwrap().get(id).cloned()
+    }
+
+    /// Resolves on the next `settled` call. Used by the blocking poll path.
+    pub(crate) fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.notify.notified()
     }
 
     /// Pop the highest-priority task visible to the given agent that also
@@ -186,6 +240,44 @@ mod tests {
             agent_name: Some("bob".into()),
         };
         assert_eq!(t.as_user_message(), "[message from alice: greeting]\nping");
+    }
+
+    #[test]
+    fn spawn_state_unknown_id_is_none() {
+        let w = Work::new();
+        assert!(w.spawn_state("ghost").is_none());
+    }
+
+    #[test]
+    fn spawn_state_running_then_settled() {
+        let w = Work::new();
+        w.spawned("t1");
+        assert!(matches!(w.spawn_state("t1"), Some(None)));
+
+        w.settled("t1", Outcome::Completed, "done".into(), None);
+        let state = w.spawn_state("t1").unwrap().unwrap();
+        assert!(matches!(state.0, Outcome::Completed));
+        assert_eq!(state.1, "done");
+    }
+
+    #[tokio::test]
+    async fn settle_wakes_notified_waiters() {
+        let w = std::sync::Arc::new(Work::new());
+        w.spawned("t1");
+
+        let waiter = w.clone();
+        let task = tokio::spawn(async move {
+            waiter.notified().await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        w.settled("t1", Outcome::Completed, "done".into(), None);
+
+        // notified() resolves when settled() fires.
+        tokio::time::timeout(std::time::Duration::from_millis(200), task)
+            .await
+            .expect("notified waiter must wake")
+            .unwrap();
     }
 
     #[test]

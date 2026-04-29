@@ -126,10 +126,7 @@ impl ToolLike for TodoListTool {
                         .get("description")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
-                    let metadata = input
-                        .get("metadata")
-                        .and_then(|v| v.as_object())
-                        .cloned();
+                    let metadata = input.get("metadata").and_then(|v| v.as_object()).cloned();
                     match self.store.lock().unwrap().update(
                         id,
                         TodoItemUpdate {
