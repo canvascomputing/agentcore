@@ -7,6 +7,7 @@
   "constraints": [
     "All non-list responses return the affected item (or summary) as pretty-printed JSON.",
     "`claim` records which agent owns the item; `add_dependency` records that one item blocks another, and `update` to `Completed` is rejected while a blocker is unfinished.",
+    "`metadata` is a free-form JSON object on each item — agents use it for priority, tags, ticket references, or structured output from a prior step. `update` replaces the whole object; pass the merged result if you only want to change one key.",
     "IDs are returned by `create` and `list`; the model must use them verbatim — they are not human-readable slugs."
   ],
   "anti_patterns": [
@@ -14,11 +15,11 @@
     "To spawn a sub-agent that handles the work — use `agent_tool`."
   ],
   "cautions": [
-    "IMPORTANT: `update` to `Completed` fails when the item has unfinished blockers. Resolve the blocker first or remove the dependency.",
+    "IMPORTANT: `update` to `Completed` fails when the item has unfinished blockers. Resolve the blocker first or call `remove_dependency`.",
     "IMPORTANT: `delete` is irreversible — the item is removed, including its history. Prefer `update` to mark it `Completed` if you want to keep an audit trail."
   ],
   "output": [
-    "Plain text. `create`, `update`, `get`, `claim` return pretty-printed JSON of the item; `list` returns a JSON array; `delete` returns `Item <id> deleted`; `add_dependency` returns `Dependency added: <from> blocks <to>`.",
+    "Plain text. `create`, `update`, `get`, `claim` return pretty-printed JSON of the item; `list` returns a JSON array; `delete` returns `Item <id> deleted`; `add_dependency` returns `Dependency added: <from> blocks <to>`; `remove_dependency` returns `Dependency removed: <from> no longer blocks <to>`.",
     "On failure: an error message — item not found, item already completed, blocked by an unfinished item, or unknown `action`."
   ],
   "read_only": false,
@@ -27,8 +28,8 @@
     "properties": {
       "action": {
         "type": "string",
-        "enum": ["create", "update", "list", "get", "delete", "claim", "add_dependency"],
-        "description": "Which subcommand to run: `create` adds a new item; `update` mutates an item's status or subject; `list` returns every item; `get` fetches one by id; `delete` removes one; `claim` assigns ownership; `add_dependency` records that one item blocks another."
+        "enum": ["create", "update", "list", "get", "delete", "claim", "add_dependency", "remove_dependency"],
+        "description": "Which subcommand to run: `create` adds a new item; `update` mutates an item's status, subject, description, or metadata; `list` returns every item; `get` fetches one by id; `delete` removes one; `claim` assigns ownership; `add_dependency` records that one item blocks another; `remove_dependency` undoes the link."
       },
       "id": {
         "type": "string",
@@ -40,12 +41,17 @@
       },
       "description": {
         "type": "string",
-        "description": "Item details (used by `create`)."
+        "description": "Item details (used by `create`; optional for `update` to replace the body)."
       },
       "status": {
         "type": "string",
         "enum": ["Pending", "InProgress", "Completed"],
         "description": "New status (used by `update`). Setting `Completed` fails if the item has unfinished blockers."
+      },
+      "metadata": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "Free-form JSON object attached to the item (optional for `create` and `update`). On `update` the supplied object fully replaces the previous metadata."
       },
       "agent_name": {
         "type": "string",
@@ -53,11 +59,11 @@
       },
       "from": {
         "type": "string",
-        "description": "Blocking item id (required for `add_dependency`)."
+        "description": "Blocking item id (required for `add_dependency` and `remove_dependency`)."
       },
       "to": {
         "type": "string",
-        "description": "Blocked item id (required for `add_dependency`)."
+        "description": "Blocked item id (required for `add_dependency` and `remove_dependency`)."
       }
     },
     "required": ["action"]

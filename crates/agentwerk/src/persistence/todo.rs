@@ -1,6 +1,7 @@
 //! File-based todo list with per-item locking. Survives process restarts and lets peer agents coordinate through shared item records.
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -19,6 +20,8 @@ pub(crate) struct TodoItem {
     pub(crate) blocked_by: Vec<String>,
     pub(crate) created_at: u64,
     pub(crate) updated_at: u64,
+    #[serde(default)]
+    pub(crate) metadata: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +35,8 @@ pub(crate) enum TodoItemStatus {
 pub(crate) struct TodoItemUpdate {
     pub(crate) status: Option<TodoItemStatus>,
     pub(crate) subject: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) metadata: Option<Map<String, Value>>,
 }
 
 /// Persists items to disk as individual JSON files.
@@ -48,7 +53,12 @@ impl TodoList {
         }
     }
 
-    pub(crate) fn create(&self, subject: &str, description: &str) -> Result<TodoItem> {
+    pub(crate) fn create(
+        &self,
+        subject: &str,
+        description: &str,
+        metadata: Map<String, Value>,
+    ) -> Result<TodoItem> {
         self.with_lock(|| {
             let mark = self.read_high_water_mark();
             let from_files = self.highest_item_id_on_disk();
@@ -65,6 +75,7 @@ impl TodoList {
                 blocked_by: Vec::new(),
                 created_at: now,
                 updated_at: now,
+                metadata,
             };
 
             // Write mark BEFORE item file: crash-safe.
@@ -110,6 +121,12 @@ impl TodoList {
             }
             if let Some(subject) = update.subject {
                 item.subject = subject;
+            }
+            if let Some(description) = update.description {
+                item.description = description;
+            }
+            if let Some(metadata) = update.metadata {
+                item.metadata = metadata;
             }
             item.updated_at = now_millis();
 
@@ -158,6 +175,20 @@ impl TodoList {
             if !to_item.blocked_by.iter().any(|b| b == from) {
                 to_item.blocked_by.push(from.to_string());
             }
+
+            self.write_item(&from_item)?;
+            self.write_item(&to_item)?;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn remove_dependency(&self, from: &str, to: &str) -> Result<()> {
+        self.with_lock(|| {
+            let mut from_item = self.require_item(from)?;
+            let mut to_item = self.require_item(to)?;
+
+            from_item.blocks.retain(|id| id != to);
+            to_item.blocked_by.retain(|id| id != from);
 
             self.write_item(&from_item)?;
             self.write_item(&to_item)?;
@@ -285,10 +316,14 @@ mod tests {
         (tmp, store)
     }
 
+    fn create(store: &TodoList, subject: &str, description: &str) -> TodoItem {
+        store.create(subject, description, Map::new()).unwrap()
+    }
+
     #[test]
     fn create_and_get() {
         let (_tmp, store) = test_store();
-        let item = store.create("Design API", "Define endpoints").unwrap();
+        let item = create(&store, "Design API", "Define endpoints");
         assert_eq!(item.subject, "Design API");
         assert_eq!(item.status, TodoItemStatus::Pending);
         assert!(item.owner.is_none());
@@ -302,9 +337,9 @@ mod tests {
     #[test]
     fn list_returns_all_items() {
         let (_tmp, store) = test_store();
-        store.create("Item 1", "desc 1").unwrap();
-        store.create("Item 2", "desc 2").unwrap();
-        store.create("Item 3", "desc 3").unwrap();
+        create(&store, "Item 1", "desc 1");
+        create(&store, "Item 2", "desc 2");
+        create(&store, "Item 3", "desc 3");
 
         let items = store.list().unwrap();
         assert_eq!(items.len(), 3);
@@ -313,7 +348,7 @@ mod tests {
     #[test]
     fn update_status() {
         let (_tmp, store) = test_store();
-        store.create("Item", "desc").unwrap();
+        create(&store, "Item", "desc");
 
         let updated = store
             .update(
@@ -339,7 +374,7 @@ mod tests {
     #[test]
     fn delete_removes_item() {
         let (_tmp, store) = test_store();
-        store.create("Item", "desc").unwrap();
+        create(&store, "Item", "desc");
         store.delete("1").unwrap();
         assert!(store.get("1").unwrap().is_none());
     }
@@ -347,32 +382,32 @@ mod tests {
     #[test]
     fn ids_never_reused_after_delete() {
         let (_tmp, store) = test_store();
-        store.create("Item 1", "").unwrap();
-        store.create("Item 2", "").unwrap();
-        store.create("Item 3", "").unwrap();
+        create(&store, "Item 1", "");
+        create(&store, "Item 2", "");
+        create(&store, "Item 3", "");
         store.delete("2").unwrap();
 
-        let item = store.create("Item 4", "").unwrap();
+        let item = create(&store, "Item 4", "");
         assert_eq!(item.id, "4");
     }
 
     #[test]
     fn high_water_mark_survives_all_deletions() {
         let (_tmp, store) = test_store();
-        store.create("Item 1", "").unwrap();
-        store.create("Item 2", "").unwrap();
+        create(&store, "Item 1", "");
+        create(&store, "Item 2", "");
         store.delete("1").unwrap();
         store.delete("2").unwrap();
 
-        let item = store.create("Item 3", "").unwrap();
+        let item = create(&store, "Item 3", "");
         assert_eq!(item.id, "3");
     }
 
     #[test]
     fn claim_blocked_item_fails() {
         let (_tmp, store) = test_store();
-        let a = store.create("A", "").unwrap();
-        let b = store.create("B", "").unwrap();
+        let a = create(&store, "A", "");
+        let b = create(&store, "B", "");
         store.add_dependency(&a.id, &b.id).unwrap();
 
         let err = store.claim(&b.id, "agent_1").unwrap_err();
@@ -382,8 +417,8 @@ mod tests {
     #[test]
     fn claim_after_blocker_completes() {
         let (_tmp, store) = test_store();
-        let a = store.create("A", "").unwrap();
-        let b = store.create("B", "").unwrap();
+        let a = create(&store, "A", "");
+        let b = create(&store, "B", "");
         store.add_dependency(&a.id, &b.id).unwrap();
 
         store
@@ -404,8 +439,8 @@ mod tests {
     #[test]
     fn delete_cascades_dependency_removal() {
         let (_tmp, store) = test_store();
-        let a = store.create("A", "").unwrap();
-        let b = store.create("B", "").unwrap();
+        let a = create(&store, "A", "");
+        let b = create(&store, "B", "");
         store.add_dependency(&a.id, &b.id).unwrap();
 
         store.delete(&a.id).unwrap();
@@ -417,7 +452,7 @@ mod tests {
     #[test]
     fn claim_completed_item_fails() {
         let (_tmp, store) = test_store();
-        store.create("Item", "").unwrap();
+        create(&store, "Item", "");
         store
             .update(
                 "1",
@@ -433,6 +468,111 @@ mod tests {
     }
 
     #[test]
+    fn metadata_round_trips_through_create_list_get() {
+        let (_tmp, store) = test_store();
+        let mut metadata = Map::new();
+        metadata.insert("priority".into(), Value::String("high".into()));
+        metadata.insert("ticket".into(), Value::String("ENG-42".into()));
+
+        let created = store.create("Subject", "Body", metadata.clone()).unwrap();
+        assert_eq!(created.metadata, metadata);
+
+        let loaded = store.get(&created.id).unwrap().unwrap();
+        assert_eq!(loaded.metadata, metadata);
+
+        let listed = store.list().unwrap();
+        assert_eq!(listed[0].metadata, metadata);
+    }
+
+    #[test]
+    fn legacy_item_without_metadata_field_loads_with_empty_map() {
+        let (tmp, store) = test_store();
+        // Hand-write a JSON file lacking the metadata field, mimicking a record
+        // produced by an older binary.
+        let dir = tmp.path().join("items").join("test");
+        fs::create_dir_all(&dir).unwrap();
+        let legacy = r#"{
+            "id": "1",
+            "subject": "old",
+            "description": "old",
+            "status": "Pending",
+            "owner": null,
+            "blocks": [],
+            "blocked_by": [],
+            "created_at": 0,
+            "updated_at": 0
+        }"#;
+        fs::write(dir.join("1.json"), legacy).unwrap();
+
+        let loaded = store.get("1").unwrap().unwrap();
+        assert!(loaded.metadata.is_empty());
+    }
+
+    #[test]
+    fn update_replaces_description_and_metadata_independently() {
+        let (_tmp, store) = test_store();
+        let mut original = Map::new();
+        original.insert("k".into(), Value::String("v".into()));
+        store.create("subject", "first body", original).unwrap();
+
+        let after_desc = store
+            .update(
+                "1",
+                TodoItemUpdate {
+                    description: Some("second body".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(after_desc.description, "second body");
+        assert_eq!(after_desc.metadata.get("k").unwrap(), "v");
+
+        let mut replacement = Map::new();
+        replacement.insert("k2".into(), Value::String("v2".into()));
+        let after_meta = store
+            .update(
+                "1",
+                TodoItemUpdate {
+                    metadata: Some(replacement.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(after_meta.description, "second body");
+        assert_eq!(after_meta.metadata, replacement);
+    }
+
+    #[test]
+    fn remove_dependency_drops_both_edges() {
+        let (_tmp, store) = test_store();
+        let a = create(&store, "A", "");
+        let b = create(&store, "B", "");
+        store.add_dependency(&a.id, &b.id).unwrap();
+
+        store.remove_dependency(&a.id, &b.id).unwrap();
+
+        let a_loaded = store.get(&a.id).unwrap().unwrap();
+        let b_loaded = store.get(&b.id).unwrap().unwrap();
+        assert!(a_loaded.blocks.is_empty());
+        assert!(b_loaded.blocked_by.is_empty());
+
+        // Idempotent: a second call is a no-op.
+        store.remove_dependency(&a.id, &b.id).unwrap();
+    }
+
+    #[test]
+    fn remove_dependency_unblocks_claim() {
+        let (_tmp, store) = test_store();
+        let a = create(&store, "A", "");
+        let b = create(&store, "B", "");
+        store.add_dependency(&a.id, &b.id).unwrap();
+
+        assert!(store.claim(&b.id, "agent").is_err());
+        store.remove_dependency(&a.id, &b.id).unwrap();
+        assert!(store.claim(&b.id, "agent").is_ok());
+    }
+
+    #[test]
     fn concurrent_creation_no_duplicate_ids() {
         let tmp = tempfile::tempdir().unwrap();
         let base = tmp.path().to_path_buf();
@@ -442,7 +582,7 @@ mod tests {
                 let base = base.clone();
                 std::thread::spawn(move || {
                     let store = TodoList::new(&base, "concurrent");
-                    store.create(&format!("Item {i}"), "").unwrap()
+                    store.create(&format!("Item {i}"), "", Map::new()).unwrap()
                 })
             })
             .collect();

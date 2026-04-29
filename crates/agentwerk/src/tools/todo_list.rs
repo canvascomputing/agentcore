@@ -5,7 +5,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::tools::tool_file::ToolFile;
 
@@ -96,7 +96,17 @@ impl ToolLike for TodoListTool {
                 "create" => {
                     let subject = input["subject"].as_str().unwrap_or("");
                     let description = input["description"].as_str().unwrap_or("");
-                    match self.store.lock().unwrap().create(subject, description) {
+                    let metadata = input
+                        .get("metadata")
+                        .and_then(|v| v.as_object())
+                        .cloned()
+                        .unwrap_or_else(Map::new);
+                    match self
+                        .store
+                        .lock()
+                        .unwrap()
+                        .create(subject, description, metadata)
+                    {
                         Ok(item) => Ok(ToolResult::success(
                             serde_json::to_string_pretty(&item).unwrap(),
                         )),
@@ -112,12 +122,21 @@ impl ToolLike for TodoListTool {
                         _ => None,
                     });
                     let subject = input["subject"].as_str().map(|s| s.to_string());
+                    let description = input
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let metadata = input
+                        .get("metadata")
+                        .and_then(|v| v.as_object())
+                        .cloned();
                     match self.store.lock().unwrap().update(
                         id,
                         TodoItemUpdate {
                             status,
                             subject,
-                            ..Default::default()
+                            description,
+                            metadata,
                         },
                     ) {
                         Ok(item) => Ok(ToolResult::success(
@@ -165,6 +184,16 @@ impl ToolLike for TodoListTool {
                     match self.store.lock().unwrap().add_dependency(from, to) {
                         Ok(()) => Ok(ToolResult::success(format!(
                             "Dependency added: {from} blocks {to}"
+                        ))),
+                        Err(e) => route(e),
+                    }
+                }
+                "remove_dependency" => {
+                    let from = input["from"].as_str().unwrap_or("");
+                    let to = input["to"].as_str().unwrap_or("");
+                    match self.store.lock().unwrap().remove_dependency(from, to) {
+                        Ok(()) => Ok(ToolResult::success(format!(
+                            "Dependency removed: {from} no longer blocks {to}"
                         ))),
                         Err(e) => route(e),
                     }
@@ -276,6 +305,120 @@ mod tests {
         let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
         let parsed: Value = serde_json::from_str(content).unwrap();
         assert_eq!(parsed["status"], "InProgress");
+    }
+
+    #[tokio::test]
+    async fn create_carries_metadata() {
+        let tool = test_tool();
+        let result = tool
+            .call(
+                serde_json::json!({
+                    "action": "create",
+                    "subject": "S",
+                    "description": "D",
+                    "metadata": {"priority": "high"}
+                }),
+                &test_ctx(),
+            )
+            .await
+            .unwrap();
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let parsed: Value = serde_json::from_str(content).unwrap();
+        assert_eq!(parsed["metadata"]["priority"], "high");
+    }
+
+    #[tokio::test]
+    async fn update_replaces_description() {
+        let tool = test_tool();
+        tool.call(
+            serde_json::json!({"action": "create", "subject": "S", "description": "first"}),
+            &test_ctx(),
+        )
+        .await
+        .unwrap();
+
+        let result = tool
+            .call(
+                serde_json::json!({"action": "update", "id": "1", "description": "second"}),
+                &test_ctx(),
+            )
+            .await
+            .unwrap();
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let parsed: Value = serde_json::from_str(content).unwrap();
+        assert_eq!(parsed["description"], "second");
+    }
+
+    #[tokio::test]
+    async fn update_replaces_metadata() {
+        let tool = test_tool();
+        tool.call(
+            serde_json::json!({
+                "action": "create",
+                "subject": "S",
+                "description": "D",
+                "metadata": {"a": 1}
+            }),
+            &test_ctx(),
+        )
+        .await
+        .unwrap();
+
+        let result = tool
+            .call(
+                serde_json::json!({
+                    "action": "update",
+                    "id": "1",
+                    "metadata": {"b": 2}
+                }),
+                &test_ctx(),
+            )
+            .await
+            .unwrap();
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let parsed: Value = serde_json::from_str(content).unwrap();
+        assert!(parsed["metadata"].get("a").is_none());
+        assert_eq!(parsed["metadata"]["b"], 2);
+    }
+
+    #[tokio::test]
+    async fn remove_dependency_unblocks_target() {
+        let tool = test_tool();
+        tool.call(
+            serde_json::json!({"action": "create", "subject": "A", "description": ""}),
+            &test_ctx(),
+        )
+        .await
+        .unwrap();
+        tool.call(
+            serde_json::json!({"action": "create", "subject": "B", "description": ""}),
+            &test_ctx(),
+        )
+        .await
+        .unwrap();
+        tool.call(
+            serde_json::json!({"action": "add_dependency", "from": "1", "to": "2"}),
+            &test_ctx(),
+        )
+        .await
+        .unwrap();
+
+        let result = tool
+            .call(
+                serde_json::json!({"action": "remove_dependency", "from": "1", "to": "2"}),
+                &test_ctx(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(result, ToolResult::Success(_)));
+
+        let result = tool
+            .call(serde_json::json!({"action": "get", "id": "2"}), &test_ctx())
+            .await
+            .unwrap();
+        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let parsed: Value = serde_json::from_str(content).unwrap();
+        assert!(parsed["blocked_by"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]
