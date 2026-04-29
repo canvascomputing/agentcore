@@ -82,8 +82,21 @@ fn report_agent() -> Agent {
         .model("mock")
         .role("You are a code reviewer. Reply with a structured report.")
         .behavior("")
+        .context(TEST_CONTEXT)
         .contract(report_schema())
 }
+
+/// Deterministic stand-in for the runtime `default_context` block. Pinning
+/// the four field values here keeps snapshots reproducible on any host
+/// without a parsing pass after rendering. The runtime default is exercised
+/// by a unit test on `prompts::default_context` itself.
+const TEST_CONTEXT: &str = "\
+## Context
+
+- Working directory: /tmp/test
+- Platform: macos
+- OS version: 0.0.0-test
+- Date: 2026-01-01";
 
 const INVALID_REPORT_JSON: &str = r#"{"category":"security","priority":"high","findings":[]}"#;
 
@@ -91,18 +104,16 @@ const S0_INITIAL: &str = "\
 === system ===
 You are a code reviewer. Reply with a structured report.
 
-IMPORTANT: You MUST return your final response as a single JSON value that \
-conforms to the declared output schema. After using any tools needed to complete \
-the task, your last message MUST be the JSON value, exactly once. Do not wrap it \
-in markdown code fences. Do not include any text before or after the JSON.
+- MUST return your final response as a single JSON value conforming to the declared output schema. After any tool calls, your last message must be the JSON value, exactly once.
+- NEVER wrap it in markdown code fences or include any text before or after it.
 
 === messages[0] user ===
-<environment>
-Working directory: <WORKING_DIRECTORY>
-Platform: <PLATFORM>
-OS version: <OS_VERSION>
-Date: <DATE>
-</environment>
+## Context
+
+- Working directory: /tmp/test
+- Platform: macos
+- OS version: 0.0.0-test
+- Date: 2026-01-01
 
 === messages[1] user ===
 Review the auth module.
@@ -112,18 +123,16 @@ const S1_AFTER_INVALID_REPLY: &str = "\
 === system ===
 You are a code reviewer. Reply with a structured report.
 
-IMPORTANT: You MUST return your final response as a single JSON value that \
-conforms to the declared output schema. After using any tools needed to complete \
-the task, your last message MUST be the JSON value, exactly once. Do not wrap it \
-in markdown code fences. Do not include any text before or after the JSON.
+- MUST return your final response as a single JSON value conforming to the declared output schema. After any tool calls, your last message must be the JSON value, exactly once.
+- NEVER wrap it in markdown code fences or include any text before or after it.
 
 === messages[0] user ===
-<environment>
-Working directory: <WORKING_DIRECTORY>
-Platform: <PLATFORM>
-OS version: <OS_VERSION>
-Date: <DATE>
-</environment>
+## Context
+
+- Working directory: /tmp/test
+- Platform: macos
+- OS version: 0.0.0-test
+- Date: 2026-01-01
 
 === messages[1] user ===
 Review the auth module.
@@ -143,18 +152,16 @@ const S2_AFTER_VALID_REPLY: &str = "\
 === system ===
 You are a code reviewer. Reply with a structured report.
 
-IMPORTANT: You MUST return your final response as a single JSON value that \
-conforms to the declared output schema. After using any tools needed to complete \
-the task, your last message MUST be the JSON value, exactly once. Do not wrap it \
-in markdown code fences. Do not include any text before or after the JSON.
+- MUST return your final response as a single JSON value conforming to the declared output schema. After any tool calls, your last message must be the JSON value, exactly once.
+- NEVER wrap it in markdown code fences or include any text before or after it.
 
 === messages[0] user ===
-<environment>
-Working directory: <WORKING_DIRECTORY>
-Platform: <PLATFORM>
-OS version: <OS_VERSION>
-Date: <DATE>
-</environment>
+## Context
+
+- Working directory: /tmp/test
+- Platform: macos
+- OS version: 0.0.0-test
+- Date: 2026-01-01
 
 === messages[1] user ===
 Review the auth module.
@@ -201,7 +208,7 @@ async fn state_machine_advances_invalid_then_valid() {
     );
 
     let reqs = harness.provider().requests.lock().unwrap();
-    let state = |i: usize| canonicalize(&render(&reqs[i]));
+    let state = |i: usize| render(&reqs[i]);
     assert_eq!(state(0), S0_INITIAL);
     assert_eq!(state(1), S1_AFTER_INVALID_REPLY);
 
@@ -214,7 +221,7 @@ async fn state_machine_advances_invalid_then_valid() {
         }],
     });
     let terminal = render_conversation(&reqs[1].system_prompt, &terminal_messages);
-    assert_eq!(canonicalize(&terminal), S2_AFTER_VALID_REPLY);
+    assert_eq!(terminal, S2_AFTER_VALID_REPLY);
 }
 
 #[tokio::test]
@@ -242,7 +249,7 @@ async fn schema_agent_does_not_inject_synthetic_tool() {
     );
     assert!(
         req.system_prompt
-            .contains("You MUST return your final response as a single JSON value"),
+            .contains("MUST return your final response as a single JSON value"),
         "schema contract must be carried by the system prompt — got:\n{}",
         req.system_prompt,
     );
@@ -553,7 +560,7 @@ async fn sub_agent_with_schema_returns_json_in_tool_result() {
     let provider = MockProvider::new(vec![
         // parent step 1: spawn the registered reviewer
         tool_response(
-            "agent",
+            "agent_tool",
             "sa1",
             serde_json::json!({
                 "description": "ask reviewer",
@@ -597,7 +604,7 @@ async fn ad_hoc_spawned_agent_declares_schema_via_overrides() {
     let provider = MockProvider::new(vec![
         // parent step 1: ad-hoc spawn with schema in args
         tool_response(
-            "agent",
+            "agent_tool",
             "sa1",
             serde_json::json!({
                 "description": "ad-hoc classifier",
@@ -836,42 +843,6 @@ fn render_blocks(blocks: &[ContentBlock]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-/// Replace the four dynamic values inside the `<environment>` block (cwd,
-/// platform, OS version, date) with stable placeholders so snapshots are
-/// reproducible on any host.
-fn canonicalize(rendered: &str) -> String {
-    let mut out: Vec<String> = Vec::with_capacity(rendered.lines().count());
-    let mut in_env = false;
-    for line in rendered.lines() {
-        match line {
-            "<environment>" => {
-                in_env = true;
-                out.push(line.to_string());
-            }
-            "</environment>" => {
-                in_env = false;
-                out.push(line.to_string());
-            }
-            _ if in_env => out.push(replace_value_with_placeholder(line)),
-            _ => out.push(line.to_string()),
-        }
-    }
-    let mut joined = out.join("\n");
-    if rendered.ends_with('\n') {
-        joined.push('\n');
-    }
-    joined
-}
-
-fn replace_value_with_placeholder(line: &str) -> String {
-    let Some(colon) = line.find(':') else {
-        return line.to_string();
-    };
-    let key = &line[..colon];
-    let placeholder = key.to_uppercase().replace(' ', "_");
-    format!("{key}: <{placeholder}>")
 }
 
 /// Pull the text of the most recent `Message::User` entry — useful for tests

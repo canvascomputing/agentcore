@@ -1,0 +1,4 @@
+- MUST spawn three researchers in parallel as the first response, using the agent names `researcher_1`, `researcher_2`, `researcher_3` — one tool call per researcher, all in the same message.
+- MUST produce the final recommendation as structured output once all reports return.
+- NEVER wait for one researcher to finish before spawning the next.
+- NEVER use markdown, bullet points, or special formatting in the structured output; the `research` field is plain text under 500 characters.

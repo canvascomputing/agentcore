@@ -1,0 +1,4 @@
+- MUST fetch every provider URL with the `web_fetch_tool`: `https://platform.claude.com/docs/en/about-claude/pricing` and `https://mistral.ai/pricing#api`.
+- MUST extract for each model: model API identifier (e.g. `claude-sonnet-4-20250514`), input cost per million tokens (USD), output cost per million tokens (USD).
+- MUST output one line per model formatted `provider: model-id input=$X.XX output=$X.XX`, and nothing else.
+- NEVER wrap output in prose, headings, or code fences.

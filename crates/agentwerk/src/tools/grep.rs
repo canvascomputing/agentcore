@@ -3,11 +3,13 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::OnceLock;
 
 use serde_json::Value;
 
 use crate::error::Result;
 use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
+use crate::tools::tool_file::ToolFile;
 use crate::tools::util::glob_match;
 
 /// Search file contents by substring under the working directory. Read-only.
@@ -18,62 +20,31 @@ pub struct GrepTool;
 const DEFAULT_MAX_RESULTS: u64 = 100;
 const SKIP_DIRS: &[&str] = &[".git", "target", "node_modules", "vendor"];
 
-const DESCRIPTION: &str = "\
-Search file contents using a substring pattern.
+fn tool_file() -> &'static ToolFile {
+    static FILE: OnceLock<ToolFile> = OnceLock::new();
+    FILE.get_or_init(|| ToolFile::parse(include_str!("grep.tool.json")))
+}
 
-- ALWAYS use this tool for content search. NEVER invoke grep or rg as a bash command.
-- Output modes: \"files\" (default, file paths only), \"content\" (matching lines with context), \"count\" (match counts per file).
-- Use the glob parameter to filter by file type (e.g., \"*.rs\", \"*.ts\").
-- For open-ended searches requiring multiple rounds, use agent instead.";
+fn description() -> &'static str {
+    static DESC: OnceLock<String> = OnceLock::new();
+    DESC.get_or_init(|| tool_file().render_markdown())
+}
 
 impl ToolLike for GrepTool {
     fn name(&self) -> &str {
-        "grep"
+        &tool_file().name
     }
 
     fn description(&self) -> &str {
-        DESCRIPTION
+        description()
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "pattern": {
-                    "type": "string",
-                    "description": "Substring to search for"
-                },
-                "path": {
-                    "type": "string",
-                    "description": "Directory or file to search in (default: \".\")"
-                },
-                "glob": {
-                    "type": "string",
-                    "description": "File filter pattern (e.g. \"*.rs\")"
-                },
-                "output_mode": {
-                    "type": "string",
-                    "description": "Output mode: content, files, or count (default: files)"
-                },
-                "context_lines": {
-                    "type": "integer",
-                    "description": "Number of context lines before and after each match"
-                },
-                "case_insensitive": {
-                    "type": "boolean",
-                    "description": "Whether to ignore case (default: false)"
-                },
-                "max_results": {
-                    "type": "integer",
-                    "description": "Maximum number of results (default: 100)"
-                }
-            },
-            "required": ["pattern"]
-        })
+        tool_file().input_schema.clone()
     }
 
     fn is_read_only(&self) -> bool {
-        true
+        tool_file().read_only
     }
 
     fn call<'a>(

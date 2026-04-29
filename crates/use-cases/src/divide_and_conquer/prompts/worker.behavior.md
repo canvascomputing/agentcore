@@ -1,0 +1,3 @@
+- MUST call `python` with `{"code": "print(sum(k*k for k in range(LO, HI + 1)))"}`, substituting the numeric bounds from the task.
+- MUST output exactly the JSON object `{"partial_sum": N}` as the final reply, where `N` is the integer the tool printed.
+- NEVER include prose, code fences, units, commas, or spaces in the final reply.

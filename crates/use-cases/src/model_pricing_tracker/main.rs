@@ -8,6 +8,7 @@
 //! Environment:
 //!   ANTHROPIC_API_KEY   (or other provider env vars)
 
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -15,28 +16,22 @@ use agentwerk::event::EventKind;
 use agentwerk::tools::WebFetchTool;
 use agentwerk::{Agent, Event};
 
-const PRICING_RESEARCHER_PROMPT: &str = "\
-You are a pricing researcher. Fetch current model pricing from provider websites.\n\n\
-Fetch these URLs using the web_fetch tool:\n\
-1. https://platform.claude.com/docs/en/about-claude/pricing\n\
-2. https://mistral.ai/pricing#api\n\n\
-For each model, extract:\n\
-- Model API identifier (e.g. claude-sonnet-4-20250514)\n\
-- Input cost per million tokens (USD)\n\
-- Output cost per million tokens (USD)\n\n\
-If a page doesn't render (JS-only), report that.\n\n\
-Output ONLY a list like:\n\
-  provider: model-id input=$X.XX output=$X.XX\n\
-One line per model. Nothing else.";
-
-const ORCHESTRATOR_PROMPT: &str = "\
-You coordinate pricing research. You MUST use the agent tool with the 'agent' parameter.\n\n\
-Step 1: Call agent with {\"agent\": \"pricing_researcher\", \"description\": \"fetch pricing\", \
-\"task\": \"Fetch current model pricing from all provider websites\"}.\n\n\
-Step 2: After it returns, produce your structured output listing every model found. \
-Include provider, model_id, input_per_million, output_per_million for each.\n\n\
-CRITICAL: Always set the 'agent' field to 'pricing_researcher'. \
-Do NOT add explanation. Just spawn the agent, then output the structured result.";
+const RESEARCHER_ROLE_FILE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/model_pricing_tracker/prompts/researcher.role.md",
+);
+const RESEARCHER_BEHAVIOR_FILE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/model_pricing_tracker/prompts/researcher.behavior.md",
+);
+const ORCHESTRATOR_ROLE_FILE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/model_pricing_tracker/prompts/orchestrator.role.md",
+);
+const ORCHESTRATOR_BEHAVIOR_FILE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/model_pricing_tracker/prompts/orchestrator.behavior.md",
+);
 
 fn output_schema() -> serde_json::Value {
     serde_json::json!({
@@ -68,7 +63,8 @@ async fn main() {
 
     let pricing_researcher = Agent::new()
         .name("pricing_researcher")
-        .role(PRICING_RESEARCHER_PROMPT)
+        .role(Path::new(RESEARCHER_ROLE_FILE))
+        .behavior(Path::new(RESEARCHER_BEHAVIOR_FILE))
         .tool(WebFetchTool)
         .max_steps(10);
 
@@ -78,7 +74,8 @@ async fn main() {
         .expect("LLM provider required")
         .model_from_env()
         .expect("model name required")
-        .role(ORCHESTRATOR_PROMPT)
+        .role(Path::new(ORCHESTRATOR_ROLE_FILE))
+        .behavior(Path::new(ORCHESTRATOR_BEHAVIOR_FILE))
         .staff(pricing_researcher)
         .contract(output_schema())
         .max_steps(10)
@@ -135,8 +132,8 @@ fn log_event(event: &Event) {
 
 fn tool_call_detail(tool_name: &str, input: &serde_json::Value) -> String {
     let key = match tool_name {
-        "web_fetch" => "url",
-        "agent" => {
+        "web_fetch_tool" => "url",
+        "agent_tool" => {
             return input["agent"]
                 .as_str()
                 .or(input["description"].as_str())

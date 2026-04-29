@@ -22,7 +22,7 @@ use crate::event::{default_logger, Event};
 use crate::output::{Output, OutputSchema};
 
 use super::error::AgentError;
-use super::prompts;
+use crate::prompts;
 use super::r#loop::{run_loop, LoopRuntime, LoopState};
 use super::spec::AgentSpec;
 use super::work::{Task, TaskSource, Work, WorkPriority};
@@ -269,9 +269,9 @@ impl Agent {
         self.with_spec(|c| c.context = Some(content.into_prompt()))
     }
 
-    /// The default context prompt: environment metadata (working directory,
-    /// platform, OS version, date) wrapped in an `<environment>` block.
-    /// Uses the process cwd. Override with [`Agent::context`].
+    /// The default context prompt: a `## Context` markdown block carrying
+    /// working directory, platform, OS version, and date. Uses the process
+    /// cwd. Override with [`Agent::context`].
     pub fn default_context() -> String {
         let cwd = std::env::current_dir().unwrap_or_default();
         prompts::default_context(&cwd)

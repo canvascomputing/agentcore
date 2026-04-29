@@ -1,0 +1,45 @@
+{
+  "name": "web_fetch_tool",
+  "summary": [
+    "Fetch a URL over HTTPS and return its content as text.",
+    "HTML is converted to readable plain text; JSON, plain text, and markdown are returned as-is."
+  ],
+  "constraints": [
+    "HTTP URLs are upgraded to HTTPS automatically.",
+    "Response is truncated to `max_length` characters (default: 100 000).",
+    "Cross-host redirects are surfaced rather than followed: the tool reports the new URL and you re-call with it.",
+    "60-second per-request timeout, 10-MB hard cap on response bytes, 10 redirect hops max within the same host."
+  ],
+  "anti_patterns": [
+    "For authenticated or private URLs (Nextcloud, GitLab, Confluence, Jira, internal dashboards) — they will fail. Check whether a specialized authenticated tool exists first.",
+    "For GitHub URLs — prefer `gh pr view`, `gh issue view`, `gh api` via `bash_tool` for higher fidelity and authentication.",
+    "To run an HTTP request with custom headers, methods, or bodies — use `bash_tool` with `curl`."
+  ],
+  "cautions": [
+    "IMPORTANT: the tool will fail on authenticated URLs. Do not retry the same URL repeatedly — fall back to a specialized tool or `bash_tool` with proper credentials.",
+    "IMPORTANT: when a redirect is detected, the tool returns a `REDIRECT DETECTED` message rather than the page. Make a fresh `web_fetch_tool` call with the redirect URL to actually fetch the content."
+  ],
+  "output": [
+    "Plain text. The page body — extracted readable text for HTML, raw payload for non-HTML — truncated to `max_length`.",
+    "On a cross-host redirect: a `REDIRECT DETECTED` message naming the original URL, the redirect URL, and the HTTP status. On failure: an error message (validation failure, network error, timeout, body-cap exceeded)."
+  ],
+  "read_only": true,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "The URL to fetch. HTTP is upgraded to HTTPS. Max length 2000 characters."
+      },
+      "prompt": {
+        "type": "string",
+        "description": "What to extract or focus on. Hint shown alongside the body; does not change what is fetched."
+      },
+      "max_length": {
+        "type": "integer",
+        "description": "Max response length in characters (default: 100000). Increase only if the content is known to exceed the default."
+      }
+    },
+    "required": ["url"]
+  }
+}

@@ -3,12 +3,14 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::OnceLock;
 use std::time::SystemTime;
 
 use serde_json::Value;
 
 use crate::error::Result;
 use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
+use crate::tools::tool_file::ToolFile;
 
 /// Find files matching a glob pattern under the working directory. Read-only.
 /// Sorted by modification time (newest first); capped at 200 results.
@@ -16,41 +18,31 @@ pub struct GlobTool;
 
 const MAX_RESULTS: usize = 200;
 
-const DESCRIPTION: &str = "\
-Fast file pattern matching tool that works with any codebase size.
+fn tool_file() -> &'static ToolFile {
+    static FILE: OnceLock<ToolFile> = OnceLock::new();
+    FILE.get_or_init(|| ToolFile::parse(include_str!("glob.tool.json")))
+}
 
-- Returns matching file paths sorted by modification time (newest first).
-- Use this when you need to find files by name or extension patterns.
-- For open-ended searches that may require multiple rounds, use agent instead.";
+fn description() -> &'static str {
+    static DESC: OnceLock<String> = OnceLock::new();
+    DESC.get_or_init(|| tool_file().render_markdown())
+}
 
 impl ToolLike for GlobTool {
     fn name(&self) -> &str {
-        "glob"
+        &tool_file().name
     }
 
     fn description(&self) -> &str {
-        DESCRIPTION
+        description()
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "pattern": {
-                    "type": "string",
-                    "description": "Glob pattern (e.g. **/*.rs)"
-                },
-                "path": {
-                    "type": "string",
-                    "description": "Base directory to search in (default: \".\")"
-                }
-            },
-            "required": ["pattern"]
-        })
+        tool_file().input_schema.clone()
     }
 
     fn is_read_only(&self) -> bool {
-        true
+        tool_file().read_only
     }
 
     fn call<'a>(

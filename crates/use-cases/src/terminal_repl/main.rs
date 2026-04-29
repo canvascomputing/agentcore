@@ -2,6 +2,7 @@
 
 use std::future::IntoFuture;
 use std::io::{self, IsTerminal, Write};
+use std::path::Path;
 use std::sync::Arc;
 
 use agentwerk::event::EventKind;
@@ -10,9 +11,14 @@ use agentwerk::tools::{GlobTool, GrepTool, ListDirectoryTool, ReadFileTool};
 use agentwerk::{Agent, Error, Event, Output};
 use tokio::sync::Notify;
 
-const IDENTITY: &str = "You are a local-repo search assistant. Help the user explore this \
-     repository using glob, grep, list_directory, and read_file. Cite file:line when \
-     referencing code. Do not invent facts: if unsure, search first.";
+const ROLE_FILE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/terminal_repl/prompts/repl.role.md",
+);
+const BEHAVIOR_FILE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/terminal_repl/prompts/repl.behavior.md",
+);
 
 #[tokio::main]
 async fn main() {
@@ -40,7 +46,8 @@ async fn main() {
         .expect("LLM provider required")
         .model_from_env()
         .expect("model name required")
-        .role(IDENTITY)
+        .role(Path::new(ROLE_FILE))
+        .behavior(Path::new(BEHAVIOR_FILE))
         .work(first)
         .tool(GlobTool)
         .tool(GrepTool)

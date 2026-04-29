@@ -381,6 +381,25 @@ impl Tool {
         }
     }
 
+    /// Construct a `Tool` from a `.tool.json` definition. The returned tool
+    /// has its name, rendered description, input schema, and read-only flag
+    /// populated from the JSON; attach a handler via [`Tool::handler`]
+    /// before registering it with an agent. Panics on malformed JSON — same
+    /// fail-fast posture as `include_str!()` of an embedded definition.
+    ///
+    /// ```ignore
+    /// let tool = Tool::from_tool_file(include_str!("my_tool.tool.json"))
+    ///     .handler(|input, _ctx| Box::pin(async move {
+    ///         Ok(ToolResult::success("done"))
+    ///     }));
+    /// ```
+    pub fn from_tool_file(json: &str) -> Self {
+        let tf = crate::tools::tool_file::ToolFile::parse(json);
+        Tool::new(tf.name.clone(), tf.render_markdown())
+            .contract(tf.input_schema.clone())
+            .read_only(tf.read_only)
+    }
+
     /// Replace the input contract (JSON Schema). Defaults to an empty-object schema.
     pub fn contract(mut self, contract: Value) -> Self {
         self.contract = contract;
@@ -531,6 +550,29 @@ mod tests {
 
         assert!(registry.get("read_file").is_some());
         assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn from_tool_file_populates_name_description_schema_read_only() {
+        let json = r#"{
+            "name": "demo_tool",
+            "summary": ["Do the demo thing."],
+            "constraints": ["Returns nothing useful."],
+            "read_only": true,
+            "input_schema": {
+                "type": "object",
+                "properties": {"x": {"type": "string"}},
+                "required": ["x"]
+            }
+        }"#;
+        let tool = Tool::from_tool_file(json);
+        assert_eq!(tool.name(), "demo_tool");
+        assert!(tool.description().contains("Do the demo thing."));
+        assert!(tool.description().contains("- Returns nothing useful."));
+        assert!(tool.is_read_only());
+        let schema = tool.input_schema();
+        assert_eq!(schema["properties"]["x"]["type"], "string");
+        assert_eq!(schema["required"][0], "x");
     }
 
     #[test]

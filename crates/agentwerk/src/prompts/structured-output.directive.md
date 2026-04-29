@@ -1,0 +1,2 @@
+- MUST return your final response as a single JSON value conforming to the declared output schema. After any tool calls, your last message must be the JSON value, exactly once.
+- NEVER wrap it in markdown code fences or include any text before or after it.

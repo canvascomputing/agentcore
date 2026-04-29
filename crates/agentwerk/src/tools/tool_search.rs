@@ -2,11 +2,13 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::OnceLock;
 
 use serde_json::Value;
 
 use crate::error::Result;
 use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
+use crate::tools::tool_file::ToolFile;
 
 /// Search the tool registry by query string. Pair with tools that set
 /// [`Tool::should_defer`](crate::Tool::should_defer) to `true`: the
@@ -14,33 +16,31 @@ use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
 /// keeping the initial system prompt small.
 pub struct ToolSearchTool;
 
-const DESCRIPTION: &str = "\
-Search for available tools by name or keyword. Returns tool names, descriptions, and input schemas.";
+fn tool_file() -> &'static ToolFile {
+    static FILE: OnceLock<ToolFile> = OnceLock::new();
+    FILE.get_or_init(|| ToolFile::parse(include_str!("tool_search.tool.json")))
+}
+
+fn description() -> &'static str {
+    static DESC: OnceLock<String> = OnceLock::new();
+    DESC.get_or_init(|| tool_file().render_markdown())
+}
 
 impl ToolLike for ToolSearchTool {
     fn name(&self) -> &str {
-        "tool_search"
+        &tool_file().name
     }
 
     fn description(&self) -> &str {
-        DESCRIPTION
+        description()
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Search query to find tools by name or keyword"
-                }
-            },
-            "required": ["query"]
-        })
+        tool_file().input_schema.clone()
     }
 
     fn is_read_only(&self) -> bool {
-        true
+        tool_file().read_only
     }
 
     fn call<'a>(

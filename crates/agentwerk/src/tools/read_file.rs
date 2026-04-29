@@ -2,56 +2,44 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::OnceLock;
 
 use serde_json::Value;
 
 use crate::error::Result;
 use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
+use crate::tools::tool_file::ToolFile;
 
 /// Read a file with optional line offset and limit. Returns line-numbered
 /// text so the model can reference specific lines in subsequent edits.
 /// Read-only.
 pub struct ReadFileTool;
 
-const DESCRIPTION: &str = "\
-Read the contents of a file, optionally returning a specific range of lines.
+fn tool_file() -> &'static ToolFile {
+    static FILE: OnceLock<ToolFile> = OnceLock::new();
+    FILE.get_or_init(|| ToolFile::parse(include_str!("read_file.tool.json")))
+}
 
-- Results are returned with line numbers starting at 1.
-- When you already know which part of the file you need, use offset and limit to read only that part. This is important for larger files.
-- This tool can only read files, not directories. To list a directory, use list_directory or bash with ls.";
+fn description() -> &'static str {
+    static DESC: OnceLock<String> = OnceLock::new();
+    DESC.get_or_init(|| tool_file().render_markdown())
+}
 
 impl ToolLike for ReadFileTool {
     fn name(&self) -> &str {
-        "read_file"
+        &tool_file().name
     }
 
     fn description(&self) -> &str {
-        DESCRIPTION
+        description()
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Path to the file to read"
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "1-based line number to start reading from"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Number of lines to read"
-                }
-            },
-            "required": ["path"]
-        })
+        tool_file().input_schema.clone()
     }
 
     fn is_read_only(&self) -> bool {
-        true
+        tool_file().read_only
     }
 
     fn call<'a>(

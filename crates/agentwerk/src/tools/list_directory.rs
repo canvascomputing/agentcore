@@ -3,49 +3,43 @@
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::OnceLock;
 
 use serde_json::Value;
 
 use crate::error::Result;
 use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
+use crate::tools::tool_file::ToolFile;
 
 /// List the entries of a directory with type and size. Read-only. Pair with
 /// [`GlobTool`](crate::tools::GlobTool) when you need pattern-based file discovery.
 pub struct ListDirectoryTool;
 
-const DESCRIPTION: &str = "\
-List the contents of a directory. Returns file and directory names.
+fn tool_file() -> &'static ToolFile {
+    static FILE: OnceLock<ToolFile> = OnceLock::new();
+    FILE.get_or_init(|| ToolFile::parse(include_str!("list_directory.tool.json")))
+}
 
-- Use this for a quick overview of directory structure.
-- For finding files by pattern across the tree, use glob instead.";
+fn description() -> &'static str {
+    static DESC: OnceLock<String> = OnceLock::new();
+    DESC.get_or_init(|| tool_file().render_markdown())
+}
 
 impl ToolLike for ListDirectoryTool {
     fn name(&self) -> &str {
-        "list_directory"
+        &tool_file().name
     }
 
     fn description(&self) -> &str {
-        DESCRIPTION
+        description()
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Directory path to list (default: \".\")"
-                },
-                "recursive": {
-                    "type": "boolean",
-                    "description": "Whether to list recursively (default: false)"
-                }
-            }
-        })
+        tool_file().input_schema.clone()
     }
 
     fn is_read_only(&self) -> bool {
-        true
+        tool_file().read_only
     }
 
     fn call<'a>(

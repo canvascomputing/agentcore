@@ -2,6 +2,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::OnceLock;
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -10,19 +11,17 @@ use crate::agent::work::{Task, TaskSource, WorkPriority};
 use crate::error::Result;
 use crate::tools::error::ToolError;
 use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
+use crate::tools::tool_file::ToolFile;
 
-const NAME: &str = "send_message";
+fn tool_file() -> &'static ToolFile {
+    static FILE: OnceLock<ToolFile> = OnceLock::new();
+    FILE.get_or_init(|| ToolFile::parse(include_str!("send_message.tool.json")))
+}
 
-const DESCRIPTION: &str = "\
-Send a message to another named agent in the same run-tree. The recipient \
-picks the message up automatically on its next step — there is no inbox to poll.
-
-Use this to coordinate with peers you've spawned or that are running alongside \
-you. The recipient sees your agent name as the sender; you do not pass it.
-
-# When NOT to use
-- To spawn a new agent — use agent instead.
-- To return a result to your caller — just finish your step normally.";
+fn description() -> &'static str {
+    static DESC: OnceLock<String> = OnceLock::new();
+    DESC.get_or_init(|| tool_file().render_markdown())
+}
 
 /// Deliver a message to a peer agent in the same run-tree. Routes through
 /// the shared work inbox and is injected into the recipient's next step.
@@ -40,36 +39,19 @@ struct SendArgs {
 
 impl ToolLike for SendMessageTool {
     fn name(&self) -> &str {
-        NAME
+        &tool_file().name
     }
 
     fn description(&self) -> &str {
-        DESCRIPTION
+        description()
     }
 
     fn is_read_only(&self) -> bool {
-        false
+        tool_file().read_only
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "to": {
-                    "type": "string",
-                    "description": "Name of the recipient agent (must be currently running)."
-                },
-                "message": {
-                    "type": "string",
-                    "description": "Body of the message."
-                },
-                "summary": {
-                    "type": "string",
-                    "description": "Optional 5-10 word preview shown in the recipient's header."
-                }
-            },
-            "required": ["to", "message"]
-        })
+        tool_file().input_schema.clone()
     }
 
     fn call<'a>(
@@ -117,7 +99,7 @@ impl ToolLike for SendMessageTool {
 
 fn tool_err(message: impl Into<String>) -> ToolError {
     ToolError::ExecutionFailed {
-        tool_name: NAME.into(),
+        tool_name: tool_file().name.clone(),
         message: message.into(),
     }
 }

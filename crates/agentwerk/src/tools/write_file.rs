@@ -2,46 +2,43 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::OnceLock;
 
 use serde_json::Value;
 
 use crate::error::Result;
 use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
+use crate::tools::tool_file::ToolFile;
 
 /// Create or overwrite a file. Destructive: existing content is replaced.
 /// Not read-only, so the loop runs it serially.
 pub struct WriteFileTool;
 
-const DESCRIPTION: &str = "\
-Write content to a file, creating parent directories if needed.
+fn tool_file() -> &'static ToolFile {
+    static FILE: OnceLock<ToolFile> = OnceLock::new();
+    FILE.get_or_init(|| ToolFile::parse(include_str!("write_file.tool.json")))
+}
 
-- If this is an existing file, you MUST use read_file first to read its contents.
-- Prefer edit_file for modifying existing files — it only sends the diff. Use write_file for new files or complete rewrites.";
+fn description() -> &'static str {
+    static DESC: OnceLock<String> = OnceLock::new();
+    DESC.get_or_init(|| tool_file().render_markdown())
+}
 
 impl ToolLike for WriteFileTool {
     fn name(&self) -> &str {
-        "write_file"
+        &tool_file().name
     }
 
     fn description(&self) -> &str {
-        DESCRIPTION
+        description()
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Path to the file to write"
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Content to write to the file"
-                }
-            },
-            "required": ["path", "content"]
-        })
+        tool_file().input_schema.clone()
+    }
+
+    fn is_read_only(&self) -> bool {
+        tool_file().read_only
     }
 
     fn call<'a>(

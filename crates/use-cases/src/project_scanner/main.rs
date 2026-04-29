@@ -796,7 +796,7 @@ fn log_agent_event(tag: &str, kind: &EventKind) {
 
 fn tool_input_summary(tool: &str, input: &serde_json::Value) -> String {
     match tool {
-        "read_file" => input["path"]
+        "read_file_tool" => input["path"]
             .as_str()
             .or(input["file"].as_str())
             .unwrap_or("")

@@ -3,9 +3,11 @@
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::Value;
+
+use crate::tools::tool_file::ToolFile;
 
 use crate::error::Result;
 use crate::persistence::error::PersistenceError;
@@ -32,7 +34,7 @@ fn route(err: PersistenceError) -> Result<ToolResult> {
         ))),
         err @ PersistenceError::LockFailed { .. } | err @ PersistenceError::IoFailed(_) => {
             Err(ToolError::ExecutionFailed {
-                tool_name: "todo_list".into(),
+                tool_name: "todo_list_tool".into(),
                 message: err.to_string(),
             }
             .into())
@@ -56,42 +58,31 @@ impl TodoListTool {
     }
 }
 
+fn tool_file() -> &'static ToolFile {
+    static FILE: OnceLock<ToolFile> = OnceLock::new();
+    FILE.get_or_init(|| ToolFile::parse(include_str!("todo_list.tool.json")))
+}
+
+fn description() -> &'static str {
+    static DESC: OnceLock<String> = OnceLock::new();
+    DESC.get_or_init(|| tool_file().render_markdown())
+}
+
 impl ToolLike for TodoListTool {
     fn name(&self) -> &str {
-        "todo_list"
+        &tool_file().name
     }
 
     fn description(&self) -> &str {
-        "Manage a persistent todo list: create, update, list, or get items by ID."
+        description()
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["create", "update", "list", "get", "delete", "claim", "add_dependency"],
-                    "description": "The action to perform"
-                },
-                "id": { "type": "string", "description": "Item ID (for get/update/delete/claim)" },
-                "subject": { "type": "string", "description": "Item title (for create/update)" },
-                "description": { "type": "string", "description": "Item details (for create)" },
-                "status": {
-                    "type": "string",
-                    "enum": ["Pending", "InProgress", "Completed"],
-                    "description": "New status (for update)"
-                },
-                "agent_name": { "type": "string", "description": "Agent claiming the item (for claim)" },
-                "from": { "type": "string", "description": "Blocking item ID (for add_dependency)" },
-                "to": { "type": "string", "description": "Blocked item ID (for add_dependency)" }
-            },
-            "required": ["action"]
-        })
+        tool_file().input_schema.clone()
     }
 
     fn is_read_only(&self) -> bool {
-        false
+        tool_file().read_only
     }
 
     fn call<'a>(

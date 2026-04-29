@@ -21,9 +21,10 @@ use crate::util::{
     cancellable_sleep, now_millis, wait_for_cancel, ExponentialRetry, Retry, Retryable,
 };
 
+use crate::prompts;
+
 use super::compact;
 use super::error::AgentError;
-use super::prompts::{self as prompts};
 use super::spec::AgentSpec;
 use super::work::{Work, WorkPriority};
 
@@ -423,11 +424,9 @@ pub(crate) fn run_loop(
                         path: path.clone(),
                         message: message.clone(),
                     });
-                    state.messages.push(Message::user(format!(
-                        "Your last reply did not match the required output schema. You MUST \
-                         reply with a single JSON value conforming to the schema, with no \
-                         surrounding text and no code fences.\n\nValidator said: {detail}"
-                    )));
+                    state
+                        .messages
+                        .push(Message::user(prompts::contract_retry(&detail.to_string())));
                     emit(EventKind::StepFinished { step });
                     continue;
                 }
@@ -832,7 +831,7 @@ mod tests {
 
         let req = harness.provider().last_request().unwrap();
         assert!(
-            req.tools.iter().any(|t| t.name == "agent"),
+            req.tools.iter().any(|t| t.name == "agent_tool"),
             ".staff() should register agent tool automatically"
         );
     }

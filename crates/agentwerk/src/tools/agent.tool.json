@@ -1,0 +1,90 @@
+{
+  "name": "agent_tool",
+  "summary": [
+    "Spawn a sub-agent to handle a focused subtask.",
+    "Returns the sub-agent's final output (foreground) or its agent id (background). The sub-agent inherits the caller's provider, model, working directory, event handler, and cancel signal; tools and prompts come from the registered template named in `agent`."
+  ],
+  "constraints": [
+    "Brief the sub-agent like a smart colleague who just walked into the room — it has not seen this conversation, does not know what you have tried, does not know why this matters.",
+    "Explain what you are trying to accomplish and why; describe what you have already learned or ruled out; give enough context that it can make judgment calls.",
+    "Use **foreground** (default) when you need the result before proceeding. Use **background** when you have independent work to do in parallel; the result is delivered to your work inbox when it completes."
+  ],
+  "anti_patterns": [
+    "To read a specific file — use `read_file_tool`.",
+    "To search a pattern — use `grep_tool`.",
+    "To list a directory — use `list_directory_tool`.",
+    "For any task a single tool call can accomplish."
+  ],
+  "cautions": [
+    "IMPORTANT: never delegate understanding. Do not write \"based on your findings, do the task.\" Write prompts that prove you understood the problem and what specifically needs to happen.",
+    "IMPORTANT: when `agent` is a registered name, fields like `identity` are ignored — the registered template's role wins."
+  ],
+  "output": [
+    "Plain text (foreground): the sub-agent's final response — typically free text, or the validated JSON when `contract` is set.",
+    "Plain text (background): a single line of the form `spawned <agent_id>`. The eventual output arrives later as a peer message in the caller's inbox; this tool does not block waiting for it.",
+    "On failure: an error message describing why the spawn could not start (unknown `agent` name, missing runtime context, schema-invalid `contract`)."
+  ],
+  "read_only": true,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "description": {
+        "type": "string",
+        "description": "Short label for the spawned agent, shown in events (3-8 words)."
+      },
+      "task": {
+        "type": "string",
+        "description": "The full instruction for the sub-agent: goal, context, constraints, success criteria."
+      },
+      "agent": {
+        "type": "string",
+        "description": "Name of a registered sub-agent template. Omit for an ad-hoc agent."
+      },
+      "identity": {
+        "type": "string",
+        "description": "Role prompt for an ad-hoc agent. Ignored when `agent` is set. Defaults to a generic helper identity."
+      },
+      "model": {
+        "type": "string",
+        "description": "Override the model for this spawn (default: inherit from caller)."
+      },
+      "max_steps": {
+        "type": "integer",
+        "description": "Cap the agentic loop for this spawn (ad-hoc default: 10; registered templates inherit their own cap)."
+      },
+      "max_request_tokens": {
+        "type": "integer",
+        "description": "Cap output tokens per LLM request (wire field: `max_tokens`)."
+      },
+      "max_input_tokens": {
+        "type": "integer",
+        "description": "Cap cumulative input tokens across the whole spawn."
+      },
+      "max_output_tokens": {
+        "type": "integer",
+        "description": "Cap cumulative output tokens across the whole spawn."
+      },
+      "max_contract_retries": {
+        "type": "integer",
+        "description": "Override structured-output retry count for this spawn."
+      },
+      "contract": {
+        "type": "object",
+        "description": "JSON Schema (object) the sub-agent's final reply must conform to. The validated JSON is returned as this tool's result."
+      },
+      "max_request_retries": {
+        "type": "integer",
+        "description": "Override transient-API retry count for this spawn."
+      },
+      "request_retry_delay": {
+        "type": "integer",
+        "description": "Override base delay (ms) for request retries."
+      },
+      "background": {
+        "type": "boolean",
+        "description": "Run in background (default: false). Returns immediately with an agent id; the completed output is posted to the caller's work inbox."
+      }
+    },
+    "required": ["description", "task"]
+  }
+}

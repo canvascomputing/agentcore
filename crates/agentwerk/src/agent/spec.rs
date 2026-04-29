@@ -10,8 +10,9 @@ use crate::tools::ToolRegistry;
 
 use crate::output::OutputSchema;
 
+use crate::prompts;
+
 use super::agent::Agent;
-use super::prompts;
 
 /// The agent's definition. Shared across clones via `Arc<AgentSpec>` with copy-on-write
 /// on builder mutations, then passed to `run_loop` directly.
@@ -81,17 +82,17 @@ impl AgentSpec {
 
     /// Build the provider's `system` field from `role` (with `vars`
     /// interpolated), `behavior`, and a JSON-output directive when
-    /// `contract` is set.
+    /// `contract` is set. Section spacing is owned by `PromptBuilder`, not
+    /// by this function.
     pub(crate) fn system_prompt(&self, vars: &HashMap<String, Value>) -> String {
-        let mut s = Self::interpolate(&self.role, vars);
+        let mut b = prompts::PromptBuilder::default().role(Self::interpolate(&self.role, vars));
         if !self.behavior.is_empty() {
-            s.push_str("\n\n");
-            s.push_str(&self.behavior);
+            b = b.behavior(self.behavior.clone());
         }
         if self.contract.is_some() {
-            s.push_str(prompts::STRUCTURED_OUTPUT_INSTRUCTION);
+            b = b.append_directive(prompts::STRUCTURED_OUTPUT_INSTRUCTION);
         }
-        s
+        b.build().system
     }
 
     /// Resolve the first user message's context payload. `None` at the field
@@ -124,7 +125,7 @@ impl AgentSpec {
 mod tests {
     use super::*;
 
-    const DEFAULT: &str = "<environment>\ndefault\n</environment>";
+    const DEFAULT: &str = "## Context\n\nWorking directory: /tmp\nPlatform: macos";
 
     #[test]
     fn unset_context_uses_runtime_default() {

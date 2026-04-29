@@ -114,7 +114,7 @@ async fn state_machine_advances_one_step_at_a_time() {
         .await
         .unwrap();
     let reqs = harness.provider().requests.lock().unwrap();
-    let state = |i: usize| canonicalize(&render(&reqs[i]));
+    let state = |i: usize| render(&reqs[i]);
 
     assert_eq!(state(0), S0_INITIAL);
     assert_eq!(state(1), S1_AFTER_STEP_1);
@@ -254,7 +254,7 @@ async fn sub_agent_compaction_uses_own_model_window() {
     //   2. child  step 1 — usage crosses child threshold  → child's  ContextCompacted
     //   3. parent step 2 — usage crosses parent threshold → parent's ContextCompacted
     let parent_step1 = tool_response(
-        "agent",
+        "agent_tool",
         "sa1",
         serde_json::json!({
             "description": "delegate",
@@ -433,43 +433,6 @@ fn render_blocks(blocks: &[ContentBlock]) -> String {
         .join("\n")
 }
 
-/// Replace the four dynamic values inside the `<environment>` block (cwd,
-/// platform, OS version, date) with stable placeholders so the snapshot is
-/// reproducible on any host. Lines outside the environment block are left
-/// alone — including any user-supplied `<context>` block that happens to
-/// mention `Working directory:`.
-fn canonicalize(rendered: &str) -> String {
-    let mut out: Vec<String> = Vec::with_capacity(rendered.lines().count());
-    let mut in_env = false;
-    for line in rendered.lines() {
-        match line {
-            "<environment>" => {
-                in_env = true;
-                out.push(line.to_string());
-            }
-            "</environment>" => {
-                in_env = false;
-                out.push(line.to_string());
-            }
-            _ if in_env => out.push(replace_value_with_placeholder(line)),
-            _ => out.push(line.to_string()),
-        }
-    }
-    let mut joined = out.join("\n");
-    if rendered.ends_with('\n') {
-        joined.push('\n');
-    }
-    joined
-}
-
-fn replace_value_with_placeholder(line: &str) -> String {
-    let Some(colon) = line.find(':') else {
-        return line.to_string();
-    };
-    let key = &line[..colon];
-    let placeholder = key.to_uppercase().replace(' ', "_");
-    format!("{key}: <{placeholder}>")
-}
 
 fn compact_reasons(events: &[Event]) -> Vec<CompactReason> {
     events

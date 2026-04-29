@@ -1,0 +1,65 @@
+{
+  "name": "todo_list_tool",
+  "summary": [
+    "Manage a persistent shared todo list. Items survive process restarts and are visible to every peer agent that points at the same data directory.",
+    "Multi-action — `action` selects which subcommand runs."
+  ],
+  "constraints": [
+    "All non-list responses return the affected item (or summary) as pretty-printed JSON.",
+    "`claim` records which agent owns the item; `add_dependency` records that one item blocks another, and `update` to `Completed` is rejected while a blocker is unfinished.",
+    "IDs are returned by `create` and `list`; the model must use them verbatim — they are not human-readable slugs."
+  ],
+  "anti_patterns": [
+    "To send a one-off message to a peer — use `send_message_tool`.",
+    "To spawn a sub-agent that handles the work — use `agent_tool`."
+  ],
+  "cautions": [
+    "IMPORTANT: `update` to `Completed` fails when the item has unfinished blockers. Resolve the blocker first or remove the dependency.",
+    "IMPORTANT: `delete` is irreversible — the item is removed, including its history. Prefer `update` to mark it `Completed` if you want to keep an audit trail."
+  ],
+  "output": [
+    "Plain text. `create`, `update`, `get`, `claim` return pretty-printed JSON of the item; `list` returns a JSON array; `delete` returns `Item <id> deleted`; `add_dependency` returns `Dependency added: <from> blocks <to>`.",
+    "On failure: an error message — item not found, item already completed, blocked by an unfinished item, or unknown `action`."
+  ],
+  "read_only": false,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["create", "update", "list", "get", "delete", "claim", "add_dependency"],
+        "description": "Which subcommand to run: `create` adds a new item; `update` mutates an item's status or subject; `list` returns every item; `get` fetches one by id; `delete` removes one; `claim` assigns ownership; `add_dependency` records that one item blocks another."
+      },
+      "id": {
+        "type": "string",
+        "description": "Item id (required for `update`, `get`, `delete`, `claim`)."
+      },
+      "subject": {
+        "type": "string",
+        "description": "Item title (required for `create`, optional for `update`)."
+      },
+      "description": {
+        "type": "string",
+        "description": "Item details (used by `create`)."
+      },
+      "status": {
+        "type": "string",
+        "enum": ["Pending", "InProgress", "Completed"],
+        "description": "New status (used by `update`). Setting `Completed` fails if the item has unfinished blockers."
+      },
+      "agent_name": {
+        "type": "string",
+        "description": "Owning agent name (required for `claim`)."
+      },
+      "from": {
+        "type": "string",
+        "description": "Blocking item id (required for `add_dependency`)."
+      },
+      "to": {
+        "type": "string",
+        "description": "Blocked item id (required for `add_dependency`)."
+      }
+    },
+    "required": ["action"]
+  }
+}

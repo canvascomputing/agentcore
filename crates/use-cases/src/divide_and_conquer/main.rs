@@ -11,6 +11,7 @@
 //!   divide-and-conquer -p 32 -c 16 100000
 
 use std::io::IsTerminal;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -20,19 +21,14 @@ use agentwerk::tools::{Tool, ToolResult};
 use agentwerk::{Agent, Event, Output, Werk};
 use serde_json::{json, Value};
 
-const WORKER_PROMPT: &str = "\
-You are a precise arithmetic worker in a divide-and-conquer pipeline.
-
-Given integers LO and HI, compute the exact integer value of
-    S = sum_{k=LO}^{HI} k^2
-
-You have a `python` tool: pass `{\"code\": \"<python source>\"}` and it returns
-whatever the snippet prints to stdout. The canonical call is:
-    {\"code\": \"print(sum(k*k for k in range(LO, HI + 1)))\"}
-
-When the tool prints an integer N, your FINAL reply MUST be exactly the JSON
-object {\"partial_sum\": N} and nothing else — no prose, no code fences, no
-units. Use the raw integer with no commas or spaces.";
+const ROLE_FILE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/divide_and_conquer/prompts/worker.role.md",
+);
+const BEHAVIOR_FILE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/divide_and_conquer/prompts/worker.behavior.md",
+);
 
 #[tokio::main]
 async fn main() {
@@ -219,7 +215,8 @@ fn build_worker(
         .name(format!("chunk_{i}"))
         .provider(provider)
         .model(model)
-        .role(WORKER_PROMPT)
+        .role(Path::new(ROLE_FILE))
+        .behavior(Path::new(BEHAVIOR_FILE))
         .work(format!("Compute S = sum_{{k={lo}}}^{{{hi}}} k^2."))
         .tool(python_tool())
         .contract(schema)

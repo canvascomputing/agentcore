@@ -11,6 +11,7 @@ mod read_file;
 mod send_message;
 mod todo_list;
 mod tool;
+mod tool_file;
 mod tool_search;
 pub(crate) mod util;
 mod web_fetch;
@@ -19,6 +20,7 @@ mod write_file;
 // Re-export tool infrastructure
 pub use error::ToolError;
 pub use tool::{Tool, ToolContext, ToolDefinition, ToolLike, ToolResult};
+pub use tool_file::ToolFile;
 pub(crate) use tool::{ToolCall, ToolRegistry};
 
 // Re-export built-in tools

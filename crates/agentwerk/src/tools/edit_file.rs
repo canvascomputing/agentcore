@@ -2,58 +2,44 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::OnceLock;
 
 use serde_json::Value;
 
 use crate::error::Result;
 use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
+use crate::tools::tool_file::ToolFile;
 
 /// In-place string replacement in an existing file. The model supplies the
 /// old and new strings; the tool fails if the old string is absent or
 /// matches more than once. Not read-only.
 pub struct EditFileTool;
 
-const DESCRIPTION: &str = "\
-Edit a file by replacing occurrences of a string.
+fn tool_file() -> &'static ToolFile {
+    static FILE: OnceLock<ToolFile> = OnceLock::new();
+    FILE.get_or_init(|| ToolFile::parse(include_str!("edit_file.tool.json")))
+}
 
-- You must use read_file at least once before editing a file. Understand the contents before modifying.
-- The edit will FAIL if old_string is not unique in the file. Provide more surrounding context to make it unique, or use replace_all to change every occurrence.
-- When editing, preserve the exact indentation (tabs/spaces) as it appears in the file.
-- ALWAYS prefer editing existing files over creating new ones.
-- Use replace_all for renaming or replacing a string across the entire file.";
+fn description() -> &'static str {
+    static DESC: OnceLock<String> = OnceLock::new();
+    DESC.get_or_init(|| tool_file().render_markdown())
+}
 
 impl ToolLike for EditFileTool {
     fn name(&self) -> &str {
-        "edit_file"
+        &tool_file().name
     }
 
     fn description(&self) -> &str {
-        DESCRIPTION
+        description()
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Path to the file to edit"
-                },
-                "old_string": {
-                    "type": "string",
-                    "description": "The string to find and replace"
-                },
-                "new_string": {
-                    "type": "string",
-                    "description": "The replacement string"
-                },
-                "replace_all": {
-                    "type": "boolean",
-                    "description": "Replace all occurrences (default: false)"
-                }
-            },
-            "required": ["path", "old_string", "new_string"]
-        })
+        tool_file().input_schema.clone()
+    }
+
+    fn is_read_only(&self) -> bool {
+        tool_file().read_only
     }
 
     fn call<'a>(

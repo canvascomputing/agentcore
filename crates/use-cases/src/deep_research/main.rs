@@ -8,12 +8,30 @@
 //!   BRAVE_API_KEY       Required for web search
 //!   ANTHROPIC_API_KEY   (or other provider env vars)
 
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use agentwerk::event::EventKind;
 use agentwerk::tools::{Tool, ToolResult};
 use agentwerk::{Agent, Event};
+
+const RESEARCHER_ROLE_FILE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/deep_research/prompts/researcher.role.md",
+);
+const RESEARCHER_BEHAVIOR_FILE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/deep_research/prompts/researcher.behavior.md",
+);
+const REPORT_WRITER_ROLE_FILE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/deep_research/prompts/report-writer.role.md",
+);
+const REPORT_WRITER_BEHAVIOR_FILE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/deep_research/prompts/report-writer.behavior.md",
+);
 
 #[tokio::main]
 async fn main() {
@@ -26,7 +44,8 @@ async fn main() {
         .map(|i| {
             Agent::new()
                 .name(format!("researcher_{i}"))
-                .role(RESEARCHER_PROMPT)
+                .role(Path::new(RESEARCHER_ROLE_FILE))
+                .behavior(Path::new(RESEARCHER_BEHAVIOR_FILE))
                 .tool(brave_search_tool(brave_key.clone()))
                 .max_steps(3)
         })
@@ -38,7 +57,8 @@ async fn main() {
         .expect("LLM provider required")
         .model_from_env()
         .expect("model name required")
-        .role(REPORT_WRITER_PROMPT)
+        .role(Path::new(REPORT_WRITER_ROLE_FILE))
+        .behavior(Path::new(REPORT_WRITER_BEHAVIOR_FILE))
         .staff_more(researchers)
         .contract(output_schema())
         .max_steps(10)
@@ -64,21 +84,6 @@ async fn main() {
         output.statistics.input_tokens, output.statistics.output_tokens
     );
 }
-
-const RESEARCHER_PROMPT: &str =
-    "You are a thorough researcher. Given a question, search the web 1-2 times \
-     for evidence from both sides — arguments in favor AND against. \
-     Include pros, cons, costs, and real-world experiences. \
-     Produce a factual report with sources.";
-
-const REPORT_WRITER_PROMPT: &str = "You are a decision analyst. Given a question:\n\
-     1. Spawn all three researchers in parallel: 'researcher_1', 'researcher_2', 'researcher_3'\n\
-     2. Review and aggregate all research reports\n\
-     3. Produce your final recommendation as structured output\n\n\
-     IMPORTANT: Call agent three times in your FIRST response — one call per researcher, \
-     all in the same message. Do NOT wait for one to finish before spawning the next.\n\n\
-     Your output must be plain text only — no markdown, no bullet points, no special formatting. \
-     The research field must be under 500 characters.";
 
 fn format_title_first(data: &serde_json::Value) -> String {
     let Some(obj) = data.as_object() else {
@@ -231,7 +236,7 @@ fn tool_call_summary(tool_name: &str, input: &serde_json::Value) -> String {
                 q.into()
             }
         }
-        "agent" => input["agent"]
+        "agent_tool" => input["agent"]
             .as_str()
             .or(input["description"].as_str())
             .unwrap_or("")

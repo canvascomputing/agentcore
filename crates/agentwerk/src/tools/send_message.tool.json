@@ -1,0 +1,42 @@
+{
+  "name": "send_message_tool",
+  "summary": [
+    "Deliver a message to a named peer agent in the same run-tree.",
+    "The recipient picks the message up automatically on its next step — there is no inbox to poll. Returns a one-line confirmation naming the recipient."
+  ],
+  "constraints": [
+    "The sender's identity is added by the framework — the recipient sees your agent name as the sender; you do not pass it.",
+    "Cross-run delivery is not supported. The recipient must be running (or paused with `keep_alive`) under the same orchestrator.",
+    "Sending to a name that is not currently running leaves the message in the inbox indefinitely; it is delivered if and when an agent with that name later starts."
+  ],
+  "anti_patterns": [
+    "To spawn a new agent — use `agent_tool`.",
+    "To return a result to your caller — just finish your step normally; the caller awaits your output.",
+    "To broadcast — there is no fan-out; call `send_message_tool` once per recipient."
+  ],
+  "cautions": [
+    "IMPORTANT: you cannot send a message to yourself. The tool rejects `to == <your name>`."
+  ],
+  "output": [
+    "Plain text. `delivered to <name>` on success, or an error message (sending to self, missing runtime context, missing inbox)."
+  ],
+  "read_only": false,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "to": {
+        "type": "string",
+        "description": "Name of the recipient agent. Must match a peer in the same run-tree."
+      },
+      "message": {
+        "type": "string",
+        "description": "Body of the message. Plain text; appears as a user-role message in the recipient's next step."
+      },
+      "summary": {
+        "type": "string",
+        "description": "Optional 5-10 word preview shown in the recipient's header line. Useful when the body is long."
+      }
+    },
+    "required": ["to", "message"]
+  }
+}

@@ -2,9 +2,12 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::OnceLock;
 
 use serde::Deserialize;
 use serde_json::Value;
+
+use crate::tools::tool_file::ToolFile;
 
 use crate::agent::Agent;
 use crate::error::Result;
@@ -33,104 +36,31 @@ struct SpawnArgs {
     background: Option<bool>,
 }
 
-const DESCRIPTION: &str = "\
-Spawn a sub-agent to handle a task. Can run in foreground (blocking) or background mode.
+fn tool_file() -> &'static ToolFile {
+    static FILE: OnceLock<ToolFile> = OnceLock::new();
+    FILE.get_or_init(|| ToolFile::parse(include_str!("agent.tool.json")))
+}
 
-# Writing the prompt
-Brief the agent like a smart colleague who just walked into the room — it hasn't seen \
-this conversation, doesn't know what you've tried, doesn't understand why this matters.
-- Explain what you're trying to accomplish and why.
-- Describe what you've already learned or ruled out.
-- Give enough context that the agent can make judgment calls.
-
-IMPORTANT: Never delegate understanding. Don't write \"based on your findings, do the task.\" \
-Write prompts that prove you understood the problem and what specifically needs to happen.
-
-# When NOT to use
-- To read a specific file — use read_file instead.
-- To search for a pattern — use grep instead.
-- For any task a single tool call can accomplish.
-
-# Foreground vs background
-- Foreground (default): blocks until the agent completes. Use when you need results before proceeding.
-- Background: returns immediately with an agent ID. Use when you have independent work to do in parallel.";
+fn description() -> &'static str {
+    static DESC: OnceLock<String> = OnceLock::new();
+    DESC.get_or_init(|| tool_file().render_markdown())
+}
 
 impl ToolLike for AgentTool {
     fn name(&self) -> &str {
-        "agent"
+        &tool_file().name
     }
 
     fn description(&self) -> &str {
-        DESCRIPTION
+        description()
     }
 
     fn is_read_only(&self) -> bool {
-        true
+        tool_file().read_only
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "description": {
-                    "type": "string",
-                    "description": "Short label for the spawned agent — shown in events."
-                },
-                "task": {
-                    "type": "string",
-                    "description": "The user-level task for the agent to perform."
-                },
-                "agent": {
-                    "type": "string",
-                    "description": "Name of a registered sub-agent to use. Omit for an ad-hoc agent."
-                },
-                "identity": {
-                    "type": "string",
-                    "description": "System prompt for ad-hoc agents (ignored when 'agent' is set). Defaults to a generic helper identity."
-                },
-                "model": {
-                    "type": "string",
-                    "description": "Override the model used for this spawn."
-                },
-                "max_steps": {
-                    "type": "integer",
-                    "description": "Cap the agentic loop for this spawn. Ad-hoc agents default to 10."
-                },
-                "max_request_tokens": {
-                    "type": "integer",
-                    "description": "Cap output tokens per LLM request for this spawn (wire field: max_tokens)."
-                },
-                "max_input_tokens": {
-                    "type": "integer",
-                    "description": "Cap cumulative input tokens across the whole run for this spawn."
-                },
-                "max_output_tokens": {
-                    "type": "integer",
-                    "description": "Cap cumulative output tokens across the whole run for this spawn."
-                },
-                "max_contract_retries": {
-                    "type": "integer",
-                    "description": "Override structured-output retry count for this spawn."
-                },
-                "contract": {
-                    "type": "object",
-                    "description": "JSON Schema (object) the spawned agent's final reply must conform to. The validated JSON is returned as this tool's result."
-                },
-                "max_request_retries": {
-                    "type": "integer",
-                    "description": "Override transient-API retry count for this spawn."
-                },
-                "request_retry_delay": {
-                    "type": "integer",
-                    "description": "Override base delay (ms) for request retries."
-                },
-                "background": {
-                    "type": "boolean",
-                    "description": "Run in background (default: false). Returns immediately with an agent id; posts completion to the parent's work inbox."
-                }
-            },
-            "required": ["description", "task"]
-        })
+        tool_file().input_schema.clone()
     }
 
     fn call<'a>(
@@ -148,7 +78,7 @@ impl ToolLike for AgentTool {
                 .runtime
                 .as_ref()
                 .ok_or_else(|| ToolError::ExecutionFailed {
-                    tool_name: "agent".into(),
+                    tool_name: tool_file().name.clone(),
                     message: "LoopRuntime not available in ToolContext".into(),
                 })?
                 .clone();
@@ -156,7 +86,7 @@ impl ToolLike for AgentTool {
                 .caller_spec
                 .as_ref()
                 .ok_or_else(|| ToolError::ExecutionFailed {
-                    tool_name: "agent".into(),
+                    tool_name: tool_file().name.clone(),
                     message: "caller LoopSpec not available in ToolContext".into(),
                 })?
                 .clone();
@@ -228,7 +158,7 @@ mod tests {
 
         let harness = TestHarness::new(MockProvider::new(vec![
             tool_response(
-                "agent",
+                "agent_tool",
                 "sa1",
                 serde_json::json!({
                     "description": "researcher",
@@ -255,7 +185,7 @@ mod tests {
 
         let provider = Arc::new(MockProvider::new(vec![
             tool_response(
-                "agent",
+                "agent_tool",
                 "sa1",
                 serde_json::json!({
                     "description": "bg-worker",
@@ -311,7 +241,7 @@ mod tests {
         // got. The notification still carries the child's JSON.
         let provider = Arc::new(MockProvider::new(vec![
             tool_response(
-                "agent",
+                "agent_tool",
                 "sa1",
                 serde_json::json!({
                     "description": "bg-classifier",
@@ -361,7 +291,7 @@ mod tests {
 
         let provider = Arc::new(MockProvider::new(vec![
             tool_response(
-                "agent",
+                "agent_tool",
                 "sa1",
                 serde_json::json!({
                     "description": "use specialist",
@@ -407,7 +337,7 @@ mod tests {
 
         let provider = Arc::new(MockProvider::new(vec![
             tool_response(
-                "agent",
+                "agent_tool",
                 "sa1",
                 serde_json::json!({
                     "description": "tight",
@@ -465,7 +395,7 @@ mod tests {
 
         let provider = Arc::new(MockProvider::new(vec![
             tool_response(
-                "agent",
+                "agent_tool",
                 "sa1",
                 serde_json::json!({
                     "description": "tight",
@@ -507,7 +437,7 @@ mod tests {
 
         let provider = Arc::new(MockProvider::new(vec![
             tool_response(
-                "agent",
+                "agent_tool",
                 "sa1",
                 serde_json::json!({
                     "description": "use unknown",

@@ -133,7 +133,7 @@ let output = Agent::new()
 
 ### Models
 
-Each worker runs on one model: their brain. `.model(...)` accepts a model name or a configured `Model`:
+Each agent runs on one model:
 
 ```rust
 Agent::new().model_from_env()?

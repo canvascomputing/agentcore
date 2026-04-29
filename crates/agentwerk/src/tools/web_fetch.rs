@@ -2,11 +2,13 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::OnceLock;
 
 use serde_json::Value;
 
 use crate::error::Result;
 use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
+use crate::tools::tool_file::ToolFile;
 
 const MAX_URL_LENGTH: usize = 2000;
 const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
@@ -14,19 +16,15 @@ const DEFAULT_MAX_LENGTH: usize = 100_000;
 const FETCH_TIMEOUT_SECS: u64 = 60;
 const MAX_REDIRECT_HOPS: usize = 10;
 
-const DESCRIPTION: &str = "\
-Fetches content from a specified URL and returns it as text.
+fn tool_file() -> &'static ToolFile {
+    static FILE: OnceLock<ToolFile> = OnceLock::new();
+    FILE.get_or_init(|| ToolFile::parse(include_str!("web_fetch.tool.json")))
+}
 
-- Takes a URL and an optional prompt describing what to extract.
-- Fetches the URL content, converts HTML to readable plain text.
-- Non-HTML content (JSON, plain text, markdown, etc.) is returned as-is.
-- Response is truncated to max_length characters (default: 100,000).
-- HTTP URLs are automatically upgraded to HTTPS.
-- This tool is read-only and does not modify any files.
-- IMPORTANT: Will fail for authenticated or private URLs (e.g. Nextcloud, GitLab, Confluence, Jira). Check if a specialized tool provides authenticated access first.
-- For GitHub URLs, prefer using the gh CLI via bash instead (e.g., gh pr view, gh issue view, gh api).
-- When a URL redirects to a different host, the tool will report the redirect URL instead of following it. \
-  Make a new request with the redirect URL to fetch the content.";
+fn description() -> &'static str {
+    static DESC: OnceLock<String> = OnceLock::new();
+    DESC.get_or_init(|| tool_file().render_markdown())
+}
 
 /// Fetch a URL and return its content as text. Read-only. HTML is converted
 /// to plain text; HTTP is upgraded to HTTPS; cross-host redirects are
@@ -35,36 +33,19 @@ pub struct WebFetchTool;
 
 impl ToolLike for WebFetchTool {
     fn name(&self) -> &str {
-        "web_fetch"
+        &tool_file().name
     }
 
     fn description(&self) -> &str {
-        DESCRIPTION
+        description()
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "url": {
-                    "type": "string",
-                    "description": "The URL to fetch"
-                },
-                "prompt": {
-                    "type": "string",
-                    "description": "What to extract or focus on from the page content"
-                },
-                "max_length": {
-                    "type": "integer",
-                    "description": "Max response length in characters (default: 100000)"
-                }
-            },
-            "required": ["url"]
-        })
+        tool_file().input_schema.clone()
     }
 
     fn is_read_only(&self) -> bool {
-        true
+        tool_file().read_only
     }
 
     fn call<'a>(
