@@ -3,16 +3,20 @@
 //! until the queue is drained, the cancel signal fires, or a policy is
 //! violated.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::providers::{ProviderError, TokenUsage};
 
+use super::agent::Agent;
 use super::policy::{Policies, PolicyConform};
+use super::r#loop::{run_main_loop, Runnable};
+
+pub type TicketType = String;
 
 pub struct TicketSystem {
     tickets: HashMap<String, Ticket>,
@@ -22,6 +26,7 @@ pub struct TicketSystem {
     metrics: LoopMetrics,
     interrupt_signal: Arc<AtomicBool>,
     policies: Policies,
+    agents: Vec<Agent>,
 }
 
 #[derive(Default)]
@@ -74,11 +79,6 @@ pub enum Status {
     Failed,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TicketType {
-    Task,
-}
-
 #[derive(Debug)]
 pub enum TicketError {
     TicketMissing { key: String },
@@ -94,6 +94,7 @@ impl Default for TicketSystem {
             metrics: LoopMetrics::default(),
             interrupt_signal: Arc::new(AtomicBool::new(false)),
             policies: Policies::default(),
+            agents: Vec::new(),
         }
     }
 }
@@ -149,21 +150,21 @@ impl TicketSystem {
 
     pub fn create(
         &mut self,
-        summary: String,
-        description: String,
-        r#type: TicketType,
-        reporter: String,
+        summary: impl Into<String>,
+        description: impl Into<String>,
+        ticket_type: impl Into<TicketType>,
+        reporter: impl Into<String>,
     ) -> &Ticket {
         let key = format!("TICKET-{}", self.next_id);
         self.next_id += 1;
         let ticket = Ticket {
             key: key.clone(),
-            summary,
-            description,
+            summary: summary.into(),
+            description: description.into(),
             status: Status::Todo,
-            r#type,
+            r#type: ticket_type.into(),
             assignee: None,
-            reporter,
+            reporter: reporter.into(),
             comments: Vec::new(),
             attachments: Vec::new(),
             created_at: now_millis(),
@@ -196,14 +197,18 @@ impl TicketSystem {
         Ok(())
     }
 
-    pub fn assign_to(&mut self, key: &str, assignee: String) -> Result<(), TicketError> {
+    pub fn assign_to(
+        &mut self,
+        key: &str,
+        assignee: impl Into<String>,
+    ) -> Result<(), TicketError> {
         let ticket = self
             .tickets
             .get_mut(key)
             .ok_or_else(|| TicketError::TicketMissing {
                 key: key.to_string(),
             })?;
-        ticket.assignee = Some(assignee);
+        ticket.assignee = Some(assignee.into());
         Ok(())
     }
 
@@ -244,8 +249,8 @@ impl TicketSystem {
     pub fn add_comment(
         &mut self,
         key: &str,
-        author: String,
-        body: String,
+        author: impl Into<String>,
+        body: impl Into<String>,
     ) -> Result<(), TicketError> {
         let ticket = self
             .tickets
@@ -254,8 +259,8 @@ impl TicketSystem {
                 key: key.to_string(),
             })?;
         ticket.comments.push(Comment {
-            author,
-            body,
+            author: author.into(),
+            body: body.into(),
             created_at: now_millis(),
         });
         Ok(())
@@ -314,7 +319,7 @@ impl TicketSystem {
     }
 
     pub(super) fn record_error(&mut self, agent: &str, ticket_key: &str, err: &ProviderError) {
-        let _ = self.add_comment(ticket_key, agent.into(), format!("error: {err}"));
+        let _ = self.add_comment(ticket_key, agent, format!("error: {err}"));
     }
 
     // ---- loop helpers ----
@@ -341,6 +346,70 @@ impl TicketSystem {
             }
         }
         false
+    }
+}
+
+impl Runnable for TicketSystem {
+    fn assign(mut self, agent: Agent) -> Self {
+        self.agents.push(agent);
+        self
+    }
+
+    async fn run(mut self) -> Self {
+        let agents = std::mem::take(&mut self.agents);
+        let shared = Arc::new(Mutex::new(self));
+        run_main_loop(agents, Arc::clone(&shared)).await;
+        Arc::try_unwrap(shared)
+            .ok()
+            .expect("TicketSystem has remaining shared references")
+            .into_inner()
+            .expect("TicketSystem mutex was poisoned")
+    }
+
+    async fn run_until_empty(mut self) -> Self {
+        let agents = std::mem::take(&mut self.agents);
+
+        // What ticket types this set of agents can handle. If any agent
+        // has an empty allow-list, they handle every type.
+        let any_handles_all = agents.iter().any(|a| a.handles_any_type());
+        let handled: HashSet<String> = agents
+            .iter()
+            .flat_map(|a| a.allowed_ticket_types().iter().cloned())
+            .collect();
+
+        let shared = Arc::new(Mutex::new(self));
+        let signal = shared.lock().unwrap().interrupt_signal.clone();
+        let watcher_shared = Arc::clone(&shared);
+        let watcher_signal = Arc::clone(&signal);
+        let watcher = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                let sys = watcher_shared.lock().unwrap();
+
+                if sys.policy_violated() {
+                    watcher_signal.store(true, Ordering::Relaxed);
+                    return;
+                }
+                let in_progress = sys.list_by_status(Status::InProgress).len();
+                let any_workable = sys
+                    .list_by_status(Status::Todo)
+                    .into_iter()
+                    .any(|t| any_handles_all || handled.contains(&t.r#type));
+                // Stop when no work is in flight AND nothing pending is
+                // workable by the assigned agents.
+                if in_progress == 0 && !any_workable {
+                    watcher_signal.store(true, Ordering::Relaxed);
+                    return;
+                }
+            }
+        });
+        run_main_loop(agents, Arc::clone(&shared)).await;
+        let _ = watcher.await;
+        Arc::try_unwrap(shared)
+            .ok()
+            .expect("TicketSystem has remaining shared references")
+            .into_inner()
+            .expect("TicketSystem mutex was poisoned")
     }
 }
 
@@ -385,15 +454,7 @@ mod tests {
     use super::*;
 
     fn task(system: &mut TicketSystem, summary: &str) -> String {
-        system
-            .create(
-                summary.to_string(),
-                String::new(),
-                TicketType::Task,
-                "tester".to_string(),
-            )
-            .key
-            .clone()
+        system.create(summary, "", "task", "tester").key.clone()
     }
 
     fn finish(system: &mut TicketSystem, key: &str) {
@@ -529,7 +590,7 @@ mod tests {
     fn update_status_clears_assignee_when_returning_to_todo() {
         let mut system = TicketSystem::default();
         let key = task(&mut system, "release me");
-        system.assign_to(&key, "alice".to_string()).unwrap();
+        system.assign_to(&key, "alice").unwrap();
         system.update_status(&key, Status::InProgress).unwrap();
         assert_eq!(
             system.get(&key).unwrap().assignee.as_deref(),
@@ -555,7 +616,7 @@ mod tests {
     fn assign_to_returns_missing_for_unknown_key() {
         let mut system = TicketSystem::default();
         let err = system
-            .assign_to("TICKET-999", "alice".to_string())
+            .assign_to("TICKET-999", "alice")
             .unwrap_err();
         assert!(matches!(err, TicketError::TicketMissing { .. }));
     }
@@ -564,7 +625,7 @@ mod tests {
     fn add_comment_returns_missing_for_unknown_key() {
         let mut system = TicketSystem::default();
         let err = system
-            .add_comment("TICKET-999", "alice".to_string(), "hi".to_string())
+            .add_comment("TICKET-999", "alice", "hi")
             .unwrap_err();
         assert!(matches!(err, TicketError::TicketMissing { .. }));
     }
@@ -583,10 +644,10 @@ mod tests {
         let mut system = TicketSystem::default();
         let key = task(&mut system, "discuss");
         system
-            .add_comment(&key, "alice".to_string(), "looks good".to_string())
+            .add_comment(&key, "alice", "looks good")
             .unwrap();
         system
-            .add_comment(&key, "bob".to_string(), "agreed".to_string())
+            .add_comment(&key, "bob", "agreed")
             .unwrap();
         let comments = &system.get(&key).unwrap().comments;
         assert_eq!(comments.len(), 2);
@@ -637,9 +698,9 @@ mod tests {
         let mine_a = task(&mut system, "mine a");
         let theirs = task(&mut system, "theirs");
         let mine_b = task(&mut system, "mine b");
-        system.assign_to(&mine_a, "alice".to_string()).unwrap();
-        system.assign_to(&theirs, "bob".to_string()).unwrap();
-        system.assign_to(&mine_b, "alice".to_string()).unwrap();
+        system.assign_to(&mine_a, "alice").unwrap();
+        system.assign_to(&theirs, "bob").unwrap();
+        system.assign_to(&mine_b, "alice").unwrap();
         let alice = system.list_by_assignee("alice");
         let summaries: Vec<&str> = alice.iter().map(|t| t.summary.as_str()).collect();
         assert_eq!(summaries, vec!["mine a", "mine b"]);
@@ -665,12 +726,7 @@ mod tests {
     #[test]
     fn search_matches_description_field() {
         let mut system = TicketSystem::default();
-        system.create(
-            "summary".to_string(),
-            "secret keyword inside body".to_string(),
-            TicketType::Task,
-            "tester".to_string(),
-        );
+        system.create("summary", "secret keyword inside body", "task", "tester");
         let hits = system.search("keyword");
         assert_eq!(hits.len(), 1);
     }

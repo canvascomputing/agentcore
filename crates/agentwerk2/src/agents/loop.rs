@@ -1,7 +1,9 @@
 //! Multi-agent loop driver. Each agent runs in its own tokio task
-//! against the shared `TicketSystem` reachable via `agent.runtime.system`.
+//! against a shared `TicketSystem` passed in by `Runnable::run`. Also
+//! defines the `Runnable` trait that `TicketSystem` implements.
 
-use std::sync::Arc;
+use std::future::Future;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::providers::types::StreamEvent;
@@ -9,47 +11,76 @@ use crate::providers::{ContentBlock, Message, ModelRequest};
 
 use super::agent::Agent;
 use super::policy::PolicyConform;
-use super::tickets::Status;
+use super::tickets::{Status, TicketSystem};
+
+/// What it means to be a thing agents can be assigned to and run
+/// against. Implemented by `TicketSystem`. Future types could
+/// implement it the same way `PolicyConform` is implemented today.
+pub trait Runnable: Sized {
+    /// Stage one agent. Chainable.
+    fn assign(self, agent: Agent) -> Self;
+
+    /// Stage many agents. Default impl folds over `assign`.
+    fn assign_all<I>(self, agents: I) -> Self
+    where
+        I: IntoIterator<Item = Agent>,
+    {
+        let mut s = self;
+        for a in agents {
+            s = s.assign(a);
+        }
+        s
+    }
+
+    /// Drive every staged agent. Idles on empty queue until the
+    /// implementor's interrupt signal fires.
+    fn run(self) -> impl Future<Output = Self> + Send;
+
+    /// Drive every staged agent. Auto-stops once the queue settles.
+    fn run_until_empty(self) -> impl Future<Output = Self> + Send;
+}
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Drive many agents against one shared `TicketSystem`. Each agent runs
-/// in its own tokio task; locks on the system are held only around the
+/// in its own tokio task; locks on the queue are held only around the
 /// queue/metric ops and never across `provider.respond().await`, so
 /// model calls really do overlap.
-pub async fn run_main_loop(agents: Vec<Agent>) {
+pub(super) async fn run_main_loop(agents: Vec<Agent>, tickets: Arc<Mutex<TicketSystem>>) {
     let mut handles = Vec::with_capacity(agents.len());
     for agent in agents {
-        handles.push(tokio::spawn(handle_tickets(agent)));
+        handles.push(tokio::spawn(handle_tickets(agent, Arc::clone(&tickets))));
     }
     for h in handles {
         let _ = h.await;
     }
 }
 
-/// Per-agent drain. Picks the next Todo, processes it, repeats. When the
-/// queue empties, idles on `IDLE_POLL_INTERVAL` until something arrives,
-/// the cancel signal fires, or a policy hits. Callers stop the agent by
-/// setting the `interrupt_signal` on the `TicketSystem`.
-pub(super) async fn handle_tickets(agent: Agent) {
+/// Per-agent loop. Picks the next `Todo` whose type the agent handles,
+/// processes it, repeats. When no eligible work is queued, idles on
+/// `IDLE_POLL_INTERVAL` until something arrives, the cancel signal
+/// fires, or a policy hits.
+pub(super) async fn handle_tickets(agent: Agent, tickets: Arc<Mutex<TicketSystem>>) {
     loop {
         let work = {
-            let mut sys = agent.runtime.system.lock().unwrap();
+            let mut sys = tickets.lock().unwrap();
             if sys.is_interrupted() || sys.policy_violated() {
                 return;
             }
             let max_request_tokens = sys.policies().max_request_tokens;
-            sys.list_by_status(Status::Todo)
-                .first()
-                .map(|t| t.key.clone())
-                .map(|key| {
-                    sys.record_step(&agent.name);
-                    let _ = sys.update_status(&key, Status::InProgress);
-                    let prompt = sys
-                        .get(&key)
-                        .map(|t| format!("{}\n\n{}", t.summary, t.description));
-                    (key, prompt, max_request_tokens)
-                })
+            let next = sys
+                .list_by_status(Status::Todo)
+                .into_iter()
+                .find(|t| agent.handles(&t.r#type))
+                .map(|t| t.key.clone());
+            next.map(|key| {
+                sys.record_step(agent.get_name());
+                let _ = sys.update_status(&key, Status::InProgress);
+                let prompt = sys
+                    .get(&key)
+                    .map(|t| format!("{}\n\n{}", t.summary, t.description));
+                (key, prompt, max_request_tokens)
+            })
         };
 
         let Some((key, Some(prompt), max_request_tokens)) = work else {
@@ -58,7 +89,7 @@ pub(super) async fn handle_tickets(agent: Agent) {
         };
 
         let request = ModelRequest {
-            model: agent.runtime.model.clone(),
+            model: agent.model_str().to_string(),
             system_prompt: agent.system_prompt(),
             messages: vec![Message::user(prompt)],
             tools: Vec::new(),
@@ -66,22 +97,21 @@ pub(super) async fn handle_tickets(agent: Agent) {
             tool_choice: None,
         };
         let result = agent
-            .runtime
-            .provider
+            .provider_handle()
             .respond(request, no_op_event_handler())
             .await;
 
         match result {
             Ok(response) => {
-                let mut sys = agent.runtime.system.lock().unwrap();
-                sys.record_request(&agent.name, &response.usage);
+                let mut sys = tickets.lock().unwrap();
+                sys.record_request(agent.get_name(), &response.usage);
                 let text = extract_text(&response.content);
-                let _ = sys.add_comment(&key, agent.name.clone(), text);
+                let _ = sys.add_comment(&key, agent.get_name(), text);
                 let _ = sys.update_status(&key, Status::Done);
             }
             Err(e) => {
-                let mut sys = agent.runtime.system.lock().unwrap();
-                sys.record_error(&agent.name, &key, &e);
+                let mut sys = tickets.lock().unwrap();
+                sys.record_error(agent.get_name(), &key, &e);
                 let _ = sys.update_status(&key, Status::Failed);
             }
         }
@@ -104,19 +134,14 @@ fn no_op_event_handler() -> Arc<dyn Fn(StreamEvent) + Send + Sync> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::agent::{Runtime, DEFAULT_BEHAVIOR};
-    use super::super::tickets::{TicketSystem, TicketType};
+    use super::super::agent::DEFAULT_BEHAVIOR;
     use super::*;
     use crate::providers::types::{ModelResponse, ResponseStatus};
     use crate::providers::{Provider, ProviderResult, TokenUsage};
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Mutex;
 
-    /// MockProvider that yields once before responding so concurrent
-    /// agents interleave. Captures the most recent observed
-    /// `system_prompt` and `max_request_tokens` for assertions.
     struct MockProvider {
         text: String,
         usage: TokenUsage,
@@ -143,13 +168,7 @@ mod tests {
                 captured_prompt: Arc::clone(&prompt),
                 captured_max_tokens: Arc::clone(&max_tokens),
             });
-            (
-                provider,
-                MockHandles {
-                    prompt,
-                    max_tokens,
-                },
-            )
+            (provider, MockHandles { prompt, max_tokens })
         }
     }
 
@@ -175,73 +194,23 @@ mod tests {
         }
     }
 
-    fn build(
-        provider: Arc<dyn Provider>,
-        system: Arc<Mutex<TicketSystem>>,
-    ) -> Arc<Runtime> {
-        Arc::new(Runtime {
-            provider,
-            model: "mock".into(),
-            system,
-        })
-    }
-
-    fn shared_system() -> (Arc<Mutex<TicketSystem>>, Arc<AtomicBool>) {
-        let signal = Arc::new(AtomicBool::new(false));
-        let system = TicketSystem::new().interrupt_signal(Arc::clone(&signal));
-        (Arc::new(Mutex::new(system)), signal)
-    }
-
-    fn seed(system: &Arc<Mutex<TicketSystem>>, summary: &str) {
-        system.lock().unwrap().create(
-            summary.into(),
-            String::new(),
-            TicketType::Task,
-            "tester".into(),
-        );
-    }
-
-    /// Drive `agents` to completion. A watcher polls the queue and
-    /// triggers the interrupt once nothing is `Todo` or `InProgress`,
-    /// so the idle agents wake up and exit.
-    async fn drain_then_interrupt(
-        system: Arc<Mutex<TicketSystem>>,
-        signal: Arc<AtomicBool>,
-        agents: Vec<Agent>,
-    ) {
-        let watcher_signal = Arc::clone(&signal);
-        let watcher_system = Arc::clone(&system);
-        let watcher = tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                let sys = watcher_system.lock().unwrap();
-                let pending = sys.list_by_status(Status::Todo).len()
-                    + sys.list_by_status(Status::InProgress).len();
-                if pending == 0 || sys.policy_violated() {
-                    watcher_signal.store(true, Ordering::Relaxed);
-                    return;
-                }
-            }
-        });
-        run_main_loop(agents).await;
-        let _ = watcher.await;
+    fn agent_with(provider: Arc<dyn Provider>, name: &str) -> Agent {
+        Agent::new().name(name).provider(provider).model("mock")
     }
 
     #[tokio::test]
     async fn single_agent_drains_queue() {
         let (provider, _) = MockProvider::new("ok");
-        let (system, signal) = shared_system();
-        seed(&system, "first");
-        seed(&system, "second");
+        let mut tickets = TicketSystem::new();
+        tickets.create("first", "", "task", "tester");
+        tickets.create("second", "", "task", "tester");
 
-        let runtime = build(provider, Arc::clone(&system));
-        let agent = Agent::new("worker", runtime).role("you are a worker");
-        drain_then_interrupt(Arc::clone(&system), signal, vec![agent]).await;
+        let agent = agent_with(provider, "worker").role("you are a worker");
+        let tickets = tickets.assign(agent).run_until_empty().await;
 
-        let sys = system.lock().unwrap();
-        assert_eq!(sys.steps(), 2);
-        assert_eq!(sys.requests(), 2);
-        let done = sys.list_by_status(Status::Done);
+        assert_eq!(tickets.steps(), 2);
+        assert_eq!(tickets.requests(), 2);
+        let done = tickets.list_by_status(Status::Done);
         assert_eq!(done.len(), 2);
         for t in done {
             let comment = t
@@ -256,38 +225,29 @@ mod tests {
     #[tokio::test]
     async fn interrupt_signal_stops_an_idle_agent() {
         let (provider, _) = MockProvider::new("ok");
-        let (system, signal) = shared_system();
-        signal.store(true, Ordering::Relaxed);
+        let signal = Arc::new(AtomicBool::new(true));
+        let tickets = TicketSystem::new().interrupt_signal(Arc::clone(&signal));
 
-        let runtime = build(provider, Arc::clone(&system));
-        let agent = Agent::new("worker", runtime);
-        run_main_loop(vec![agent]).await;
+        let agent = agent_with(provider, "worker");
+        let tickets = tickets.assign(agent).run().await;
 
-        let sys = system.lock().unwrap();
-        assert_eq!(sys.steps(), 0);
-        assert_eq!(sys.requests(), 0);
+        assert_eq!(tickets.steps(), 0);
+        assert_eq!(tickets.requests(), 0);
     }
 
     #[tokio::test]
     async fn max_steps_stops_processing_after_threshold() {
         let (provider, _) = MockProvider::new("ok");
-        let signal = Arc::new(AtomicBool::new(false));
-        let system = Arc::new(Mutex::new(
-            TicketSystem::new()
-                .interrupt_signal(Arc::clone(&signal))
-                .max_steps(2),
-        ));
-        seed(&system, "a");
-        seed(&system, "b");
-        seed(&system, "c");
+        let mut tickets = TicketSystem::new().max_steps(2);
+        tickets.create("a", "", "task", "tester");
+        tickets.create("b", "", "task", "tester");
+        tickets.create("c", "", "task", "tester");
 
-        let runtime = build(provider, Arc::clone(&system));
-        let agent = Agent::new("worker", runtime);
-        drain_then_interrupt(Arc::clone(&system), signal, vec![agent]).await;
+        let agent = agent_with(provider, "worker");
+        let tickets = tickets.assign(agent).run_until_empty().await;
 
-        let sys = system.lock().unwrap();
-        assert_eq!(sys.list_by_status(Status::Done).len(), 2);
-        assert_eq!(sys.list_by_status(Status::Todo).len(), 1);
+        assert_eq!(tickets.list_by_status(Status::Done).len(), 2);
+        assert_eq!(tickets.list_by_status(Status::Todo).len(), 1);
     }
 
     #[tokio::test]
@@ -300,37 +260,29 @@ mod tests {
                 ..TokenUsage::default()
             },
         );
-        let signal = Arc::new(AtomicBool::new(false));
-        let system = Arc::new(Mutex::new(
-            TicketSystem::new()
-                .interrupt_signal(Arc::clone(&signal))
-                .max_input_tokens(100),
-        ));
-        seed(&system, "a");
-        seed(&system, "b");
-        seed(&system, "c");
+        let mut tickets = TicketSystem::new().max_input_tokens(100);
+        tickets.create("a", "", "task", "tester");
+        tickets.create("b", "", "task", "tester");
+        tickets.create("c", "", "task", "tester");
 
-        let runtime = build(provider, Arc::clone(&system));
-        let agent = Agent::new("worker", runtime);
-        drain_then_interrupt(Arc::clone(&system), signal, vec![agent]).await;
+        let agent = agent_with(provider, "worker");
+        let tickets = tickets.assign(agent).run_until_empty().await;
 
-        let sys = system.lock().unwrap();
-        assert_eq!(sys.list_by_status(Status::Done).len(), 2);
-        assert_eq!(sys.list_by_status(Status::Todo).len(), 1);
+        assert_eq!(tickets.list_by_status(Status::Done).len(), 2);
+        assert_eq!(tickets.list_by_status(Status::Todo).len(), 1);
     }
 
     #[tokio::test]
     async fn system_prompt_includes_role_behavior_and_context() {
         let (provider, handles) = MockProvider::new("ok");
-        let (system, signal) = shared_system();
-        seed(&system, "task");
+        let mut tickets = TicketSystem::new();
+        tickets.create("task", "", "task", "tester");
 
-        let runtime = build(provider, Arc::clone(&system));
-        let agent = Agent::new("worker", runtime)
+        let agent = agent_with(provider, "worker")
             .role("ROLE_TEXT")
             .behavior("BEHAVIOR_TEXT")
             .context("CONTEXT_TEXT");
-        drain_then_interrupt(Arc::clone(&system), signal, vec![agent]).await;
+        let _ = tickets.assign(agent).run_until_empty().await;
 
         let prompt = handles
             .prompt
@@ -348,12 +300,11 @@ mod tests {
     #[tokio::test]
     async fn system_prompt_falls_back_to_default_behavior_when_unset() {
         let (provider, handles) = MockProvider::new("ok");
-        let (system, signal) = shared_system();
-        seed(&system, "task");
+        let mut tickets = TicketSystem::new();
+        tickets.create("task", "", "task", "tester");
 
-        let runtime = build(provider, Arc::clone(&system));
-        let agent = Agent::new("worker", runtime).role("ROLE_TEXT");
-        drain_then_interrupt(Arc::clone(&system), signal, vec![agent]).await;
+        let agent = agent_with(provider, "worker").role("ROLE_TEXT");
+        let _ = tickets.assign(agent).run_until_empty().await;
 
         let prompt = handles
             .prompt
@@ -368,17 +319,11 @@ mod tests {
     #[tokio::test]
     async fn max_request_tokens_is_forwarded_to_the_provider_request() {
         let (provider, handles) = MockProvider::new("ok");
-        let signal = Arc::new(AtomicBool::new(false));
-        let system = Arc::new(Mutex::new(
-            TicketSystem::new()
-                .interrupt_signal(Arc::clone(&signal))
-                .max_request_tokens(256),
-        ));
-        seed(&system, "task");
+        let mut tickets = TicketSystem::new().max_request_tokens(256);
+        tickets.create("task", "", "task", "tester");
 
-        let runtime = build(provider, Arc::clone(&system));
-        let agent = Agent::new("worker", runtime);
-        drain_then_interrupt(Arc::clone(&system), signal, vec![agent]).await;
+        let agent = agent_with(provider, "worker");
+        let _ = tickets.assign(agent).run_until_empty().await;
 
         assert_eq!(*handles.max_tokens.lock().unwrap(), Some(256));
     }
@@ -386,22 +331,20 @@ mod tests {
     #[tokio::test]
     async fn run_main_loop_drives_multiple_agents_in_parallel() {
         let (provider, _) = MockProvider::new("done");
-        let (system, signal) = shared_system();
-        seed(&system, "a");
-        seed(&system, "b");
-        seed(&system, "c");
-        seed(&system, "d");
+        let mut tickets = TicketSystem::new();
+        tickets.create("a", "", "task", "tester");
+        tickets.create("b", "", "task", "tester");
+        tickets.create("c", "", "task", "tester");
+        tickets.create("d", "", "task", "tester");
 
-        let runtime = build(provider, Arc::clone(&system));
-        let alice = Agent::new("alice", Arc::clone(&runtime));
-        let bob = Agent::new("bob", Arc::clone(&runtime));
-        drain_then_interrupt(Arc::clone(&system), signal, vec![alice, bob]).await;
+        let alice = agent_with(Arc::clone(&(provider.clone() as Arc<dyn Provider>)), "alice");
+        let bob = agent_with(provider, "bob");
+        let tickets = tickets.assign_all([alice, bob]).run_until_empty().await;
 
-        let sys = system.lock().unwrap();
-        assert_eq!(sys.list_by_status(Status::Done).len(), 4);
-        assert_eq!(sys.steps(), 4);
-        assert_eq!(sys.requests(), 4);
-        let authors: Vec<&str> = sys
+        assert_eq!(tickets.list_by_status(Status::Done).len(), 4);
+        assert_eq!(tickets.steps(), 4);
+        assert_eq!(tickets.requests(), 4);
+        let authors: Vec<&str> = tickets
             .list_by_status(Status::Done)
             .iter()
             .flat_map(|t| t.comments.iter().map(|c| c.author.as_str()))
@@ -413,22 +356,33 @@ mod tests {
     #[tokio::test]
     async fn idle_agent_picks_up_a_late_arriving_ticket() {
         let (provider, _) = MockProvider::new("done");
-        let (system, signal) = shared_system();
+        let signal = Arc::new(AtomicBool::new(false));
+        let tickets = TicketSystem::new().interrupt_signal(Arc::clone(&signal));
 
-        let runtime = build(provider, Arc::clone(&system));
-        let agent = Agent::new("worker", runtime);
-        let task = tokio::spawn(run_main_loop(vec![agent]));
+        let agent = agent_with(provider, "worker");
+        // Wrap in Arc<Mutex<>> manually so we can keep mutating after the
+        // task starts, then use `run_main_loop` directly. We can't use the
+        // `run` consume-and-return pattern here because we need outside
+        // access to the queue while the agent is parked.
+        let shared = Arc::new(Mutex::new(tickets));
+        let task = {
+            let agents = vec![agent];
+            let shared = Arc::clone(&shared);
+            tokio::spawn(async move { run_main_loop(agents, shared).await })
+        };
 
         tokio::time::sleep(Duration::from_millis(50)).await;
-        seed(&system, "late");
+        shared
+            .lock()
+            .unwrap()
+            .create("late", "", "task", "tester");
 
-        // Watcher: interrupt once the late ticket has been processed.
         let watcher_signal = Arc::clone(&signal);
-        let watcher_system = Arc::clone(&system);
+        let watcher_shared = Arc::clone(&shared);
         let watcher = tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_millis(20)).await;
-                let sys = watcher_system.lock().unwrap();
+                let sys = watcher_shared.lock().unwrap();
                 if sys.list_by_status(Status::Done).len() == 1 {
                     watcher_signal.store(true, Ordering::Relaxed);
                     return;
@@ -439,8 +393,58 @@ mod tests {
         let _ = task.await;
         let _ = watcher.await;
 
-        let sys = system.lock().unwrap();
+        let sys = shared.lock().unwrap();
         assert_eq!(sys.list_by_status(Status::Done).len(), 1);
         assert_eq!(sys.requests(), 1);
+    }
+
+    /// Tiny mock implementor that exercises `assign_all`'s default impl.
+    struct Counter {
+        names: Vec<String>,
+    }
+
+    impl Runnable for Counter {
+        fn assign(mut self, agent: Agent) -> Self {
+            self.names.push(agent.get_name().to_string());
+            self
+        }
+
+        async fn run(self) -> Self {
+            self
+        }
+
+        async fn run_until_empty(self) -> Self {
+            self
+        }
+    }
+
+    #[test]
+    fn assign_all_folds_over_assign() {
+        let counter = Counter { names: Vec::new() };
+        let (provider, _) = MockProvider::new("ok");
+        let counter = counter.assign_all([
+            agent_with(Arc::clone(&(provider.clone() as Arc<dyn Provider>)), "alice"),
+            agent_with(Arc::clone(&(provider.clone() as Arc<dyn Provider>)), "bob"),
+            agent_with(provider, "carol"),
+        ]);
+        assert_eq!(counter.names, vec!["alice", "bob", "carol"]);
+    }
+
+    #[tokio::test]
+    async fn agent_with_ticket_type_skips_other_types() {
+        let (provider, _) = MockProvider::new("ok");
+        let mut tickets = TicketSystem::new();
+        tickets.create("real work", "", "task", "tester");
+        tickets.create("a bug", "", "bug", "tester");
+
+        let agent = agent_with(provider, "worker").ticket_type("task");
+        let tickets = tickets.assign(agent).run_until_empty().await;
+
+        assert_eq!(tickets.list_by_status(Status::Done).len(), 1);
+        assert_eq!(tickets.list_by_status(Status::Todo).len(), 1);
+        let done = &tickets.list_by_status(Status::Done)[0];
+        assert_eq!(done.r#type, "task");
+        let todo = &tickets.list_by_status(Status::Todo)[0];
+        assert_eq!(todo.r#type, "bug");
     }
 }
