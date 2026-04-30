@@ -18,6 +18,13 @@ dependencies = [
 [[package]]
 name = "agentwerk2"
 version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "anyhow"
