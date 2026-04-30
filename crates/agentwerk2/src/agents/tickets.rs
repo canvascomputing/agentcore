@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::event::PolicyKind;
 use crate::providers::{AsUserMessage, Message, ProviderError, TokenUsage};
 
 use super::agent::Agent;
@@ -395,6 +396,26 @@ impl TicketSystem {
             }
         }
         false
+    }
+
+    pub(crate) fn policy_violated_kind(&self) -> Option<(PolicyKind, u64)> {
+        let p = &self.policies;
+        if let Some(limit) = p.max_steps {
+            if self.metrics.steps >= u64::from(limit) {
+                return Some((PolicyKind::Steps, u64::from(limit)));
+            }
+        }
+        if let Some(limit) = p.max_input_tokens {
+            if self.metrics.input_tokens >= limit {
+                return Some((PolicyKind::InputTokens, limit));
+            }
+        }
+        if let Some(limit) = p.max_output_tokens {
+            if self.metrics.output_tokens >= limit {
+                return Some((PolicyKind::OutputTokens, limit));
+            }
+        }
+        None
     }
 }
 

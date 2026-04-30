@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use crate::event::{default_logger, Event};
 use crate::prompts::{PromptBuilder, Section, DEFAULT_BEHAVIOR};
 use crate::providers::{Provider, ProviderToolDefinition};
 use crate::tools::{ToolLike, ToolRegistry};
@@ -24,6 +25,7 @@ pub struct Agent {
     tools: ToolRegistry,
     working_dir: Option<PathBuf>,
     current_ticket: Arc<Mutex<Option<String>>>,
+    event_handler: Option<Arc<dyn Fn(Event) + Send + Sync>>,
 }
 
 impl Agent {
@@ -82,6 +84,19 @@ impl Agent {
         self
     }
 
+    /// Install an event observer. The handler must be cheap and non-blocking.
+    /// When not set, [`default_logger`] is used.
+    pub fn event_handler(mut self, h: Arc<dyn Fn(Event) + Send + Sync>) -> Self {
+        self.event_handler = Some(h);
+        self
+    }
+
+    /// Drop every event, opting out of the default stderr logger.
+    pub fn silent(mut self) -> Self {
+        self.event_handler = Some(Arc::new(|_: Event| {}));
+        self
+    }
+
     pub fn get_name(&self) -> &str {
         &self.name
     }
@@ -93,6 +108,10 @@ impl Agent {
 
     pub(super) fn set_current_ticket(&self, key: Option<String>) {
         *self.current_ticket.lock().unwrap() = key;
+    }
+
+    pub(super) fn resolve_event_handler(&self) -> Arc<dyn Fn(Event) + Send + Sync> {
+        self.event_handler.clone().unwrap_or_else(default_logger)
     }
 
     /// Empty allow-list = handle any type.

@@ -6,9 +6,10 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::event::{Event, EventKind, ToolFailureKind};
 use crate::providers::types::{ResponseStatus, StreamEvent};
 use crate::providers::{AsUserMessage, ContentBlock, Message, ModelRequest};
-use crate::tools::{ToolCall, ToolContext};
+use crate::tools::{ToolCall, ToolContext, ToolError};
 
 use super::agent::Agent;
 use super::policy::PolicyConform;
@@ -65,7 +66,12 @@ pub(super) async fn handle_tickets(agent: Agent, tickets: Arc<Mutex<TicketSystem
     loop {
         let claim = {
             let mut sys = tickets.lock().unwrap();
-            if sys.is_interrupted() || sys.policy_violated() {
+            if sys.is_interrupted() {
+                return;
+            }
+            if let Some((kind, limit)) = sys.policy_violated_kind() {
+                let handler = agent.resolve_event_handler();
+                handler(Event::new(agent.get_name(), EventKind::PolicyViolated { kind, limit }));
                 return;
             }
             let todos = sys.list_by_status(Status::Todo);
@@ -101,11 +107,11 @@ pub(super) async fn handle_tickets(agent: Agent, tickets: Arc<Mutex<TicketSystem
     }
 }
 
-/// One ticket from claimed → settled. Owns the per-ticket message
-/// vector. Today the inner `loop {}` always exits after one iteration;
-/// when tools land, the assistant's `ToolUse` blocks will drive a
-/// second pass.
+/// One ticket from claimed → settled. Owns the per-ticket message vector.
 async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: &str) {
+    let handler = agent.resolve_event_handler();
+    let emit = |kind: EventKind| handler(Event::new(agent.get_name(), kind));
+
     let mut messages: Vec<Message> = Vec::new();
     if let Some(ctx) = agent.context_message() {
         messages.push(Message::user(ctx));
@@ -118,6 +124,7 @@ async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: 
         return;
     };
     messages.push(task_msg);
+    emit(EventKind::TicketClaimed { key: key.to_string() });
 
     let (max_request_tokens, interrupt_signal) = {
         let sys = tickets.lock().unwrap();
@@ -127,7 +134,18 @@ async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: 
         )
     };
 
+    let on_stream: Arc<dyn Fn(StreamEvent) + Send + Sync> = {
+        let handler = agent.resolve_event_handler();
+        let name = agent.get_name().to_string();
+        Arc::new(move |ev| {
+            if let StreamEvent::TextDelta { text, .. } = ev {
+                handler(Event::new(&name, EventKind::TextChunkReceived { content: text }));
+            }
+        })
+    };
+
     loop {
+        emit(EventKind::RequestStarted { model: agent.model_str().to_string() });
         let request = ModelRequest {
             model: agent.model_str().to_string(),
             system_prompt: agent.system_prompt(),
@@ -138,18 +156,20 @@ async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: 
         };
         let response = match agent
             .provider_handle()
-            .respond(request, no_op_event_handler())
+            .respond(request, Arc::clone(&on_stream))
             .await
         {
             Ok(r) => r,
             Err(e) => {
-                tickets
-                    .lock()
-                    .unwrap()
-                    .record_error(agent.get_name(), key, &e);
+                emit(EventKind::RequestFailed { kind: e.kind(), message: e.to_string() });
+                tickets.lock().unwrap().record_error(agent.get_name(), key, &e);
+                emit(EventKind::TicketFinished { key: key.to_string() });
                 return;
             }
         };
+
+        emit(EventKind::RequestFinished { model: response.model.clone() });
+        emit(EventKind::TokensReported { model: response.model.clone(), usage: response.usage.clone() });
 
         {
             let mut sys = tickets.lock().unwrap();
@@ -177,7 +197,16 @@ async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: 
             // Inner loop terminates. The agent didn't request more
             // work — it's the agent's job (via the ticket tools) to
             // settle the ticket; the loop never writes status.
+            emit(EventKind::TicketFinished { key: key.to_string() });
             return;
+        }
+
+        for call in &calls {
+            emit(EventKind::ToolCallStarted {
+                tool_name: call.name.clone(),
+                call_id: call.id.clone(),
+                input: call.input.clone(),
+            });
         }
 
         // Dispatch the tool calls. ToolContext carries working_dir,
@@ -191,6 +220,32 @@ async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: 
             .agent_name(agent.get_name().to_string());
         let outcomes = agent.tool_registry().execute(&calls, &ctx).await;
 
+        for (block, verdict) in &outcomes {
+            if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                let tool_name = calls
+                    .iter()
+                    .find(|c| &c.id == tool_use_id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default();
+                match verdict {
+                    Ok(output) => emit(EventKind::ToolCallFinished {
+                        tool_name,
+                        call_id: tool_use_id.clone(),
+                        output: output.clone(),
+                    }),
+                    Err(err) => emit(EventKind::ToolCallFailed {
+                        tool_name,
+                        call_id: tool_use_id.clone(),
+                        message: err.message(),
+                        kind: match err {
+                            ToolError::ToolNotFound { .. } => ToolFailureKind::ToolNotFound,
+                            ToolError::ExecutionFailed { .. } => ToolFailureKind::ExecutionFailed,
+                        },
+                    }),
+                }
+            }
+        }
+
         let blocks: Vec<ContentBlock> = outcomes.into_iter().map(|(b, _)| b).collect();
         messages.push(Message::User { content: blocks });
 
@@ -199,10 +254,6 @@ async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: 
             sys.record_tool_calls(agent.get_name(), calls.len() as u64);
         }
     }
-}
-
-fn no_op_event_handler() -> Arc<dyn Fn(StreamEvent) + Send + Sync> {
-    Arc::new(|_| {})
 }
 
 #[cfg(test)]
