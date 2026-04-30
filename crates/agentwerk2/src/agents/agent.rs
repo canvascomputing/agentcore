@@ -4,13 +4,11 @@
 
 use std::sync::Arc;
 
+use crate::prompts::{PromptBuilder, Section, DEFAULT_BEHAVIOR};
 use crate::providers::Provider;
 
 use super::r#loop::Runnable;
 use super::tickets::TicketSystem;
-
-pub const DEFAULT_BEHAVIOR: &str =
-    "Be concise. Take the user's instruction at face value.";
 
 #[derive(Default, Clone)]
 pub struct Agent {
@@ -99,20 +97,27 @@ impl Agent {
     }
 
     pub(super) fn system_prompt(&self) -> String {
+        let mut b = PromptBuilder::default();
+        if let Some(role) = &self.role {
+            b = b.role(role.clone());
+        }
         let behavior = self
             .behavior
             .clone()
             .unwrap_or_else(|| DEFAULT_BEHAVIOR.to_string());
+        if !behavior.is_empty() {
+            b = b.behavior(behavior);
+        }
+        b.build().system
+    }
 
-        let mut parts = Vec::with_capacity(3);
-        if let Some(r) = &self.role {
-            parts.push(r.clone());
-        }
-        parts.push(behavior);
-        if let Some(c) = &self.context {
-            parts.push(c.clone());
-        }
-        parts.join("\n\n")
+    /// Render the agent's `context` (if set) as a `## Context\n\n…`
+    /// section, ready to be pushed as the first user message in the
+    /// loop. Returns `None` when no context was configured.
+    pub(super) fn context_message(&self) -> Option<String> {
+        self.context
+            .as_ref()
+            .map(|body| Section::context(body.clone()).render())
     }
 
     /// Sugar: build a default `TicketSystem`, add one Todo ticket
@@ -163,5 +168,41 @@ mod tests {
     fn default_get_name_is_empty() {
         let agent = Agent::new();
         assert_eq!(agent.get_name(), "");
+    }
+
+    #[test]
+    fn context_message_returns_none_when_unset() {
+        let agent = Agent::new().role("R");
+        assert!(agent.context_message().is_none());
+    }
+
+    #[test]
+    fn context_message_renders_h2_heading_when_set() {
+        let agent = Agent::new().context("- Working directory: /tmp");
+        assert_eq!(
+            agent.context_message().as_deref(),
+            Some("## Context\n\n- Working directory: /tmp"),
+        );
+    }
+
+    #[test]
+    fn system_prompt_does_not_include_context() {
+        let agent = Agent::new()
+            .role("ROLE")
+            .behavior("BEH")
+            .context("CTX");
+        let prompt = agent.system_prompt();
+        assert!(prompt.contains("ROLE"));
+        assert!(prompt.contains("BEH"));
+        assert!(!prompt.contains("CTX"));
+        assert!(!prompt.contains("## Context"));
+    }
+
+    #[test]
+    fn system_prompt_uses_default_behavior_when_unset() {
+        let agent = Agent::new().role("ROLE");
+        let prompt = agent.system_prompt();
+        assert!(prompt.contains("ROLE"));
+        assert!(prompt.contains(DEFAULT_BEHAVIOR.trim()));
     }
 }

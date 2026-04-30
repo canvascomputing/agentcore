@@ -33,6 +33,14 @@ impl Message {
     }
 }
 
+/// Render this value as a user-role `Message`. Implemented by anything
+/// that can sensibly become a single user turn — `Ticket` (the loop's
+/// task seeding), and future sources like `Comment` or peer-message
+/// notifications.
+pub trait AsUserMessage {
+    fn as_user_message(&self) -> Message;
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ContentBlock {

@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::providers::types::StreamEvent;
-use crate::providers::{ContentBlock, Message, ModelRequest};
+use crate::providers::{AsUserMessage, Message, ModelRequest};
 
 use super::agent::Agent;
 use super::policy::PolicyConform;
@@ -57,41 +57,65 @@ pub(super) async fn run_main_loop(agents: Vec<Agent>, tickets: Arc<Mutex<TicketS
 }
 
 /// Per-agent loop. Picks the next `Todo` whose type the agent handles,
-/// processes it, repeats. When no eligible work is queued, idles on
-/// `IDLE_POLL_INTERVAL` until something arrives, the cancel signal
-/// fires, or a policy hits.
+/// hands it to `process_ticket`, repeats. When no eligible work is
+/// queued, idles on `IDLE_POLL_INTERVAL` until something arrives, the
+/// cancel signal fires, or a policy hits.
 pub(super) async fn handle_tickets(agent: Agent, tickets: Arc<Mutex<TicketSystem>>) {
     loop {
-        let work = {
+        let claim = {
             let mut sys = tickets.lock().unwrap();
             if sys.is_interrupted() || sys.policy_violated() {
                 return;
             }
-            let max_request_tokens = sys.policies().max_request_tokens;
             let next = sys
                 .list_by_status(Status::Todo)
                 .into_iter()
                 .find(|t| agent.handles(&t.r#type))
                 .map(|t| t.key.clone());
-            next.map(|key| {
+            next.inspect(|key| {
                 sys.record_step(agent.get_name());
-                let _ = sys.update_status(&key, Status::InProgress);
-                let prompt = sys
-                    .get(&key)
-                    .map(|t| format!("{}\n\n{}", t.summary, t.description));
-                (key, prompt, max_request_tokens)
+                let _ = sys.update_status(key, Status::InProgress);
             })
         };
 
-        let Some((key, Some(prompt), max_request_tokens)) = work else {
+        let Some(key) = claim else {
             tokio::time::sleep(IDLE_POLL_INTERVAL).await;
             continue;
         };
 
+        process_ticket(&agent, &tickets, &key).await;
+    }
+}
+
+/// One ticket from claimed → settled. Owns the per-ticket message
+/// vector. Today the inner `loop {}` always exits after one iteration;
+/// when tools land, the assistant's `ToolUse` blocks will drive a
+/// second pass.
+async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: &str) {
+    let mut messages: Vec<Message> = Vec::new();
+    if let Some(ctx) = agent.context_message() {
+        messages.push(Message::user(ctx));
+    }
+    let task_msg = {
+        let sys = tickets.lock().unwrap();
+        sys.get(key).map(|t| t.as_user_message())
+    };
+    let Some(task_msg) = task_msg else {
+        return;
+    };
+    messages.push(task_msg);
+
+    let max_request_tokens = tickets.lock().unwrap().policies().max_request_tokens;
+
+    // The `loop {}` shape is structural: when tools land, the assistant's
+    // `ToolUse` blocks will drive a `continue`. Today every branch returns,
+    // so clippy correctly notes it never actually loops yet.
+    #[allow(clippy::never_loop)]
+    loop {
         let request = ModelRequest {
             model: agent.model_str().to_string(),
             system_prompt: agent.system_prompt(),
-            messages: vec![Message::user(prompt)],
+            messages: messages.clone(),
             tools: Vec::new(),
             max_request_tokens,
             tool_choice: None,
@@ -103,29 +127,31 @@ pub(super) async fn handle_tickets(agent: Agent, tickets: Arc<Mutex<TicketSystem
 
         match result {
             Ok(response) => {
+                {
+                    let mut sys = tickets.lock().unwrap();
+                    sys.record_request(agent.get_name(), &response.usage);
+                }
+                // Push the assistant reply verbatim onto the local
+                // conversation. No tool dispatch yet, so the inner
+                // loop terminates here. Status transition stays in the
+                // loop (queue management); writing the model's reply
+                // to the ticket is *not* the loop's job — that moves
+                // to a ticket-update tool the agent will call.
+                messages.push(Message::Assistant {
+                    content: response.content.clone(),
+                });
                 let mut sys = tickets.lock().unwrap();
-                sys.record_request(agent.get_name(), &response.usage);
-                let text = extract_text(&response.content);
-                let _ = sys.add_comment(&key, agent.get_name(), text);
-                let _ = sys.update_status(&key, Status::Done);
+                let _ = sys.update_status(key, Status::Done);
+                return;
             }
             Err(e) => {
                 let mut sys = tickets.lock().unwrap();
-                sys.record_error(agent.get_name(), &key, &e);
-                let _ = sys.update_status(&key, Status::Failed);
+                sys.record_error(agent.get_name(), key, &e);
+                let _ = sys.update_status(key, Status::Failed);
+                return;
             }
         }
     }
-}
-
-fn extract_text(blocks: &[ContentBlock]) -> String {
-    blocks
-        .iter()
-        .filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect()
 }
 
 fn no_op_event_handler() -> Arc<dyn Fn(StreamEvent) + Send + Sync> {
@@ -134,10 +160,10 @@ fn no_op_event_handler() -> Arc<dyn Fn(StreamEvent) + Send + Sync> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::agent::DEFAULT_BEHAVIOR;
     use super::*;
+    use crate::prompts::DEFAULT_BEHAVIOR;
     use crate::providers::types::{ModelResponse, ResponseStatus};
-    use crate::providers::{Provider, ProviderResult, TokenUsage};
+    use crate::providers::{ContentBlock, Provider, ProviderResult, TokenUsage};
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -147,11 +173,13 @@ mod tests {
         usage: TokenUsage,
         captured_prompt: Arc<Mutex<Option<String>>>,
         captured_max_tokens: Arc<Mutex<Option<u32>>>,
+        captured_messages: Arc<Mutex<Option<Vec<Message>>>>,
     }
 
     struct MockHandles {
         prompt: Arc<Mutex<Option<String>>>,
         max_tokens: Arc<Mutex<Option<u32>>>,
+        messages: Arc<Mutex<Option<Vec<Message>>>>,
     }
 
     impl MockProvider {
@@ -162,13 +190,22 @@ mod tests {
         fn with_usage(text: impl Into<String>, usage: TokenUsage) -> (Arc<Self>, MockHandles) {
             let prompt = Arc::new(Mutex::new(None));
             let max_tokens = Arc::new(Mutex::new(None));
+            let messages = Arc::new(Mutex::new(None));
             let provider = Arc::new(Self {
                 text: text.into(),
                 usage,
                 captured_prompt: Arc::clone(&prompt),
                 captured_max_tokens: Arc::clone(&max_tokens),
+                captured_messages: Arc::clone(&messages),
             });
-            (provider, MockHandles { prompt, max_tokens })
+            (
+                provider,
+                MockHandles {
+                    prompt,
+                    max_tokens,
+                    messages,
+                },
+            )
         }
     }
 
@@ -180,6 +217,7 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
             *self.captured_prompt.lock().unwrap() = Some(request.system_prompt);
             *self.captured_max_tokens.lock().unwrap() = request.max_request_tokens;
+            *self.captured_messages.lock().unwrap() = Some(request.messages.clone());
             let text = self.text.clone();
             let usage = self.usage.clone();
             Box::pin(async move {
@@ -210,16 +248,7 @@ mod tests {
 
         assert_eq!(tickets.steps(), 2);
         assert_eq!(tickets.requests(), 2);
-        let done = tickets.list_by_status(Status::Done);
-        assert_eq!(done.len(), 2);
-        for t in done {
-            let comment = t
-                .comments
-                .iter()
-                .find(|c| c.author == "worker")
-                .expect("worker comment");
-            assert_eq!(comment.body, "ok");
-        }
+        assert_eq!(tickets.list_by_status(Status::Done).len(), 2);
     }
 
     #[tokio::test]
@@ -273,7 +302,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn system_prompt_includes_role_behavior_and_context() {
+    async fn system_prompt_includes_role_and_behavior() {
         let (provider, handles) = MockProvider::new("ok");
         let mut tickets = TicketSystem::new();
         tickets.create("task", "", "task", "tester");
@@ -292,9 +321,73 @@ mod tests {
             .expect("prompt captured");
         let role_pos = prompt.find("ROLE_TEXT").expect("role present");
         let behavior_pos = prompt.find("BEHAVIOR_TEXT").expect("behavior present");
-        let context_pos = prompt.find("CONTEXT_TEXT").expect("context present");
         assert!(role_pos < behavior_pos);
-        assert!(behavior_pos < context_pos);
+        assert!(!prompt.contains("CONTEXT_TEXT"));
+        assert!(!prompt.contains("## Context"));
+    }
+
+    #[tokio::test]
+    async fn context_renders_as_first_user_message() {
+        let (provider, handles) = MockProvider::new("ok");
+        let mut tickets = TicketSystem::new();
+        tickets.create("task summary", "task body", "task", "tester");
+
+        let agent = agent_with(provider, "worker").context("CONTEXT_TEXT");
+        let _ = tickets.assign(agent).run_until_empty().await;
+
+        let messages = handles
+            .messages
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("messages captured");
+        assert_eq!(messages.len(), 2);
+        match &messages[0] {
+            Message::User { content } => match content.first() {
+                Some(ContentBlock::Text { text }) => {
+                    assert!(text.starts_with("## Context\n\n"));
+                    assert!(text.contains("CONTEXT_TEXT"));
+                }
+                other => panic!("expected text block, got {other:?}"),
+            },
+            other => panic!("expected User, got {other:?}"),
+        }
+        match &messages[1] {
+            Message::User { content } => match content.first() {
+                Some(ContentBlock::Text { text }) => {
+                    assert_eq!(text, "task summary\n\ntask body");
+                }
+                other => panic!("expected text block, got {other:?}"),
+            },
+            other => panic!("expected User, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn task_user_message_uses_ticket_as_user_message_format() {
+        let (provider, handles) = MockProvider::new("ok");
+        let mut tickets = TicketSystem::new();
+        tickets.create("the summary", "the body", "task", "tester");
+
+        let agent = agent_with(provider, "worker"); // no context
+        let _ = tickets.assign(agent).run_until_empty().await;
+
+        let messages = handles
+            .messages
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("messages captured");
+        assert_eq!(messages.len(), 1);
+        match &messages[0] {
+            Message::User { content } => match content.first() {
+                Some(ContentBlock::Text { text }) => {
+                    assert_eq!(text, "the summary\n\nthe body");
+                }
+                other => panic!("expected text block, got {other:?}"),
+            },
+            other => panic!("expected User, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -341,16 +434,13 @@ mod tests {
         let bob = agent_with(provider, "bob");
         let tickets = tickets.assign_all([alice, bob]).run_until_empty().await;
 
+        // Both agents drained the queue together; per-agent attribution
+        // isn't observable now that the loop no longer writes the model
+        // reply as an agent-authored comment. The aggregate counters
+        // are still meaningful.
         assert_eq!(tickets.list_by_status(Status::Done).len(), 4);
         assert_eq!(tickets.steps(), 4);
         assert_eq!(tickets.requests(), 4);
-        let authors: Vec<&str> = tickets
-            .list_by_status(Status::Done)
-            .iter()
-            .flat_map(|t| t.comments.iter().map(|c| c.author.as_str()))
-            .collect();
-        assert!(authors.contains(&"alice"));
-        assert!(authors.contains(&"bob"));
     }
 
     #[tokio::test]

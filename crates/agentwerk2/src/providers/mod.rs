@@ -19,7 +19,7 @@ pub use mistral::MistralProvider;
 pub use model::Model;
 pub use openai::OpenAiProvider;
 pub use provider::{ModelRequest, Provider, ProviderToolDefinition, ToolChoice};
-pub use types::{ContentBlock, Message, TokenUsage};
+pub use types::{AsUserMessage, ContentBlock, Message, TokenUsage};
 
 pub(crate) fn retry_delay_from_headers(resp: &reqwest::Response) -> Option<std::time::Duration> {
     let value = resp.headers().get("retry-after")?.to_str().ok()?;

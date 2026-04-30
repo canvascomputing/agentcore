@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::providers::{ProviderError, TokenUsage};
+use crate::providers::{AsUserMessage, Message, ProviderError, TokenUsage};
 
 use super::agent::Agent;
 use super::policy::{Policies, PolicyConform};
@@ -77,6 +77,12 @@ pub enum Status {
     InProgress,
     Done,
     Failed,
+}
+
+impl AsUserMessage for Ticket {
+    fn as_user_message(&self) -> Message {
+        Message::user(format!("{}\n\n{}", self.summary, self.description))
+    }
 }
 
 #[derive(Debug)]
@@ -737,6 +743,25 @@ mod tests {
         let _ = task(&mut system, "alpha");
         let _ = task(&mut system, "beta");
         assert!(system.search("gamma").is_empty());
+    }
+
+    #[test]
+    fn ticket_as_user_message_renders_summary_and_description() {
+        let mut system = TicketSystem::default();
+        let key = system
+            .create("do thing", "with detail", "task", "tester")
+            .key
+            .clone();
+        let ticket = system.get(&key).unwrap();
+        match ticket.as_user_message() {
+            Message::User { content } => match content.first() {
+                Some(crate::providers::ContentBlock::Text { text }) => {
+                    assert_eq!(text, "do thing\n\nwith detail");
+                }
+                other => panic!("expected text block, got {other:?}"),
+            },
+            other => panic!("expected User, got {other:?}"),
+        }
     }
 
     #[test]
