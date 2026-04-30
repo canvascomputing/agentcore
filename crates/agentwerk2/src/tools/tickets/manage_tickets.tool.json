@@ -1,0 +1,80 @@
+{
+  "name": "manage_tickets_tool",
+  "summary": [
+    "Read and mutate the ticket queue from one tool: union of `read_tickets_tool` and `write_tickets_tool`.",
+    "Use `get` / `list` / `search` to read, and `create` / `edit` / `comment` / `transition` / `assign` to write."
+  ],
+  "constraints": [
+    "One `action` per call. Eight actions in total — see the `action` parameter.",
+    "Every action that takes a `key` defaults to the agent's current ticket when `key` is omitted.",
+    "`comment` defaults `author` and `create` defaults `reporter` to the agent's name.",
+    "`list` and `search` cap at 50 tickets per call."
+  ],
+  "anti_patterns": [
+    "When the agent only needs reads — register `read_tickets_tool` instead. Smaller surface = fewer mistakes.",
+    "When the agent should never read tickets it does not own — register `write_tickets_tool` to block listing/searching.",
+    "To find code or files in the working directory — use `grep_tool` / `glob_tool`."
+  ],
+  "cautions": [
+    "IMPORTANT: status transitions follow a state machine. Allowed: `Todo↔InProgress`, `InProgress↔InReview`, `InProgress`/`InReview` → `Done`/`Failed`. Other moves return an error.",
+    "IMPORTANT: `Done` and `Failed` are terminal. Use `InReview` if a reviewer should be able to send the ticket back.",
+    "IMPORTANT: transitioning to `Todo` clears the assignee.",
+    "ALWAYS settle your current ticket before the response ends. Returning text without `transition` leaves the ticket `InProgress` and the loop re-picks it."
+  ],
+  "output": [
+    "Reads (`get`): markdown ticket block with key, status, type, reporter, assignee, description, comments.",
+    "Reads (`list` / `search`): bullet lines `- KEY [STATUS] [TYPE] @assignee — summary`. `(no matching tickets)` when empty.",
+    "Writes: plain text confirmation, or an error describing the failed action."
+  ],
+  "read_only": false,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "description": "Read: `get`, `list`, `search`. Write: `create`, `edit`, `comment`, `transition`, `assign`."
+      },
+      "key": {
+        "type": "string",
+        "description": "Ticket key (e.g. `TICKET-3`). Used by `get`, `edit`, `comment`, `transition`, `assign`. Defaults to the agent's current ticket. Ignored by `create`, `list`, `search`."
+      },
+      "status": {
+        "type": "string",
+        "description": "For `list`: filter by status. For `transition`: target status. One of `Todo`, `InProgress`, `InReview`, `Done`, `Failed`."
+      },
+      "assignee": {
+        "type": "string",
+        "description": "For `list`: filter by assignee (excludes unassigned tickets). For `assign`: agent or human name to take ownership; empty string clears it."
+      },
+      "query": {
+        "type": "string",
+        "description": "For `search`: case-insensitive substring matched against summary and description."
+      },
+      "summary": {
+        "type": "string",
+        "description": "For `create` (required) or `edit` (optional): one-line title."
+      },
+      "description": {
+        "type": "string",
+        "description": "For `create` or `edit` (both optional): long-form body."
+      },
+      "type": {
+        "type": "string",
+        "description": "For `create`: ticket type (e.g. `task`, `bug`). Defaults to `task`. Determines which agents can pick it up via Path B."
+      },
+      "reporter": {
+        "type": "string",
+        "description": "For `create`: who filed the ticket. Defaults to the agent's name."
+      },
+      "body": {
+        "type": "string",
+        "description": "For `comment` (required): the comment text."
+      },
+      "author": {
+        "type": "string",
+        "description": "For `comment`: who wrote the comment. Defaults to the agent's name."
+      }
+    },
+    "required": ["action"]
+  }
+}

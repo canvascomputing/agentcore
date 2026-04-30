@@ -9,7 +9,8 @@ use serde_json::Value;
 
 use super::error::{ProviderError, ProviderResult};
 use super::provider::{
-    build_client, ModelRequest, Provider, ToolChoice, ProviderToolDefinition, DEFAULT_REQUEST_TIMEOUT,
+    build_client, ModelRequest, Provider, ProviderToolDefinition, ToolChoice,
+    DEFAULT_REQUEST_TIMEOUT,
 };
 use super::types::{ContentBlock, Message, ModelResponse, ResponseStatus, StreamEvent, TokenUsage};
 

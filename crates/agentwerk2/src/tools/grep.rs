@@ -7,10 +7,10 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
-use crate::providers::ProviderResult as Result;
 use super::tool::{ToolContext, ToolLike, ToolResult};
 use super::tool_file::ToolFile;
 use super::util::glob_match;
+use crate::providers::ProviderResult as Result;
 
 /// Search file contents by substring under the working directory. Read-only.
 /// Returns matching line snippets with file paths and line numbers; capped

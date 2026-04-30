@@ -10,14 +10,17 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::agents::tickets::TicketSystem;
 use crate::providers::types::ContentBlock;
 use crate::providers::{ProviderResult, ProviderToolDefinition};
 
 use super::error::ToolError;
 
-/// Context passed to tool execution. `tool_registry` is an ambient internal
-/// only `ToolSearchTool` reads. External tool authors use `working_dir`,
-/// `interrupt_signal`, and `wait_for_cancel`.
+/// Context passed to tool execution. `tool_registry` and the three
+/// ticket-side fields are ambient internals — only the built-in
+/// `ToolSearchTool` and the ticket tools (`Read`/`Write`/`Manage`) read
+/// them. External tool authors use `working_dir`, `interrupt_signal`,
+/// and `wait_for_cancel`.
 #[derive(Clone)]
 pub struct ToolContext {
     /// Working directory the tool runs in. Tools that touch the filesystem
@@ -25,6 +28,9 @@ pub struct ToolContext {
     pub working_dir: PathBuf,
     pub interrupt_signal: Arc<AtomicBool>,
     pub(crate) tool_registry: Option<Arc<ToolRegistry>>,
+    pub(crate) tickets: Option<Arc<Mutex<TicketSystem>>>,
+    pub(crate) current_ticket: Option<String>,
+    pub(crate) agent_name: Option<String>,
 }
 
 impl ToolContext {
@@ -37,6 +43,9 @@ impl ToolContext {
             working_dir,
             interrupt_signal: Arc::new(AtomicBool::new(false)),
             tool_registry: None,
+            tickets: None,
+            current_ticket: None,
+            agent_name: None,
         }
     }
 
@@ -50,6 +59,33 @@ impl ToolContext {
     pub(crate) fn registry(mut self, registry: Arc<ToolRegistry>) -> Self {
         self.tool_registry = Some(registry);
         self
+    }
+
+    pub(crate) fn tickets(mut self, tickets: Arc<Mutex<TicketSystem>>) -> Self {
+        self.tickets = Some(tickets);
+        self
+    }
+
+    pub(crate) fn current_ticket(mut self, key: String) -> Self {
+        self.current_ticket = Some(key);
+        self
+    }
+
+    pub(crate) fn agent_name(mut self, name: String) -> Self {
+        self.agent_name = Some(name);
+        self
+    }
+
+    pub(crate) fn tickets_handle(&self) -> Option<&Arc<Mutex<TicketSystem>>> {
+        self.tickets.as_ref()
+    }
+
+    pub(crate) fn current_ticket_key(&self) -> Option<&str> {
+        self.current_ticket.as_deref()
+    }
+
+    pub(crate) fn agent_name_str(&self) -> Option<&str> {
+        self.agent_name.as_deref()
     }
 
     /// Future that resolves once the current run is cancelled. Pair with
@@ -324,7 +360,10 @@ impl Clone for ToolRegistry {
 }
 
 type ToolHandler = Box<
-    dyn Fn(Value, &ToolContext) -> Pin<Box<dyn Future<Output = ProviderResult<ToolResult>> + Send + '_>>
+    dyn Fn(
+            Value,
+            &ToolContext,
+        ) -> Pin<Box<dyn Future<Output = ProviderResult<ToolResult>> + Send + '_>>
         + Send
         + Sync,
 >;

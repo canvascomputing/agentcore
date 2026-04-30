@@ -1,0 +1,53 @@
+{
+  "name": "read_tickets_tool",
+  "summary": [
+    "Read tickets from the queue: look up by key, list by status or assignee, or search summaries and descriptions.",
+    "Returns a markdown ticket block (`get`) or a bulleted summary list (`list`, `search`)."
+  ],
+  "constraints": [
+    "One `action` per call: `get`, `list`, or `search`.",
+    "`get` defaults `key` to the agent's current ticket — omit `key` to read your own work.",
+    "`list` and `search` cap at 50 tickets per call; tighten filters rather than re-running."
+  ],
+  "anti_patterns": [
+    "To create, edit, comment on, transition, or assign tickets — use `write_tickets_tool`.",
+    "When the agent needs read AND write access in the same flow — use `manage_tickets_tool` instead of registering both.",
+    "To find code or files in the working directory — use `grep_tool` / `glob_tool`."
+  ],
+  "cautions": [
+    "IMPORTANT: tickets the agent has not yet picked up have no `assignee` — `list` with `assignee` filter excludes them.",
+    "IMPORTANT: `search` matches summary and description only — comments and attachments are not searched."
+  ],
+  "output": [
+    "`get`: a markdown block with key, status, type, reporter, assignee, description, and comments.",
+    "`list` / `search`: bullet lines `- KEY [STATUS] [TYPE] @assignee — summary` (one per ticket).",
+    "`(no matching tickets)` when nothing matches."
+  ],
+  "read_only": true,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "description": "Read mode: `get` (one ticket), `list` (filter by status / assignee), `search` (free-text)."
+      },
+      "key": {
+        "type": "string",
+        "description": "Ticket key for `get` (e.g. `TICKET-3`). Defaults to the agent's current ticket. Ignored by `list` / `search`."
+      },
+      "status": {
+        "type": "string",
+        "description": "Filter for `list`: one of `Todo`, `InProgress`, `InReview`, `Done`, `Failed`. Combine with `assignee` to narrow further."
+      },
+      "assignee": {
+        "type": "string",
+        "description": "Filter for `list`: only tickets assigned to this name. Tickets with no assignee are never returned by this filter."
+      },
+      "query": {
+        "type": "string",
+        "description": "Free-text query for `search`. Case-insensitive substring match against summary and description."
+      }
+    },
+    "required": ["action"]
+  }
+}

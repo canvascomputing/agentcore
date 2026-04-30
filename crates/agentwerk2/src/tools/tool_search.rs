@@ -6,9 +6,9 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
-use crate::providers::ProviderResult as Result;
 use super::tool::{ToolContext, ToolLike, ToolResult};
 use super::tool_file::ToolFile;
+use crate::providers::ProviderResult as Result;
 
 /// Search the tool registry by query string. Pair with tools that set
 /// [`Tool::should_defer`](crate::Tool::should_defer) to `true`: the

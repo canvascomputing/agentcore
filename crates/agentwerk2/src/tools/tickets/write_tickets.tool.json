@@ -1,0 +1,74 @@
+{
+  "name": "write_tickets_tool",
+  "summary": [
+    "Mutate the ticket queue: create new tickets, edit fields, add comments, transition status, or change assignee.",
+    "Use `transition` to settle the agent's current ticket — moving it to `Done`, `Failed`, or `InReview` is the standard end-of-work move."
+  ],
+  "constraints": [
+    "One `action` per call: `create`, `edit`, `comment`, `transition`, or `assign`.",
+    "Every action except `create` defaults `key` to the agent's current ticket — omit `key` to act on your own work.",
+    "`comment` defaults `author` and `create` defaults `reporter` to the agent's name."
+  ],
+  "anti_patterns": [
+    "To look up, list, or search tickets — use `read_tickets_tool`.",
+    "When the agent needs read AND write in the same flow — use `manage_tickets_tool` instead of registering both.",
+    "To delegate work to another agent — use `assign` with that agent's name; the loop's Path A picks it up next iteration."
+  ],
+  "cautions": [
+    "IMPORTANT: status transitions follow a state machine. Allowed: `Todo↔InProgress`, `InProgress↔InReview`, `InProgress`/`InReview` → `Done`/`Failed`. Anything else returns an error — handle the rejection rather than retrying.",
+    "IMPORTANT: transitioning to `Todo` clears the assignee. To return to the queue without losing the assignment, prefer `InReview`.",
+    "IMPORTANT: `Done` and `Failed` are terminal — no transitions out. Use `InReview` if you want a reviewer to send the ticket back.",
+    "ALWAYS settle your current ticket before the response ends. Returning text without `transition` leaves the ticket `InProgress` and the loop will re-pick it next iteration."
+  ],
+  "output": [
+    "Plain text confirmation: `Created ticket KEY`, `Edited ticket KEY`, `Commented on KEY`, `Transitioned KEY to STATUS`, or `Assigned KEY to NAME`.",
+    "On rejection: an error describing the failed action (missing field, unknown ticket, illegal transition)."
+  ],
+  "read_only": false,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "description": "Write mode: `create`, `edit`, `comment`, `transition`, or `assign`."
+      },
+      "key": {
+        "type": "string",
+        "description": "Ticket key (e.g. `TICKET-3`). Required for `edit`, `comment`, `transition`, `assign`; ignored by `create`. Defaults to the agent's current ticket."
+      },
+      "summary": {
+        "type": "string",
+        "description": "For `create` (required) or `edit` (optional): the one-line title. Empty string is rejected."
+      },
+      "description": {
+        "type": "string",
+        "description": "For `create` (optional, defaults empty) or `edit` (optional): the long-form body."
+      },
+      "type": {
+        "type": "string",
+        "description": "For `create`: ticket type (e.g. `task`, `bug`, `research`). Defaults to `task`. Determines which agents can pick it up via Path B."
+      },
+      "reporter": {
+        "type": "string",
+        "description": "For `create`: who filed the ticket. Defaults to the agent's name. Set this when creating tickets on behalf of another agent or a human."
+      },
+      "body": {
+        "type": "string",
+        "description": "For `comment` (required): the comment text."
+      },
+      "author": {
+        "type": "string",
+        "description": "For `comment`: who wrote the comment. Defaults to the agent's name."
+      },
+      "status": {
+        "type": "string",
+        "description": "For `transition`: target status. One of `Todo`, `InProgress`, `InReview`, `Done`, `Failed`. Must be a legal transition from the current status."
+      },
+      "assignee": {
+        "type": "string",
+        "description": "For `assign`: agent or human name to take ownership. Empty string clears the assignee. Setting this to another agent's name is how you delegate work — that agent's loop picks it up next iteration."
+      }
+    },
+    "required": ["action"]
+  }
+}

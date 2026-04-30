@@ -7,10 +7,10 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::providers::ProviderResult as Result;
 use super::tool::{ToolContext, ToolLike, ToolResult};
 use super::tool_file::ToolFile;
 use super::util::{glob_match, run_shell_command};
+use crate::providers::ProviderResult as Result;
 
 fn tool_file() -> &'static ToolFile {
     static FILE: OnceLock<ToolFile> = OnceLock::new();
@@ -34,8 +34,8 @@ fn description_base() -> &'static str {
 /// Pattern-restricted (only `git ...` commands):
 ///
 /// ```
-/// use agentwerk::tools::BashTool;
-/// use agentwerk::Agent;
+/// use agentwerk2::tools::BashTool;
+/// use agentwerk2::agents::agent::Agent;
 ///
 /// Agent::new().tool(BashTool::new("git", "git *"));
 /// ```
@@ -43,8 +43,8 @@ fn description_base() -> &'static str {
 /// Unrestricted:
 ///
 /// ```
-/// use agentwerk::tools::BashTool;
-/// use agentwerk::Agent;
+/// use agentwerk2::tools::BashTool;
+/// use agentwerk2::agents::agent::Agent;
 ///
 /// Agent::new().tool(BashTool::unrestricted());
 /// ```

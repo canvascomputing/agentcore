@@ -3,7 +3,7 @@
 //! `TicketSystem::assign`.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::prompts::{PromptBuilder, Section, DEFAULT_BEHAVIOR};
 use crate::providers::{Provider, ProviderToolDefinition};
@@ -23,6 +23,7 @@ pub struct Agent {
     ticket_types: Vec<String>,
     tools: ToolRegistry,
     working_dir: Option<PathBuf>,
+    current_ticket: Arc<Mutex<Option<String>>>,
 }
 
 impl Agent {
@@ -85,18 +86,18 @@ impl Agent {
         &self.name
     }
 
+    /// The key of the ticket currently being processed, if any.
+    pub fn current_ticket(&self) -> Option<String> {
+        self.current_ticket.lock().unwrap().clone()
+    }
+
+    pub(super) fn set_current_ticket(&self, key: Option<String>) {
+        *self.current_ticket.lock().unwrap() = key;
+    }
+
     /// Empty allow-list = handle any type.
     pub fn handles(&self, ticket_type: &str) -> bool {
-        self.ticket_types.is_empty()
-            || self.ticket_types.iter().any(|t| t == ticket_type)
-    }
-
-    pub(super) fn handles_any_type(&self) -> bool {
-        self.ticket_types.is_empty()
-    }
-
-    pub(super) fn allowed_ticket_types(&self) -> &[String] {
-        &self.ticket_types
+        self.ticket_types.is_empty() || self.ticket_types.iter().any(|t| t == ticket_type)
     }
 
     pub(super) fn tool_definitions(&self) -> Vec<ProviderToolDefinition> {
@@ -108,9 +109,9 @@ impl Agent {
     }
 
     pub(super) fn working_dir_or_default(&self) -> PathBuf {
-        self.working_dir.clone().unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        })
+        self.working_dir
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
     }
 
     pub(super) fn provider_handle(&self) -> Arc<dyn Provider> {
@@ -218,10 +219,7 @@ mod tests {
 
     #[test]
     fn system_prompt_does_not_include_context() {
-        let agent = Agent::new()
-            .role("ROLE")
-            .behavior("BEH")
-            .context("CTX");
+        let agent = Agent::new().role("ROLE").behavior("BEH").context("CTX");
         let prompt = agent.system_prompt();
         assert!(prompt.contains("ROLE"));
         assert!(prompt.contains("BEH"));

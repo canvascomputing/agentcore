@@ -3,7 +3,7 @@
 //! until the queue is drained, the cancel signal fires, or a policy is
 //! violated.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,6 +34,7 @@ struct LoopMetrics {
     steps: u64,
     requests: u64,
     tool_calls: u64,
+    errors: u64,
     input_tokens: u64,
     output_tokens: u64,
 }
@@ -76,6 +77,7 @@ pub struct Attachment {
 pub enum Status {
     Todo,
     InProgress,
+    InReview,
     Done,
     Failed,
 }
@@ -204,11 +206,7 @@ impl TicketSystem {
         Ok(())
     }
 
-    pub fn assign_to(
-        &mut self,
-        key: &str,
-        assignee: impl Into<String>,
-    ) -> Result<(), TicketError> {
+    pub fn assign_to(&mut self, key: &str, assignee: impl Into<String>) -> Result<(), TicketError> {
         let ticket = self
             .tickets
             .get_mut(key)
@@ -216,6 +214,38 @@ impl TicketSystem {
                 key: key.to_string(),
             })?;
         ticket.assignee = Some(assignee.into());
+        Ok(())
+    }
+
+    pub fn clear_assignee(&mut self, key: &str) -> Result<(), TicketError> {
+        let ticket = self
+            .tickets
+            .get_mut(key)
+            .ok_or_else(|| TicketError::TicketMissing {
+                key: key.to_string(),
+            })?;
+        ticket.assignee = None;
+        Ok(())
+    }
+
+    pub fn edit_ticket(
+        &mut self,
+        key: &str,
+        summary: Option<String>,
+        description: Option<String>,
+    ) -> Result<(), TicketError> {
+        let ticket = self
+            .tickets
+            .get_mut(key)
+            .ok_or_else(|| TicketError::TicketMissing {
+                key: key.to_string(),
+            })?;
+        if let Some(s) = summary {
+            ticket.summary = s;
+        }
+        if let Some(d) = description {
+            ticket.description = d;
+        }
         Ok(())
     }
 
@@ -273,11 +303,7 @@ impl TicketSystem {
         Ok(())
     }
 
-    pub fn add_attachment(
-        &mut self,
-        key: &str,
-        attachment: Attachment,
-    ) -> Result<(), TicketError> {
+    pub fn add_attachment(&mut self, key: &str, attachment: Attachment) -> Result<(), TicketError> {
         let ticket = self
             .tickets
             .get_mut(key)
@@ -309,6 +335,10 @@ impl TicketSystem {
         self.metrics.tool_calls
     }
 
+    pub fn errors(&self) -> u64 {
+        self.metrics.errors
+    }
+
     pub fn input_tokens(&self) -> u64 {
         self.metrics.input_tokens
     }
@@ -337,8 +367,8 @@ impl TicketSystem {
         Arc::clone(&self.interrupt_signal)
     }
 
-    pub(super) fn record_error(&mut self, agent: &str, ticket_key: &str, err: &ProviderError) {
-        let _ = self.add_comment(ticket_key, agent, format!("error: {err}"));
+    pub(super) fn record_error(&mut self, _agent: &str, _ticket_key: &str, _err: &ProviderError) {
+        self.metrics.errors += 1;
     }
 
     // ---- loop helpers ----
@@ -388,14 +418,6 @@ impl Runnable for TicketSystem {
     async fn run_until_empty(mut self) -> Self {
         let agents = std::mem::take(&mut self.agents);
 
-        // What ticket types this set of agents can handle. If any agent
-        // has an empty allow-list, they handle every type.
-        let any_handles_all = agents.iter().any(|a| a.handles_any_type());
-        let handled: HashSet<String> = agents
-            .iter()
-            .flat_map(|a| a.allowed_ticket_types().iter().cloned())
-            .collect();
-
         let shared = Arc::new(Mutex::new(self));
         let signal = shared.lock().unwrap().interrupt_signal.clone();
         let watcher_shared = Arc::clone(&shared);
@@ -409,14 +431,12 @@ impl Runnable for TicketSystem {
                     watcher_signal.store(true, Ordering::Relaxed);
                     return;
                 }
-                let in_progress = sys.list_by_status(Status::InProgress).len();
-                let any_workable = sys
-                    .list_by_status(Status::Todo)
-                    .into_iter()
-                    .any(|t| any_handles_all || handled.contains(&t.r#type));
-                // Stop when no work is in flight AND nothing pending is
-                // workable by the assigned agents.
-                if in_progress == 0 && !any_workable {
+                // Strict semantic: every Todo or InProgress ticket is
+                // pending. Path A means an unsettled Todo with an
+                // assignee will be re-picked next iteration.
+                let pending = sys.list_by_status(Status::Todo).len()
+                    + sys.list_by_status(Status::InProgress).len();
+                if pending == 0 {
                     watcher_signal.store(true, Ordering::Relaxed);
                     return;
                 }
@@ -439,6 +459,10 @@ fn is_allowed_transition(from: Status, to: Status) -> bool {
             | (Status::InProgress, Status::Todo)
             | (Status::InProgress, Status::Done)
             | (Status::InProgress, Status::Failed)
+            | (Status::InProgress, Status::InReview)
+            | (Status::InReview, Status::InProgress)
+            | (Status::InReview, Status::Done)
+            | (Status::InReview, Status::Failed)
     )
 }
 
@@ -611,10 +635,7 @@ mod tests {
         let key = task(&mut system, "release me");
         system.assign_to(&key, "alice").unwrap();
         system.update_status(&key, Status::InProgress).unwrap();
-        assert_eq!(
-            system.get(&key).unwrap().assignee.as_deref(),
-            Some("alice")
-        );
+        assert_eq!(system.get(&key).unwrap().assignee.as_deref(), Some("alice"));
         system.update_status(&key, Status::Todo).unwrap();
         assert_eq!(system.get(&key).unwrap().assignee, None);
     }
@@ -634,18 +655,14 @@ mod tests {
     #[test]
     fn assign_to_returns_missing_for_unknown_key() {
         let mut system = TicketSystem::default();
-        let err = system
-            .assign_to("TICKET-999", "alice")
-            .unwrap_err();
+        let err = system.assign_to("TICKET-999", "alice").unwrap_err();
         assert!(matches!(err, TicketError::TicketMissing { .. }));
     }
 
     #[test]
     fn add_comment_returns_missing_for_unknown_key() {
         let mut system = TicketSystem::default();
-        let err = system
-            .add_comment("TICKET-999", "alice", "hi")
-            .unwrap_err();
+        let err = system.add_comment("TICKET-999", "alice", "hi").unwrap_err();
         assert!(matches!(err, TicketError::TicketMissing { .. }));
     }
 
@@ -662,12 +679,8 @@ mod tests {
     fn add_comment_appends_to_ticket() {
         let mut system = TicketSystem::default();
         let key = task(&mut system, "discuss");
-        system
-            .add_comment(&key, "alice", "looks good")
-            .unwrap();
-        system
-            .add_comment(&key, "bob", "agreed")
-            .unwrap();
+        system.add_comment(&key, "alice", "looks good").unwrap();
+        system.add_comment(&key, "bob", "agreed").unwrap();
         let comments = &system.get(&key).unwrap().comments;
         assert_eq!(comments.len(), 2);
         assert_eq!(comments[0].author, "alice");
@@ -858,21 +871,46 @@ mod tests {
     }
 
     #[test]
-    fn record_error_uses_agent_name_as_comment_author() {
+    fn record_error_increments_errors_counter_without_writing_comment() {
         let mut system = TicketSystem::default();
         let key = task(&mut system, "broken");
         let err = ProviderError::ConnectionFailed {
             message: "boom".into(),
         };
+        assert_eq!(system.errors(), 0);
         system.record_error("alice", &key, &err);
-        let comment = system
-            .get(&key)
-            .unwrap()
-            .comments
-            .iter()
-            .find(|c| c.author == "alice")
-            .expect("alice comment");
-        assert!(comment.body.starts_with("error:"));
+        assert_eq!(system.errors(), 1);
+        // No comment was written.
+        assert!(system.get(&key).unwrap().comments.is_empty());
+    }
+
+    #[test]
+    fn update_status_transitions_in_progress_to_in_review() {
+        let mut system = TicketSystem::default();
+        let key = task(&mut system, "review me");
+        system.update_status(&key, Status::InProgress).unwrap();
+        system.update_status(&key, Status::InReview).unwrap();
+        assert_eq!(system.get(&key).unwrap().status, Status::InReview);
+    }
+
+    #[test]
+    fn update_status_transitions_in_review_to_done() {
+        let mut system = TicketSystem::default();
+        let key = task(&mut system, "approve me");
+        system.update_status(&key, Status::InProgress).unwrap();
+        system.update_status(&key, Status::InReview).unwrap();
+        system.update_status(&key, Status::Done).unwrap();
+        assert_eq!(system.get(&key).unwrap().status, Status::Done);
+    }
+
+    #[test]
+    fn update_status_transitions_in_review_back_to_in_progress() {
+        let mut system = TicketSystem::default();
+        let key = task(&mut system, "revise me");
+        system.update_status(&key, Status::InProgress).unwrap();
+        system.update_status(&key, Status::InReview).unwrap();
+        system.update_status(&key, Status::InProgress).unwrap();
+        assert_eq!(system.get(&key).unwrap().status, Status::InProgress);
     }
 
     #[test]

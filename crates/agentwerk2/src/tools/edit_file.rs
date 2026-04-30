@@ -6,9 +6,9 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
-use crate::providers::ProviderResult as Result;
 use super::tool::{ToolContext, ToolLike, ToolResult};
 use super::tool_file::ToolFile;
+use crate::providers::ProviderResult as Result;
 
 /// In-place string replacement in an existing file. The model supplies the
 /// old and new strings; the tool fails if the old string is absent or

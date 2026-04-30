@@ -6,9 +6,9 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
-use crate::providers::ProviderResult as Result;
 use super::tool::{ToolContext, ToolLike, ToolResult};
 use super::tool_file::ToolFile;
+use crate::providers::ProviderResult as Result;
 
 /// Create or overwrite a file. Destructive: existing content is replaced.
 /// Not read-only, so the loop runs it serially.
