@@ -1,15 +1,35 @@
-//! In-process FIFO queue of work tickets.
+//! Ticket queue, run policies, and per-run metrics. Doubles as the
+//! orchestrator: assigning an `Agent` runs its loop against this system
+//! until the queue is drained, the cancel signal fires, or a policy is
+//! violated.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::providers::{ProviderError, TokenUsage};
 
 pub struct TicketSystem {
     tickets: HashMap<String, Ticket>,
     next_id: u32,
     #[allow(dead_code)]
     directory: PathBuf,
+    metrics: LoopMetrics,
+    pub max_steps: Option<u64>,
+    pub max_input_tokens: Option<u64>,
+    pub max_output_tokens: Option<u64>,
+    interrupt_signal: Arc<AtomicBool>,
+}
+
+#[derive(Default)]
+struct LoopMetrics {
+    steps: u64,
+    requests: u64,
+    input_tokens: u64,
+    output_tokens: u64,
 }
 
 #[derive(Debug)]
@@ -65,11 +85,44 @@ impl Default for TicketSystem {
             tickets: HashMap::new(),
             next_id: 1,
             directory: PathBuf::from("./tickets"),
+            metrics: LoopMetrics::default(),
+            max_steps: None,
+            max_input_tokens: None,
+            max_output_tokens: None,
+            interrupt_signal: Arc::new(AtomicBool::new(false)),
         }
     }
 }
 
 impl TicketSystem {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    // ---- policy builders ----
+
+    pub fn max_steps(mut self, n: u64) -> Self {
+        self.max_steps = Some(n);
+        self
+    }
+
+    pub fn max_input_tokens(mut self, n: u64) -> Self {
+        self.max_input_tokens = Some(n);
+        self
+    }
+
+    pub fn max_output_tokens(mut self, n: u64) -> Self {
+        self.max_output_tokens = Some(n);
+        self
+    }
+
+    pub fn interrupt_signal(mut self, signal: Arc<AtomicBool>) -> Self {
+        self.interrupt_signal = signal;
+        self
+    }
+
+    // ---- queue ops ----
+
     pub fn create(
         &mut self,
         summary: String,
@@ -103,7 +156,9 @@ impl TicketSystem {
         let ticket = self
             .tickets
             .get_mut(key)
-            .ok_or_else(|| TicketError::TicketMissing { key: key.to_string() })?;
+            .ok_or_else(|| TicketError::TicketMissing {
+                key: key.to_string(),
+            })?;
         if !is_allowed_transition(ticket.status, status) {
             return Err(TicketError::TransitionRejected {
                 from: ticket.status,
@@ -117,11 +172,13 @@ impl TicketSystem {
         Ok(())
     }
 
-    pub fn assign(&mut self, key: &str, assignee: String) -> Result<(), TicketError> {
+    pub fn assign_to(&mut self, key: &str, assignee: String) -> Result<(), TicketError> {
         let ticket = self
             .tickets
             .get_mut(key)
-            .ok_or_else(|| TicketError::TicketMissing { key: key.to_string() })?;
+            .ok_or_else(|| TicketError::TicketMissing {
+                key: key.to_string(),
+            })?;
         ticket.assignee = Some(assignee);
         Ok(())
     }
@@ -169,7 +226,9 @@ impl TicketSystem {
         let ticket = self
             .tickets
             .get_mut(key)
-            .ok_or_else(|| TicketError::TicketMissing { key: key.to_string() })?;
+            .ok_or_else(|| TicketError::TicketMissing {
+                key: key.to_string(),
+            })?;
         ticket.comments.push(Comment {
             author,
             body,
@@ -186,7 +245,9 @@ impl TicketSystem {
         let ticket = self
             .tickets
             .get_mut(key)
-            .ok_or_else(|| TicketError::TicketMissing { key: key.to_string() })?;
+            .ok_or_else(|| TicketError::TicketMissing {
+                key: key.to_string(),
+            })?;
         ticket.attachments.push(attachment);
         Ok(())
     }
@@ -196,6 +257,65 @@ impl TicketSystem {
             .values()
             .filter(|t| t.status == Status::Todo)
             .count()
+    }
+
+    // ---- metric reads ----
+
+    pub fn steps(&self) -> u64 {
+        self.metrics.steps
+    }
+
+    pub fn requests(&self) -> u64 {
+        self.metrics.requests
+    }
+
+    pub fn input_tokens(&self) -> u64 {
+        self.metrics.input_tokens
+    }
+
+    pub fn output_tokens(&self) -> u64 {
+        self.metrics.output_tokens
+    }
+
+    // ---- metric writes (called by the loop) ----
+
+    pub(super) fn record_step(&mut self, _agent: &str) {
+        self.metrics.steps += 1;
+    }
+
+    pub(super) fn record_request(&mut self, _agent: &str, usage: &TokenUsage) {
+        self.metrics.requests += 1;
+        self.metrics.input_tokens += usage.input_tokens;
+        self.metrics.output_tokens += usage.output_tokens;
+    }
+
+    pub(super) fn record_error(&mut self, agent: &str, ticket_key: &str, err: &ProviderError) {
+        let _ = self.add_comment(ticket_key, agent.into(), format!("error: {err}"));
+    }
+
+    // ---- loop helpers ----
+
+    pub(super) fn is_interrupted(&self) -> bool {
+        self.interrupt_signal.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn policy_violated(&self) -> bool {
+        if let Some(limit) = self.max_steps {
+            if self.metrics.steps >= limit {
+                return true;
+            }
+        }
+        if let Some(limit) = self.max_input_tokens {
+            if self.metrics.input_tokens >= limit {
+                return true;
+            }
+        }
+        if let Some(limit) = self.max_output_tokens {
+            if self.metrics.output_tokens >= limit {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -384,7 +504,7 @@ mod tests {
     fn update_status_clears_assignee_when_returning_to_todo() {
         let mut system = TicketSystem::default();
         let key = task(&mut system, "release me");
-        system.assign(&key, "alice".to_string()).unwrap();
+        system.assign_to(&key, "alice".to_string()).unwrap();
         system.update_status(&key, Status::InProgress).unwrap();
         assert_eq!(
             system.get(&key).unwrap().assignee.as_deref(),
@@ -407,10 +527,10 @@ mod tests {
     }
 
     #[test]
-    fn assign_returns_missing_for_unknown_key() {
+    fn assign_to_returns_missing_for_unknown_key() {
         let mut system = TicketSystem::default();
         let err = system
-            .assign("TICKET-999", "alice".to_string())
+            .assign_to("TICKET-999", "alice".to_string())
             .unwrap_err();
         assert!(matches!(err, TicketError::TicketMissing { .. }));
     }
@@ -492,9 +612,9 @@ mod tests {
         let mine_a = task(&mut system, "mine a");
         let theirs = task(&mut system, "theirs");
         let mine_b = task(&mut system, "mine b");
-        system.assign(&mine_a, "alice".to_string()).unwrap();
-        system.assign(&theirs, "bob".to_string()).unwrap();
-        system.assign(&mine_b, "alice".to_string()).unwrap();
+        system.assign_to(&mine_a, "alice".to_string()).unwrap();
+        system.assign_to(&theirs, "bob".to_string()).unwrap();
+        system.assign_to(&mine_b, "alice".to_string()).unwrap();
         let alice = system.list_by_assignee("alice");
         let summaries: Vec<&str> = alice.iter().map(|t| t.summary.as_str()).collect();
         assert_eq!(summaries, vec!["mine a", "mine b"]);
@@ -536,5 +656,113 @@ mod tests {
         let _ = task(&mut system, "alpha");
         let _ = task(&mut system, "beta");
         assert!(system.search("gamma").is_empty());
+    }
+
+    #[test]
+    fn new_starts_with_no_policy_limits() {
+        let system = TicketSystem::new();
+        assert_eq!(system.max_steps, None);
+        assert_eq!(system.max_input_tokens, None);
+        assert_eq!(system.max_output_tokens, None);
+    }
+
+    #[test]
+    fn policy_builders_set_limits() {
+        let system = TicketSystem::new()
+            .max_steps(10)
+            .max_input_tokens(1000)
+            .max_output_tokens(500);
+        assert_eq!(system.max_steps, Some(10));
+        assert_eq!(system.max_input_tokens, Some(1000));
+        assert_eq!(system.max_output_tokens, Some(500));
+    }
+
+    #[test]
+    fn record_step_increments_counter() {
+        let mut system = TicketSystem::default();
+        system.record_step("alice");
+        system.record_step("bob");
+        assert_eq!(system.steps(), 2);
+    }
+
+    #[test]
+    fn record_request_splits_token_usage_into_individual_counters() {
+        let mut system = TicketSystem::default();
+        let usage = TokenUsage {
+            input_tokens: 10,
+            output_tokens: 5,
+            ..TokenUsage::default()
+        };
+        system.record_request("alice", &usage);
+        assert_eq!(system.requests(), 1);
+        assert_eq!(system.input_tokens(), 10);
+        assert_eq!(system.output_tokens(), 5);
+    }
+
+    #[test]
+    fn record_error_uses_agent_name_as_comment_author() {
+        let mut system = TicketSystem::default();
+        let key = task(&mut system, "broken");
+        let err = ProviderError::ConnectionFailed {
+            message: "boom".into(),
+        };
+        system.record_error("alice", &key, &err);
+        let comment = system
+            .get(&key)
+            .unwrap()
+            .comments
+            .iter()
+            .find(|c| c.author == "alice")
+            .expect("alice comment");
+        assert!(comment.body.starts_with("error:"));
+    }
+
+    #[test]
+    fn policy_violated_is_false_when_no_limits_set() {
+        let mut system = TicketSystem::default();
+        system.record_step("alice");
+        assert!(!system.policy_violated());
+    }
+
+    #[test]
+    fn policy_violated_when_max_steps_reached() {
+        let mut system = TicketSystem::new().max_steps(2);
+        system.record_step("alice");
+        assert!(!system.policy_violated());
+        system.record_step("alice");
+        assert!(system.policy_violated());
+    }
+
+    #[test]
+    fn policy_violated_when_max_input_tokens_reached() {
+        let mut system = TicketSystem::new().max_input_tokens(100);
+        let usage = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 0,
+            ..TokenUsage::default()
+        };
+        system.record_request("alice", &usage);
+        assert!(system.policy_violated());
+    }
+
+    #[test]
+    fn policy_violated_when_max_output_tokens_reached() {
+        let mut system = TicketSystem::new().max_output_tokens(100);
+        let usage = TokenUsage {
+            input_tokens: 0,
+            output_tokens: 150,
+            ..TokenUsage::default()
+        };
+        system.record_request("alice", &usage);
+        assert!(system.policy_violated());
+    }
+
+    #[test]
+    fn is_interrupted_reflects_interrupt_signal() {
+        let signal = Arc::new(AtomicBool::new(false));
+        let system = TicketSystem::new().interrupt_signal(Arc::clone(&signal));
+        assert!(!system.is_interrupted());
+        signal.store(true, Ordering::Relaxed);
+        assert!(system.is_interrupted());
     }
 }
