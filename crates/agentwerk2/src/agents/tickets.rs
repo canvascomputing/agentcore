@@ -67,11 +67,17 @@ pub struct Comment {
     pub created_at: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Attachment {
     pub filename: String,
-    pub path: PathBuf,
-    pub schema: String,
+    /// Inline JSON payload submitted by the agent. The framework
+    /// validates this against `schema` (when present) before the
+    /// attachment is added to the ticket. Persistence to disk is a
+    /// future concern.
+    pub content: serde_json::Value,
+    /// The schema the content was validated against, if any.
+    /// `None` means the content was stored without validation.
+    pub schema: Option<crate::schemas::Schema>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -226,6 +232,25 @@ impl TicketSystem {
                 key: key.to_string(),
             })?;
         ticket.assignee = None;
+        Ok(())
+    }
+
+    /// Bypass the state-machine and slam a ticket into `status`.
+    /// Reserved for the loop's recovery paths (e.g. `MaxSchemaRetries`
+    /// trip → Failed) so a stuck ticket doesn't get re-picked
+    /// indefinitely via Path A.
+    pub(super) fn force_status(
+        &mut self,
+        key: &str,
+        status: Status,
+    ) -> Result<(), TicketError> {
+        let ticket = self
+            .tickets
+            .get_mut(key)
+            .ok_or_else(|| TicketError::TicketMissing {
+                key: key.to_string(),
+            })?;
+        ticket.status = status;
         Ok(())
     }
 
@@ -529,8 +554,8 @@ mod tests {
     fn attachment(name: &str) -> Attachment {
         Attachment {
             filename: name.to_string(),
-            path: PathBuf::from(format!("/tmp/{name}")),
-            schema: "file".to_string(),
+            content: serde_json::json!({"name": name}),
+            schema: None,
         }
     }
 
@@ -718,6 +743,27 @@ mod tests {
         assert_eq!(attachments.len(), 2);
         assert_eq!(attachments[0].filename, "a.txt");
         assert_eq!(attachments[1].filename, "b.txt");
+        // Both were stored without a schema by the helper.
+        assert!(attachments[0].schema.is_none());
+    }
+
+    #[test]
+    fn attachment_carries_optional_schema() {
+        use crate::schemas::Schema;
+        let mut system = TicketSystem::default();
+        let key = task(&mut system, "schema-tagged");
+        let schema =
+            Schema::parse(serde_json::json!({"type": "object"})).unwrap();
+        let att = Attachment {
+            filename: "result.json".into(),
+            content: serde_json::json!({"ok": true}),
+            schema: Some(schema),
+        };
+        system.add_attachment(&key, att).unwrap();
+        let attachments = &system.get(&key).unwrap().attachments;
+        assert_eq!(attachments.len(), 1);
+        assert!(attachments[0].schema.is_some());
+        assert_eq!(attachments[0].content, serde_json::json!({"ok": true}));
     }
 
     #[test]

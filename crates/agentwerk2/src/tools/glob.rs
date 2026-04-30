@@ -236,7 +236,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 3);
         for line in &lines {
@@ -261,7 +261,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), MAX_RESULTS);
     }

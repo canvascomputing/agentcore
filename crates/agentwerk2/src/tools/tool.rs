@@ -130,15 +130,22 @@ pub struct ToolCall {
     pub input: Value,
 }
 
-/// Outcome of a tool execution: a success payload or an error message. Both
-/// variants flow back to the model as ordinary content — [`ToolResult::Error`]
-/// lets the model correct its arguments and try again.
+/// Outcome of a tool execution: a success payload, a generic error
+/// message, or a schema-validation failure. All three flow back to
+/// the model as ordinary content blocks; the [`SchemaError`] variant
+/// is distinguished so the loop can apply
+/// `policies.max_schema_retries` to it specifically.
+///
+/// [`SchemaError`]: ToolResult::SchemaError
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolResult {
     /// Tool ran and produced this text payload.
     Success(String),
     /// Tool failed; the message is shown to the model so it can recover.
     Error(String),
+    /// Tool rejected the input because it failed schema validation.
+    /// The message lists the violations so the model can fix them.
+    SchemaError(String),
 }
 
 impl ToolResult {
@@ -150,6 +157,13 @@ impl ToolResult {
     /// Build an error result. The message is visible to the model.
     pub fn error(content: impl Into<String>) -> Self {
         Self::Error(content.into())
+    }
+
+    /// Build a schema-validation failure. Mapped into
+    /// [`ToolError::SchemaValidationFailed`] by the registry and
+    /// counted against `policies.max_schema_retries`.
+    pub fn schema_error(content: impl Into<String>) -> Self {
+        Self::SchemaError(content.into())
     }
 }
 
@@ -502,6 +516,10 @@ async fn invoke(
     match t.call(input, ctx).await {
         Ok(ToolResult::Success(s)) => Ok(s),
         Ok(ToolResult::Error(s)) => Err(ToolError::ExecutionFailed {
+            tool_name: name.into(),
+            message: s,
+        }),
+        Ok(ToolResult::SchemaError(s)) => Err(ToolError::SchemaValidationFailed {
             tool_name: name.into(),
             message: s,
         }),

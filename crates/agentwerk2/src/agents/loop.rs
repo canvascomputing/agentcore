@@ -126,13 +126,17 @@ async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: 
     messages.push(task_msg);
     emit(EventKind::TicketClaimed { key: key.to_string() });
 
-    let (max_request_tokens, interrupt_signal) = {
+    let (max_request_tokens, max_schema_retries, interrupt_signal) = {
         let sys = tickets.lock().unwrap();
         (
             sys.policies().max_request_tokens,
+            sys.policies().max_schema_retries.unwrap_or(u32::MAX),
             sys.interrupt_signal_handle(),
         )
     };
+    // Consecutive schema-validation failures since the last successful
+    // schema-checked tool call. Bounded by `max_schema_retries`.
+    let mut consecutive_schema_failures: u32 = 0;
 
     let on_stream: Arc<dyn Fn(StreamEvent) + Send + Sync> = {
         let handler = agent.resolve_event_handler();
@@ -222,26 +226,41 @@ async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: 
 
         for (block, verdict) in &outcomes {
             if let ContentBlock::ToolResult { tool_use_id, .. } = block {
-                let tool_name = calls
-                    .iter()
-                    .find(|c| &c.id == tool_use_id)
-                    .map(|c| c.name.clone())
-                    .unwrap_or_default();
+                let call = calls.iter().find(|c| &c.id == tool_use_id);
+                let tool_name = call.map(|c| c.name.clone()).unwrap_or_default();
                 match verdict {
-                    Ok(output) => emit(EventKind::ToolCallFinished {
-                        tool_name,
-                        call_id: tool_use_id.clone(),
-                        output: output.clone(),
-                    }),
-                    Err(err) => emit(EventKind::ToolCallFailed {
-                        tool_name,
-                        call_id: tool_use_id.clone(),
-                        message: err.message(),
-                        kind: match err {
-                            ToolError::ToolNotFound { .. } => ToolFailureKind::ToolNotFound,
-                            ToolError::ExecutionFailed { .. } => ToolFailureKind::ExecutionFailed,
-                        },
-                    }),
+                    Ok(output) => {
+                        if let Some(call) = call {
+                            if is_schema_checked_call(call) {
+                                consecutive_schema_failures = 0;
+                            }
+                        }
+                        emit(EventKind::ToolCallFinished {
+                            tool_name,
+                            call_id: tool_use_id.clone(),
+                            output: output.clone(),
+                        });
+                    }
+                    Err(err) => {
+                        if matches!(err, ToolError::SchemaValidationFailed { .. }) {
+                            consecutive_schema_failures =
+                                consecutive_schema_failures.saturating_add(1);
+                        }
+                        emit(EventKind::ToolCallFailed {
+                            tool_name,
+                            call_id: tool_use_id.clone(),
+                            message: err.message(),
+                            kind: match err {
+                                ToolError::ToolNotFound { .. } => ToolFailureKind::ToolNotFound,
+                                ToolError::ExecutionFailed { .. } => {
+                                    ToolFailureKind::ExecutionFailed
+                                }
+                                ToolError::SchemaValidationFailed { .. } => {
+                                    ToolFailureKind::SchemaValidationFailed
+                                }
+                            },
+                        });
+                    }
                 }
             }
         }
@@ -253,7 +272,39 @@ async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: 
             let mut sys = tickets.lock().unwrap();
             sys.record_tool_calls(agent.get_name(), calls.len() as u64);
         }
+
+        if consecutive_schema_failures >= max_schema_retries {
+            emit(EventKind::PolicyViolated {
+                kind: crate::event::PolicyKind::MaxSchemaRetries,
+                limit: u64::from(max_schema_retries),
+            });
+            // Force-fail the ticket so Path A doesn't re-pick it
+            // forever. The agent demonstrably can't satisfy the
+            // schema; the ticket is dead.
+            {
+                let mut sys = tickets.lock().unwrap();
+                let _ = sys.force_status(key, Status::Failed);
+            }
+            emit(EventKind::TicketFinished { key: key.to_string() });
+            return;
+        }
     }
+}
+
+/// Whether a tool call goes through schema validation. The success
+/// path uses this to decide whether to reset
+/// `consecutive_schema_failures` — a non-schema-checked success
+/// leaves the counter alone, per the plan.
+fn is_schema_checked_call(call: &ToolCall) -> bool {
+    matches!(
+        call.name.as_str(),
+        "manage_tickets_tool" | "write_tickets_tool"
+    ) && call.input.get("action").and_then(|v| v.as_str()) == Some("attach")
+        && call
+            .input
+            .get("schema")
+            .map(|s| !s.is_null())
+            .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -1026,5 +1077,220 @@ mod tests {
         assert_eq!(captured.lock().unwrap().as_deref(), Some(key.as_str()));
         // After the run, the agent's current ticket is cleared.
         assert!(alice_handle.current_ticket().is_none());
+    }
+
+    // ---- max_schema_retries ----
+
+    use crate::event::{Event, PolicyKind};
+
+    type CapturedEvents = Arc<Mutex<Vec<crate::event::EventKind>>>;
+    type EventHandler = Arc<dyn Fn(Event) + Send + Sync>;
+
+    fn capturing_event_handler() -> (CapturedEvents, EventHandler) {
+        let captured: CapturedEvents = Arc::new(Mutex::new(Vec::new()));
+        let handler: EventHandler = {
+            let captured = Arc::clone(&captured);
+            Arc::new(move |event: Event| {
+                captured.lock().unwrap().push(event.kind);
+            })
+        };
+        (captured, handler)
+    }
+
+    fn bad_attach_response(call_id: &str) -> ModelResponse {
+        // Schema requires `name` to be a string; `content.name` is a
+        // number, so validation fails.
+        tool_use_response(
+            call_id,
+            "manage_tickets_tool",
+            serde_json::json!({
+                "action": "attach",
+                "filename": "out.json",
+                "content": {"name": 7},
+                "schema": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "required": ["name"]
+                }
+            }),
+        )
+    }
+
+    fn good_attach_response(call_id: &str) -> ModelResponse {
+        tool_use_response(
+            call_id,
+            "manage_tickets_tool",
+            serde_json::json!({
+                "action": "attach",
+                "filename": "out.json",
+                "content": {"name": "alice"},
+                "schema": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "required": ["name"]
+                }
+            }),
+        )
+    }
+
+    #[tokio::test]
+    async fn consecutive_schema_failures_trip_max_schema_retries() {
+        let (provider, _) = MockProvider::queued(vec![
+            bad_attach_response("a1"),
+            bad_attach_response("a2"),
+            bad_attach_response("a3"),
+            // Spare responses in case anything else pops; should not be needed.
+            text_response("done"),
+        ]);
+        // Bound the run with max_steps so even if the agent re-claims
+        // (it shouldn't, because we force-fail the ticket) the watcher
+        // still terminates promptly.
+        let mut tickets = TicketSystem::new()
+            .max_schema_retries(3)
+            .max_steps(5);
+        let key = tickets.create("task", "", "task", "tester").key.clone();
+
+        let (captured, handler) = capturing_event_handler();
+        let agent = agent_with(provider, "worker")
+            .tool(ManageTicketsTool)
+            .event_handler(handler);
+        let tickets = tickets.assign(agent).run_until_empty().await;
+
+        let events = captured.lock().unwrap().clone();
+        let schema_failures = events
+            .iter()
+            .filter(|k| {
+                matches!(
+                    k,
+                    EventKind::ToolCallFailed {
+                        kind: ToolFailureKind::SchemaValidationFailed,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(schema_failures, 3, "events: {events:#?}");
+        assert!(events.iter().any(|k| matches!(
+            k,
+            EventKind::PolicyViolated {
+                kind: PolicyKind::MaxSchemaRetries,
+                limit: 3,
+            }
+        )));
+        assert_eq!(tickets.get(&key).unwrap().status, Status::Failed);
+    }
+
+    #[tokio::test]
+    async fn successful_schema_validation_resets_failure_counter() {
+        // Two failures, one success, then three more failures. With
+        // max_schema_retries(3), the cap should trip on the SIXTH
+        // call total — the success in the middle resets the counter,
+        // so the second batch of failures runs to its own cap.
+        let (provider, _) = MockProvider::queued(vec![
+            bad_attach_response("b1"),
+            bad_attach_response("b2"),
+            good_attach_response("g1"),
+            bad_attach_response("b3"),
+            bad_attach_response("b4"),
+            bad_attach_response("b5"),
+            text_response("done"),
+        ]);
+        let mut tickets = TicketSystem::new()
+            .max_schema_retries(3)
+            .max_steps(5);
+        tickets.create("task", "", "task", "tester");
+
+        let (captured, handler) = capturing_event_handler();
+        let agent = agent_with(provider, "worker")
+            .tool(ManageTicketsTool)
+            .event_handler(handler);
+        let _ = tickets.assign(agent).run_until_empty().await;
+
+        let events = captured.lock().unwrap().clone();
+        let schema_failures = events
+            .iter()
+            .filter(|k| {
+                matches!(
+                    k,
+                    EventKind::ToolCallFailed {
+                        kind: ToolFailureKind::SchemaValidationFailed,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(schema_failures, 5, "events: {events:#?}");
+        assert!(events.iter().any(|k| matches!(
+            k,
+            EventKind::PolicyViolated {
+                kind: PolicyKind::MaxSchemaRetries,
+                ..
+            }
+        )));
+    }
+
+    #[tokio::test]
+    async fn non_schema_failures_do_not_count_toward_max_schema_retries() {
+        // Register a tool that always errors via ToolResult::error.
+        // That flows through ToolError::ExecutionFailed, NOT
+        // SchemaValidationFailed — so the schema-retry counter must
+        // stay at zero even after many failures.
+        let broken = Tool::new("broken", "Always fails")
+            .read_only(false)
+            .handler(|_input, _ctx| {
+                Box::pin(async move { Ok(ToolResult::error("boom")) })
+            });
+        fn broken_call(call_id: &str) -> ModelResponse {
+            tool_use_response(call_id, "broken", serde_json::json!({}))
+        }
+        let (provider, _) = MockProvider::queued(vec![
+            broken_call("c1"),
+            broken_call("c2"),
+            broken_call("c3"),
+            text_response("done"),
+        ]);
+        let mut tickets = TicketSystem::new()
+            .max_schema_retries(1)
+            .max_steps(5);
+        tickets.create("task", "", "task", "tester");
+
+        let (captured, handler) = capturing_event_handler();
+        let agent = agent_with(provider, "worker")
+            .tool(broken)
+            .event_handler(handler);
+        let _ = tickets.assign(agent).run_until_empty().await;
+
+        let events = captured.lock().unwrap().clone();
+        // Plenty of generic failures …
+        let exec_failures = events
+            .iter()
+            .filter(|k| {
+                matches!(
+                    k,
+                    EventKind::ToolCallFailed {
+                        kind: ToolFailureKind::ExecutionFailed,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert!(
+            exec_failures >= 3,
+            "expected >=3 execution failures, got {exec_failures}: {events:#?}"
+        );
+        // … but no MaxSchemaRetries policy violation.
+        let schema_violation = events.iter().any(|k| {
+            matches!(
+                k,
+                EventKind::PolicyViolated {
+                    kind: PolicyKind::MaxSchemaRetries,
+                    ..
+                }
+            )
+        });
+        assert!(
+            !schema_violation,
+            "MaxSchemaRetries should not fire from non-schema failures: {events:#?}"
+        );
     }
 }

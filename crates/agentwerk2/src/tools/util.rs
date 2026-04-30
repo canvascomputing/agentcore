@@ -89,7 +89,7 @@ mod tests {
         let result = run_shell_command("sleep 30", Duration::from_millis(60_000), &ctx).await;
         let elapsed = started.elapsed();
 
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(
             matches!(result, ToolResult::Error(_)),
             "expected cancelled result"

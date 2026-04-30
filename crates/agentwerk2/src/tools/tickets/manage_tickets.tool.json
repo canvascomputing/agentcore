@@ -2,13 +2,15 @@
   "name": "manage_tickets_tool",
   "summary": [
     "Read and mutate the ticket queue from one tool: union of `read_tickets_tool` and `write_tickets_tool`.",
-    "Use `get` / `list` / `search` to read, and `create` / `edit` / `comment` / `transition` / `assign` to write."
+    "Use `get` / `list` / `search` to read, and `create` / `edit` / `comment` / `transition` / `assign` / `attach` to write.",
+    "`attach` uploads inline JSON content; supply `schema` to validate it before storing."
   ],
   "constraints": [
-    "One `action` per call. Eight actions in total — see the `action` parameter.",
+    "One `action` per call. Nine actions in total — see the `action` parameter.",
     "Every action that takes a `key` defaults to the agent's current ticket when `key` is omitted.",
     "`comment` defaults `author` and `create` defaults `reporter` to the agent's name.",
-    "`list` and `search` cap at 50 tickets per call."
+    "`list` and `search` cap at 50 tickets per call.",
+    "`attach` validates `content` against `schema` (when supplied). Validation failures count toward `max_schema_retries`; consecutive failures terminate ticket processing."
   ],
   "anti_patterns": [
     "When the agent only needs reads — register `read_tickets_tool` instead. Smaller surface = fewer mistakes.",
@@ -32,11 +34,11 @@
     "properties": {
       "action": {
         "type": "string",
-        "description": "Read: `get`, `list`, `search`. Write: `create`, `edit`, `comment`, `transition`, `assign`."
+        "description": "Read: `get`, `list`, `search`. Write: `create`, `edit`, `comment`, `transition`, `assign`, `attach`."
       },
       "key": {
         "type": "string",
-        "description": "Ticket key (e.g. `TICKET-3`). Used by `get`, `edit`, `comment`, `transition`, `assign`. Defaults to the agent's current ticket. Ignored by `create`, `list`, `search`."
+        "description": "Ticket key (e.g. `TICKET-3`). Used by `get`, `edit`, `comment`, `transition`, `assign`, `attach`. Defaults to the agent's current ticket. Ignored by `create`, `list`, `search`."
       },
       "status": {
         "type": "string",
@@ -73,6 +75,17 @@
       "author": {
         "type": "string",
         "description": "For `comment`: who wrote the comment. Defaults to the agent's name."
+      },
+      "filename": {
+        "type": "string",
+        "description": "For `attach` (required): a label for the attached payload (e.g. `result.json`). Must be non-empty."
+      },
+      "content": {
+        "description": "For `attach` (required): the JSON payload to store. Any JSON value — object, array, scalar."
+      },
+      "schema": {
+        "type": "object",
+        "description": "For `attach` (optional): a JSON Schema document. When supplied, `content` is validated before the attachment is stored; violations are returned as an error and counted toward `max_schema_retries`."
       }
     },
     "required": ["action"]

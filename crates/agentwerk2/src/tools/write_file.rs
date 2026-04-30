@@ -102,7 +102,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(content.contains("File written: new.txt"));
 
         let written = std::fs::read_to_string(dir.path().join("new.txt")).unwrap();

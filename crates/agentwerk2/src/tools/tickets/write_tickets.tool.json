@@ -1,13 +1,15 @@
 {
   "name": "write_tickets_tool",
   "summary": [
-    "Mutate the ticket queue: create new tickets, edit fields, add comments, transition status, or change assignee.",
-    "Use `transition` to settle the agent's current ticket — moving it to `Done`, `Failed`, or `InReview` is the standard end-of-work move."
+    "Mutate the ticket queue: create new tickets, edit fields, add comments, transition status, change assignee, or attach JSON content.",
+    "Use `transition` to settle the agent's current ticket — moving it to `Done`, `Failed`, or `InReview` is the standard end-of-work move.",
+    "Use `attach` to upload structured JSON content; supply a JSON Schema in `schema` to have the framework validate the content before storing it."
   ],
   "constraints": [
-    "One `action` per call: `create`, `edit`, `comment`, `transition`, or `assign`.",
+    "One `action` per call: `create`, `edit`, `comment`, `transition`, `assign`, or `attach`.",
     "Every action except `create` defaults `key` to the agent's current ticket — omit `key` to act on your own work.",
-    "`comment` defaults `author` and `create` defaults `reporter` to the agent's name."
+    "`comment` defaults `author` and `create` defaults `reporter` to the agent's name.",
+    "`attach` validates `content` against `schema` (when supplied). On validation failure the call counts toward `max_schema_retries`; consecutive failures terminate the ticket processing."
   ],
   "anti_patterns": [
     "To look up, list, or search tickets — use `read_tickets_tool`.",
@@ -21,8 +23,8 @@
     "ALWAYS settle your current ticket before the response ends. Returning text without `transition` leaves the ticket `InProgress` and the loop will re-pick it next iteration."
   ],
   "output": [
-    "Plain text confirmation: `Created ticket KEY`, `Edited ticket KEY`, `Commented on KEY`, `Transitioned KEY to STATUS`, or `Assigned KEY to NAME`.",
-    "On rejection: an error describing the failed action (missing field, unknown ticket, illegal transition)."
+    "Plain text confirmation: `Created ticket KEY`, `Edited ticket KEY`, `Commented on KEY`, `Transitioned KEY to STATUS`, `Assigned KEY to NAME`, or `Attached to KEY`.",
+    "On rejection: an error describing the failed action (missing field, unknown ticket, illegal transition, schema-validation failure with violation list)."
   ],
   "read_only": false,
   "input_schema": {
@@ -30,7 +32,7 @@
     "properties": {
       "action": {
         "type": "string",
-        "description": "Write mode: `create`, `edit`, `comment`, `transition`, or `assign`."
+        "description": "Write mode: `create`, `edit`, `comment`, `transition`, `assign`, or `attach`."
       },
       "key": {
         "type": "string",
@@ -67,6 +69,17 @@
       "assignee": {
         "type": "string",
         "description": "For `assign`: agent or human name to take ownership. Empty string clears the assignee. Setting this to another agent's name is how you delegate work — that agent's loop picks it up next iteration."
+      },
+      "filename": {
+        "type": "string",
+        "description": "For `attach` (required): a label for the attached payload (e.g. `result.json`). Must be non-empty."
+      },
+      "content": {
+        "description": "For `attach` (required): the JSON payload to store. Any JSON value — object, array, scalar."
+      },
+      "schema": {
+        "type": "object",
+        "description": "For `attach` (optional): a JSON Schema document. When supplied, `content` is validated before the attachment is stored; violations are returned as an error and counted toward `max_schema_retries`."
       }
     },
     "required": ["action"]

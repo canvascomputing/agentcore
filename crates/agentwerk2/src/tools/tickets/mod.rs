@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
-use crate::agents::tickets::{Status, TicketError, TicketSystem};
+use crate::agents::tickets::{Attachment, Status, TicketError, TicketSystem};
+use crate::schemas::{format_violations, Schema};
 
 use super::tool::{ToolContext, ToolResult};
 
@@ -23,7 +24,8 @@ pub use write_tickets::WriteTicketsTool;
 /// and lets each tool reject actions outside its allow-list with a
 /// uniform error message.
 pub(super) const READ_ACTIONS: &[&str] = &["get", "list", "search"];
-pub(super) const WRITE_ACTIONS: &[&str] = &["create", "edit", "comment", "transition", "assign"];
+pub(super) const WRITE_ACTIONS: &[&str] =
+    &["create", "edit", "comment", "transition", "assign", "attach"];
 
 pub(super) fn dispatch(input: Value, ctx: &ToolContext, allowed: &[&str]) -> ToolResult {
     let action = match input["action"].as_str() {
@@ -49,6 +51,7 @@ pub(super) fn dispatch(input: Value, ctx: &ToolContext, allowed: &[&str]) -> Too
         "comment" => action_comment(&tickets, &input, ctx),
         "transition" => action_transition(&tickets, &input, ctx),
         "assign" => action_assign(&tickets, &input, ctx),
+        "attach" => action_attach(&tickets, &input, ctx),
         other => ToolResult::error(format!("Unknown action `{other}`")),
     }
 }
@@ -114,7 +117,27 @@ fn render_ticket(sys: &TicketSystem, key: &str) -> Option<String> {
             out.push_str(&format!("- {}: {}\n", c.author, c.body));
         }
     }
+    if !t.attachments.is_empty() {
+        out.push_str("\n## Attachments\n");
+        for a in &t.attachments {
+            let label = if a.schema.is_some() { "schema" } else { "no schema" };
+            out.push_str(&format!(
+                "- {} ({label}): {}\n",
+                a.filename,
+                truncate_for_preview(&a.content.to_string(), 200),
+            ));
+        }
+    }
     Some(out)
+}
+
+fn truncate_for_preview(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(max).collect();
+        format!("{cut}…")
+    }
 }
 
 fn render_summary_list(tickets: &[(&str, &str, Status, Option<&str>, &str)]) -> String {
@@ -337,6 +360,63 @@ fn action_assign(
     }
 }
 
+fn action_attach(
+    tickets: &Arc<Mutex<TicketSystem>>,
+    input: &Value,
+    ctx: &ToolContext,
+) -> ToolResult {
+    let key = match resolve_key(input, ctx) {
+        Ok(k) => k,
+        Err(e) => return e,
+    };
+    let filename = match input["filename"].as_str() {
+        Some(f) if !f.is_empty() => f.to_string(),
+        Some(_) => return ToolResult::error("`filename` must be non-empty"),
+        None => return ToolResult::error("Missing required parameter: filename"),
+    };
+    let content = match input.get("content") {
+        Some(c) => c.clone(),
+        None => return ToolResult::error("Missing required parameter: content"),
+    };
+
+    // Schema is optional. A malformed schema is a programming error
+    // (the agent's prompt is wrong, or the framework fed garbage in)
+    // — surface it as a plain ToolResult::error so the loop's retry
+    // budget is *not* burnt for it.
+    let schema = match input.get("schema") {
+        Some(doc) if !doc.is_null() => match Schema::parse(doc.clone()) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                return ToolResult::error(format!(
+                    "Cannot attach to {key}: supplied `schema` is invalid: {e}"
+                ));
+            }
+        },
+        _ => None,
+    };
+
+    if let Some(schema) = &schema {
+        if let Err(violations) = schema.validate(&content) {
+            // Schema-validation failure: this is the retryable path.
+            // Returning ToolResult::SchemaError tells the registry's
+            // invoke wrapper to map this to ToolError::SchemaValidationFailed
+            // so the loop counts it against `max_schema_retries`.
+            return ToolResult::schema_error(format_violations(&violations));
+        }
+    }
+
+    let attachment = Attachment {
+        filename,
+        content,
+        schema,
+    };
+    let mut sys = tickets.lock().unwrap();
+    match sys.add_attachment(&key, attachment) {
+        Ok(()) => ToolResult::success(format!("Attached to {key}")),
+        Err(e) => ToolResult::error(ticket_error_message(e)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::tool::ToolLike;
@@ -368,7 +448,7 @@ mod tests {
     }
 
     fn unwrap_text(result: &ToolResult) -> &str {
-        let (ToolResult::Success(s) | ToolResult::Error(s)) = result;
+        let (ToolResult::Success(s) | ToolResult::Error(s) | ToolResult::SchemaError(s)) = result;
         s
     }
 
@@ -658,5 +738,167 @@ mod tests {
             shared.lock().unwrap().get(&key).unwrap().status,
             Status::Done
         );
+    }
+
+    // ---- attach action ----
+
+    #[tokio::test]
+    async fn attach_without_schema_stores_content_unchecked() {
+        let (shared, key) = shared_with_one_ticket();
+        let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
+        let result = call(
+            &WriteTicketsTool,
+            serde_json::json!({
+                "action": "attach",
+                "filename": "out.json",
+                "content": {"anything": [1, 2, 3]}
+            }),
+            &ctx,
+        )
+        .await;
+        assert!(matches!(result, ToolResult::Success(_)));
+        let sys = shared.lock().unwrap();
+        let attachments = &sys.get(&key).unwrap().attachments;
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].filename, "out.json");
+        assert!(attachments[0].schema.is_none());
+        assert_eq!(
+            attachments[0].content,
+            serde_json::json!({"anything": [1, 2, 3]})
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_validates_content_against_schema() {
+        let (shared, key) = shared_with_one_ticket();
+        let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
+        let result = call(
+            &WriteTicketsTool,
+            serde_json::json!({
+                "action": "attach",
+                "filename": "out.json",
+                "content": {"name": "alice"},
+                "schema": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "required": ["name"]
+                }
+            }),
+            &ctx,
+        )
+        .await;
+        assert!(matches!(result, ToolResult::Success(_)));
+        let sys = shared.lock().unwrap();
+        assert!(sys.get(&key).unwrap().attachments[0].schema.is_some());
+    }
+
+    #[tokio::test]
+    async fn attach_returns_schema_error_with_violations() {
+        let (shared, key) = shared_with_one_ticket();
+        let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
+        let result = call(
+            &WriteTicketsTool,
+            serde_json::json!({
+                "action": "attach",
+                "filename": "out.json",
+                "content": {"name": 7},
+                "schema": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "required": ["name"]
+                }
+            }),
+            &ctx,
+        )
+        .await;
+        // SchemaError is the dedicated retryable variant — distinct
+        // from a plain ToolResult::Error.
+        let ToolResult::SchemaError(message) = &result else {
+            panic!("expected SchemaError, got {result:?}");
+        };
+        assert!(message.contains("Schema validation failed"));
+        // No attachment was added.
+        let sys = shared.lock().unwrap();
+        assert!(sys.get(&key).unwrap().attachments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn attach_rejects_malformed_schema_separately() {
+        let (shared, key) = shared_with_one_ticket();
+        let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
+        let result = call(
+            &WriteTicketsTool,
+            serde_json::json!({
+                "action": "attach",
+                "filename": "out.json",
+                "content": {"name": "alice"},
+                "schema": {"type": 42}
+            }),
+            &ctx,
+        )
+        .await;
+        // Malformed schema is a plain Error, not a SchemaError —
+        // does NOT count toward `max_schema_retries`.
+        assert!(matches!(result, ToolResult::Error(_)));
+        let ToolResult::Error(message) = &result else {
+            unreachable!()
+        };
+        assert!(message.contains("supplied `schema` is invalid"));
+    }
+
+    #[tokio::test]
+    async fn attach_requires_filename_and_content() {
+        let (shared, key) = shared_with_one_ticket();
+        let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
+
+        let no_filename = call(
+            &WriteTicketsTool,
+            serde_json::json!({"action": "attach", "content": {}}),
+            &ctx,
+        )
+        .await;
+        assert!(matches!(no_filename, ToolResult::Error(_)));
+
+        let no_content = call(
+            &WriteTicketsTool,
+            serde_json::json!({"action": "attach", "filename": "x.json"}),
+            &ctx,
+        )
+        .await;
+        assert!(matches!(no_content, ToolResult::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn manage_supports_attach() {
+        let (shared, key) = shared_with_one_ticket();
+        let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
+        let result = call(
+            &ManageTicketsTool,
+            serde_json::json!({
+                "action": "attach",
+                "filename": "out.json",
+                "content": {"ok": true}
+            }),
+            &ctx,
+        )
+        .await;
+        assert!(matches!(result, ToolResult::Success(_)));
+    }
+
+    #[tokio::test]
+    async fn read_rejects_attach_action() {
+        let (shared, key) = shared_with_one_ticket();
+        let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
+        let result = call(
+            &ReadTicketsTool,
+            serde_json::json!({
+                "action": "attach",
+                "filename": "out.json",
+                "content": {}
+            }),
+            &ctx,
+        )
+        .await;
+        assert!(matches!(result, ToolResult::Error(_)));
     }
 }

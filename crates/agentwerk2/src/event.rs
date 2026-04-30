@@ -14,6 +14,10 @@ pub enum PolicyKind {
     InputTokens,
     /// `max_output_tokens` — cumulative reply-side token cap.
     OutputTokens,
+    /// `max_schema_retries` — consecutive schema-validation failures
+    /// while processing one ticket. Resets after every successful
+    /// schema-checked tool call.
+    MaxSchemaRetries,
 }
 
 /// Categorical discriminant for [`EventKind::ToolCallFailed`].
@@ -23,6 +27,9 @@ pub enum ToolFailureKind {
     ToolNotFound,
     /// The tool was invoked but its execution raised an error.
     ExecutionFailed,
+    /// A schema-checked tool rejected its input. Counted against
+    /// `policies.max_schema_retries` by the loop.
+    SchemaValidationFailed,
 }
 
 /// Observation emitted during an agent run.
@@ -146,8 +153,18 @@ mod tests {
                 message: "not found".into(),
                 kind: ToolFailureKind::ToolNotFound,
             },
+            EventKind::ToolCallFailed {
+                tool_name: "manage_tickets_tool".into(),
+                call_id: "c2".into(),
+                message: "Schema validation failed".into(),
+                kind: ToolFailureKind::SchemaValidationFailed,
+            },
             EventKind::PolicyViolated {
                 kind: PolicyKind::Steps,
+                limit: 10,
+            },
+            EventKind::PolicyViolated {
+                kind: PolicyKind::MaxSchemaRetries,
                 limit: 10,
             },
         ]

@@ -164,7 +164,7 @@ mod tests {
         let tool = ToolSearchTool;
         let input = serde_json::json!({ "query": "read_file" });
         let result = tool.call(input, &ctx).await.unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(content.contains("read_file"));
     }
 
@@ -175,7 +175,7 @@ mod tests {
         let tool = ToolSearchTool;
         let input = serde_json::json!({ "query": "file" });
         let result = tool.call(input, &ctx).await.unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(content.contains("read_file"));
         assert!(content.contains("write_file"));
     }
@@ -187,7 +187,7 @@ mod tests {
         let tool = ToolSearchTool;
         let input = serde_json::json!({ "query": "nonexistent_xyz" });
         let result = tool.call(input, &ctx).await.unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(content.contains("No tools found"));
     }
 
@@ -198,7 +198,7 @@ mod tests {
         let tool = ToolSearchTool;
         let input = serde_json::json!({ "query": "read_file" });
         let result = tool.call(input, &ctx).await.unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(content.contains("```json"));
         assert!(content.contains("\"type\""));
     }
@@ -210,7 +210,7 @@ mod tests {
         let tool = ToolSearchTool;
         let input = serde_json::json!({});
         let result = tool.call(input, &ctx).await.unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(matches!(result, ToolResult::Error(_)));
         assert!(content.contains("Missing required field: query"));
     }
@@ -223,7 +223,7 @@ mod tests {
         let tool = ToolSearchTool;
         let input = serde_json::json!({ "query": "anything" });
         let result = tool.call(input, &ctx).await.unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(matches!(result, ToolResult::Error(_)));
         assert!(content.contains("No tool registry available"));
     }
