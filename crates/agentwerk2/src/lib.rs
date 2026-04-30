@@ -3,3 +3,4 @@
 pub mod agents;
 pub mod prompts;
 pub mod providers;
+pub mod tools;

@@ -6,8 +6,9 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::providers::types::StreamEvent;
-use crate::providers::{AsUserMessage, Message, ModelRequest};
+use crate::providers::types::{ResponseStatus, StreamEvent};
+use crate::providers::{AsUserMessage, ContentBlock, Message, ModelRequest};
+use crate::tools::{ToolCall, ToolContext};
 
 use super::agent::Agent;
 use super::policy::PolicyConform;
@@ -105,51 +106,81 @@ async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: 
     };
     messages.push(task_msg);
 
-    let max_request_tokens = tickets.lock().unwrap().policies().max_request_tokens;
+    let (max_request_tokens, interrupt_signal) = {
+        let sys = tickets.lock().unwrap();
+        (
+            sys.policies().max_request_tokens,
+            sys.interrupt_signal_handle(),
+        )
+    };
 
-    // The `loop {}` shape is structural: when tools land, the assistant's
-    // `ToolUse` blocks will drive a `continue`. Today every branch returns,
-    // so clippy correctly notes it never actually loops yet.
-    #[allow(clippy::never_loop)]
     loop {
         let request = ModelRequest {
             model: agent.model_str().to_string(),
             system_prompt: agent.system_prompt(),
             messages: messages.clone(),
-            tools: Vec::new(),
+            tools: agent.tool_definitions(),
             max_request_tokens,
             tool_choice: None,
         };
-        let result = agent
+        let response = match agent
             .provider_handle()
             .respond(request, no_op_event_handler())
-            .await;
-
-        match result {
-            Ok(response) => {
-                {
-                    let mut sys = tickets.lock().unwrap();
-                    sys.record_request(agent.get_name(), &response.usage);
-                }
-                // Push the assistant reply verbatim onto the local
-                // conversation. No tool dispatch yet, so the inner
-                // loop terminates here. Status transition stays in the
-                // loop (queue management); writing the model's reply
-                // to the ticket is *not* the loop's job — that moves
-                // to a ticket-update tool the agent will call.
-                messages.push(Message::Assistant {
-                    content: response.content.clone(),
-                });
-                let mut sys = tickets.lock().unwrap();
-                let _ = sys.update_status(key, Status::Done);
-                return;
-            }
+            .await
+        {
+            Ok(r) => r,
             Err(e) => {
                 let mut sys = tickets.lock().unwrap();
                 sys.record_error(agent.get_name(), key, &e);
                 let _ = sys.update_status(key, Status::Failed);
                 return;
             }
+        };
+
+        {
+            let mut sys = tickets.lock().unwrap();
+            sys.record_request(agent.get_name(), &response.usage);
+        }
+        messages.push(Message::Assistant {
+            content: response.content.clone(),
+        });
+
+        // Walk the assistant content for tool calls.
+        let calls: Vec<ToolCall> = response
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse { id, name, input } => Some(ToolCall {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: input.clone(),
+                }),
+                _ => None,
+            })
+            .collect();
+
+        if response.status != ResponseStatus::ToolUse || calls.is_empty() {
+            // Inner loop terminates. Status management stays in the
+            // loop until a ticket-update tool ships.
+            let mut sys = tickets.lock().unwrap();
+            let _ = sys.update_status(key, Status::Done);
+            return;
+        }
+
+        // Dispatch the tool calls. ToolContext carries working_dir, the
+        // shared cancel signal, and a registry handle so ToolSearchTool
+        // can reach back in.
+        let ctx = ToolContext::new(agent.working_dir_or_default())
+            .interrupt_signal(Arc::clone(&interrupt_signal))
+            .registry(Arc::new(agent.tool_registry().clone()));
+        let outcomes = agent.tool_registry().execute(&calls, &ctx).await;
+
+        let blocks: Vec<ContentBlock> = outcomes.into_iter().map(|(b, _)| b).collect();
+        messages.push(Message::User { content: blocks });
+
+        {
+            let mut sys = tickets.lock().unwrap();
+            sys.record_tool_calls(agent.get_name(), calls.len() as u64);
         }
     }
 }
@@ -168,9 +199,14 @@ mod tests {
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    use std::collections::VecDeque;
+
     struct MockProvider {
         text: String,
         usage: TokenUsage,
+        /// When non-empty, the next call pops from the front. When empty,
+        /// the provider falls back to the static `text` + `usage`.
+        queue: Mutex<VecDeque<ModelResponse>>,
         captured_prompt: Arc<Mutex<Option<String>>>,
         captured_max_tokens: Arc<Mutex<Option<u32>>>,
         captured_messages: Arc<Mutex<Option<Vec<Message>>>>,
@@ -188,12 +224,28 @@ mod tests {
         }
 
         fn with_usage(text: impl Into<String>, usage: TokenUsage) -> (Arc<Self>, MockHandles) {
+            Self::build(text.into(), usage, VecDeque::new())
+        }
+
+        /// Build a provider that returns each queued response in order.
+        /// After the queue empties, falls back to the static text /
+        /// usage (set to `"end"` / default for convenience here).
+        fn queued(responses: Vec<ModelResponse>) -> (Arc<Self>, MockHandles) {
+            Self::build("end".into(), TokenUsage::default(), responses.into())
+        }
+
+        fn build(
+            text: String,
+            usage: TokenUsage,
+            queue: VecDeque<ModelResponse>,
+        ) -> (Arc<Self>, MockHandles) {
             let prompt = Arc::new(Mutex::new(None));
             let max_tokens = Arc::new(Mutex::new(None));
             let messages = Arc::new(Mutex::new(None));
             let provider = Arc::new(Self {
-                text: text.into(),
+                text,
                 usage,
+                queue: Mutex::new(queue),
                 captured_prompt: Arc::clone(&prompt),
                 captured_max_tokens: Arc::clone(&max_tokens),
                 captured_messages: Arc::clone(&messages),
@@ -209,6 +261,28 @@ mod tests {
         }
     }
 
+    fn tool_use_response(id: &str, name: &str, input: serde_json::Value) -> ModelResponse {
+        ModelResponse {
+            content: vec![ContentBlock::ToolUse {
+                id: id.into(),
+                name: name.into(),
+                input,
+            }],
+            status: ResponseStatus::ToolUse,
+            usage: TokenUsage::default(),
+            model: "mock".into(),
+        }
+    }
+
+    fn text_response(text: &str) -> ModelResponse {
+        ModelResponse {
+            content: vec![ContentBlock::Text { text: text.into() }],
+            status: ResponseStatus::EndTurn,
+            usage: TokenUsage::default(),
+            model: "mock".into(),
+        }
+    }
+
     impl Provider for MockProvider {
         fn respond(
             &self,
@@ -218,16 +292,21 @@ mod tests {
             *self.captured_prompt.lock().unwrap() = Some(request.system_prompt);
             *self.captured_max_tokens.lock().unwrap() = request.max_request_tokens;
             *self.captured_messages.lock().unwrap() = Some(request.messages.clone());
-            let text = self.text.clone();
-            let usage = self.usage.clone();
+
+            let queued = self.queue.lock().unwrap().pop_front();
+            let fallback_text = self.text.clone();
+            let fallback_usage = self.usage.clone();
             Box::pin(async move {
                 tokio::task::yield_now().await;
-                Ok(ModelResponse {
-                    content: vec![ContentBlock::Text { text }],
+                let response = queued.unwrap_or_else(|| ModelResponse {
+                    content: vec![ContentBlock::Text {
+                        text: fallback_text,
+                    }],
                     status: ResponseStatus::EndTurn,
-                    usage,
+                    usage: fallback_usage,
                     model: "mock".into(),
-                })
+                });
+                Ok(response)
             })
         }
     }
@@ -536,5 +615,120 @@ mod tests {
         assert_eq!(done.r#type, "task");
         let todo = &tickets.list_by_status(Status::Todo)[0];
         assert_eq!(todo.r#type, "bug");
+    }
+
+    use crate::tools::{Tool, ToolResult};
+
+    fn echo_tool() -> Tool {
+        Tool::new("echo", "Echo the input back")
+            .schema(serde_json::json!({
+                "type": "object",
+                "properties": { "value": { "type": "string" } },
+                "required": ["value"],
+            }))
+            .read_only(true)
+            .handler(|input, _ctx| {
+                Box::pin(async move {
+                    let v = input["value"].as_str().unwrap_or("").to_string();
+                    Ok(ToolResult::success(v))
+                })
+            })
+    }
+
+    #[tokio::test]
+    async fn tool_use_response_dispatches_and_loops() {
+        let (provider, handles) = MockProvider::queued(vec![
+            tool_use_response("call-1", "echo", serde_json::json!({"value": "hi"})),
+            text_response("done"),
+        ]);
+        let mut tickets = TicketSystem::new();
+        tickets.create("task", "", "task", "tester");
+
+        let agent = agent_with(provider, "worker").tool(echo_tool());
+        let tickets = tickets.assign(agent).run_until_empty().await;
+
+        assert_eq!(tickets.list_by_status(Status::Done).len(), 1);
+        assert_eq!(tickets.requests(), 2);
+
+        // The captured `messages` is the second call's slice — it must
+        // contain the assistant ToolUse plus the tool-result User block.
+        let captured = handles
+            .messages
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("messages captured");
+        let last = captured.last().expect("at least one message");
+        match last {
+            Message::User { content } => match content.first() {
+                Some(ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                }) => {
+                    assert_eq!(tool_use_id, "call-1");
+                    assert_eq!(content, "hi");
+                    assert!(!is_error);
+                }
+                other => panic!("expected ToolResult, got {other:?}"),
+            },
+            other => panic!("expected last message to be User(ToolResult), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_calls_counter_increments_on_dispatch() {
+        let (provider, _) = MockProvider::queued(vec![
+            tool_use_response("c1", "echo", serde_json::json!({"value": "a"})),
+            text_response("done"),
+        ]);
+        let mut tickets = TicketSystem::new();
+        tickets.create("task", "", "task", "tester");
+
+        let agent = agent_with(provider, "worker").tool(echo_tool());
+        let tickets = tickets.assign(agent).run_until_empty().await;
+
+        assert_eq!(tickets.tool_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn tool_error_surfaces_to_model_as_is_error_block() {
+        let (provider, handles) = MockProvider::queued(vec![
+            tool_use_response("c1", "broken", serde_json::json!({})),
+            text_response("done"),
+        ]);
+        let broken = Tool::new("broken", "Always fails")
+            .read_only(true)
+            .handler(|_input, _ctx| {
+                Box::pin(async move { Ok(ToolResult::error("boom")) })
+            });
+        let mut tickets = TicketSystem::new();
+        tickets.create("task", "", "task", "tester");
+
+        let agent = agent_with(provider, "worker").tool(broken);
+        let _ = tickets.assign(agent).run_until_empty().await;
+
+        let captured = handles
+            .messages
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("messages captured");
+        let last = captured.last().unwrap();
+        match last {
+            Message::User { content } => match content.first() {
+                Some(ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                }) => {
+                    assert_eq!(tool_use_id, "c1");
+                    assert!(content.contains("boom"));
+                    assert!(*is_error);
+                }
+                other => panic!("expected ToolResult, got {other:?}"),
+            },
+            other => panic!("expected User, got {other:?}"),
+        }
     }
 }

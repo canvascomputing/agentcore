@@ -1,0 +1,38 @@
+{
+  "name": "glob_tool",
+  "summary": [
+    "Find files in the working directory tree by glob pattern.",
+    "Returns matching paths sorted by modification time, newest first; capped at 200 results."
+  ],
+  "constraints": [
+    "Results are paths relative to the search base, one per line.",
+    "Use this when you need to enumerate files by name or extension before deciding what to read.",
+    "The base directory is resolved against the agent's working directory; absolute paths in `path` escape it."
+  ],
+  "anti_patterns": [
+    "To search file *contents* — use `grep_tool` instead.",
+    "To list a single directory's entries non-recursively — use `list_directory_tool`.",
+    "For open-ended exploration that needs multiple search rounds — delegate to `agent_tool`."
+  ],
+  "cautions": [
+    "IMPORTANT: results are capped at 200; if you suspect more matches, narrow the pattern rather than asking the agent to paginate."
+  ],
+  "output": [
+    "Plain text. One matching file path per line, relative to `path`. Sorted by modification time, newest first. Up to 200 lines. Empty string when nothing matches."
+  ],
+  "read_only": true,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "pattern": {
+        "type": "string",
+        "description": "Glob pattern, evaluated relative to `path` (e.g. `**/*.rs`, `src/*.toml`). Required."
+      },
+      "path": {
+        "type": "string",
+        "description": "Base directory to search under (default: `.`, i.e. the agent's working directory)."
+      }
+    },
+    "required": ["pattern"]
+  }
+}

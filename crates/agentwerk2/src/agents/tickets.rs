@@ -33,6 +33,7 @@ pub struct TicketSystem {
 struct LoopMetrics {
     steps: u64,
     requests: u64,
+    tool_calls: u64,
     input_tokens: u64,
     output_tokens: u64,
 }
@@ -304,6 +305,10 @@ impl TicketSystem {
         self.metrics.requests
     }
 
+    pub fn tool_calls(&self) -> u64 {
+        self.metrics.tool_calls
+    }
+
     pub fn input_tokens(&self) -> u64 {
         self.metrics.input_tokens
     }
@@ -322,6 +327,14 @@ impl TicketSystem {
         self.metrics.requests += 1;
         self.metrics.input_tokens += usage.input_tokens;
         self.metrics.output_tokens += usage.output_tokens;
+    }
+
+    pub(super) fn record_tool_calls(&mut self, _agent: &str, n: u64) {
+        self.metrics.tool_calls += n;
+    }
+
+    pub(super) fn interrupt_signal_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.interrupt_signal)
     }
 
     pub(super) fn record_error(&mut self, agent: &str, ticket_key: &str, err: &ProviderError) {

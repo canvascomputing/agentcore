@@ -1,0 +1,35 @@
+{
+  "name": "list_directory_tool",
+  "summary": [
+    "List the entries of a directory with type and size. Use to get a quick overview of an unfamiliar layout before drilling in."
+  ],
+  "constraints": [
+    "Returns entries sorted alphabetically by display name.",
+    "Each line carries the entry name, its kind (`file` or `dir`), and — for files — its size in bytes.",
+    "The `path` is resolved relative to the agent's working directory."
+  ],
+  "anti_patterns": [
+    "To find files by pattern across the tree — use `glob_tool`.",
+    "To search file contents — use `grep_tool`.",
+    "To read a single file — use `read_file_tool`."
+  ],
+  "cautions": [],
+  "output": [
+    "Plain text. One entry per line, alphabetically sorted: `<name>  file  <size_bytes>` for files, `<name>  dir` for directories.",
+    "In recursive mode, `<name>` is the path relative to `path`. Empty string for an empty directory."
+  ],
+  "read_only": true,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Directory to list (default: `.`)."
+      },
+      "recursive": {
+        "type": "boolean",
+        "description": "Walk subdirectories and list every entry beneath `path` (default: false). Use sparingly — prefer `glob_tool` for large trees."
+      }
+    }
+  }
+}

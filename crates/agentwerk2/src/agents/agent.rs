@@ -2,10 +2,12 @@
 //! independently of any ticket queue and paired with one via
 //! `TicketSystem::assign`.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::prompts::{PromptBuilder, Section, DEFAULT_BEHAVIOR};
-use crate::providers::Provider;
+use crate::providers::{Provider, ProviderToolDefinition};
+use crate::tools::{ToolLike, ToolRegistry};
 
 use super::r#loop::Runnable;
 use super::tickets::TicketSystem;
@@ -19,6 +21,8 @@ pub struct Agent {
     behavior: Option<String>,
     context: Option<String>,
     ticket_types: Vec<String>,
+    tools: ToolRegistry,
+    working_dir: Option<PathBuf>,
 }
 
 impl Agent {
@@ -64,6 +68,19 @@ impl Agent {
         self
     }
 
+    /// Register a tool the agent may call.
+    pub fn tool(mut self, tool: impl ToolLike + 'static) -> Self {
+        self.tools.register(tool);
+        self
+    }
+
+    /// Working directory tools resolve filesystem paths against. Defaults
+    /// to the process's current directory when unset.
+    pub fn working_dir(mut self, p: impl Into<PathBuf>) -> Self {
+        self.working_dir = Some(p.into());
+        self
+    }
+
     pub fn get_name(&self) -> &str {
         &self.name
     }
@@ -80,6 +97,20 @@ impl Agent {
 
     pub(super) fn allowed_ticket_types(&self) -> &[String] {
         &self.ticket_types
+    }
+
+    pub(super) fn tool_definitions(&self) -> Vec<ProviderToolDefinition> {
+        self.tools.definitions()
+    }
+
+    pub(super) fn tool_registry(&self) -> &ToolRegistry {
+        &self.tools
+    }
+
+    pub(super) fn working_dir_or_default(&self) -> PathBuf {
+        self.working_dir.clone().unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        })
     }
 
     pub(super) fn provider_handle(&self) -> Arc<dyn Provider> {
