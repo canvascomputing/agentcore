@@ -8,9 +8,11 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::providers::{ProviderError, TokenUsage};
+
+use super::policy::{Policies, PolicyConform};
 
 pub struct TicketSystem {
     tickets: HashMap<String, Ticket>,
@@ -18,10 +20,8 @@ pub struct TicketSystem {
     #[allow(dead_code)]
     directory: PathBuf,
     metrics: LoopMetrics,
-    pub max_steps: Option<u64>,
-    pub max_input_tokens: Option<u64>,
-    pub max_output_tokens: Option<u64>,
     interrupt_signal: Arc<AtomicBool>,
+    policies: Policies,
 }
 
 #[derive(Default)]
@@ -30,6 +30,12 @@ struct LoopMetrics {
     requests: u64,
     input_tokens: u64,
     output_tokens: u64,
+}
+
+impl PolicyConform for TicketSystem {
+    fn policies(&self) -> &Policies {
+        &self.policies
+    }
 }
 
 #[derive(Debug)]
@@ -86,10 +92,8 @@ impl Default for TicketSystem {
             next_id: 1,
             directory: PathBuf::from("./tickets"),
             metrics: LoopMetrics::default(),
-            max_steps: None,
-            max_input_tokens: None,
-            max_output_tokens: None,
             interrupt_signal: Arc::new(AtomicBool::new(false)),
+            policies: Policies::default(),
         }
     }
 }
@@ -101,18 +105,38 @@ impl TicketSystem {
 
     // ---- policy builders ----
 
-    pub fn max_steps(mut self, n: u64) -> Self {
-        self.max_steps = Some(n);
+    pub fn max_steps(mut self, n: u32) -> Self {
+        self.policies.max_steps = Some(n);
         self
     }
 
     pub fn max_input_tokens(mut self, n: u64) -> Self {
-        self.max_input_tokens = Some(n);
+        self.policies.max_input_tokens = Some(n);
         self
     }
 
     pub fn max_output_tokens(mut self, n: u64) -> Self {
-        self.max_output_tokens = Some(n);
+        self.policies.max_output_tokens = Some(n);
+        self
+    }
+
+    pub fn max_request_tokens(mut self, n: u32) -> Self {
+        self.policies.max_request_tokens = Some(n);
+        self
+    }
+
+    pub fn max_schema_retries(mut self, n: u32) -> Self {
+        self.policies.max_schema_retries = Some(n);
+        self
+    }
+
+    pub fn max_request_retries(mut self, n: u32) -> Self {
+        self.policies.max_request_retries = n;
+        self
+    }
+
+    pub fn request_retry_delay(mut self, d: Duration) -> Self {
+        self.policies.request_retry_delay = d;
         self
     }
 
@@ -300,17 +324,18 @@ impl TicketSystem {
     }
 
     pub(super) fn policy_violated(&self) -> bool {
-        if let Some(limit) = self.max_steps {
-            if self.metrics.steps >= limit {
+        let p = &self.policies;
+        if let Some(limit) = p.max_steps {
+            if self.metrics.steps >= u64::from(limit) {
                 return true;
             }
         }
-        if let Some(limit) = self.max_input_tokens {
+        if let Some(limit) = p.max_input_tokens {
             if self.metrics.input_tokens >= limit {
                 return true;
             }
         }
-        if let Some(limit) = self.max_output_tokens {
+        if let Some(limit) = p.max_output_tokens {
             if self.metrics.output_tokens >= limit {
                 return true;
             }
@@ -659,22 +684,61 @@ mod tests {
     }
 
     #[test]
-    fn new_starts_with_no_policy_limits() {
+    fn defaults_match_documented_values() {
         let system = TicketSystem::new();
-        assert_eq!(system.max_steps, None);
-        assert_eq!(system.max_input_tokens, None);
-        assert_eq!(system.max_output_tokens, None);
+        let p = system.policies();
+        assert_eq!(p.max_steps, None);
+        assert_eq!(p.max_input_tokens, None);
+        assert_eq!(p.max_output_tokens, None);
+        assert_eq!(p.max_request_tokens, None);
+        assert_eq!(p.max_schema_retries, Some(10));
+        assert_eq!(p.max_request_retries, 10);
+        assert_eq!(p.request_retry_delay, Duration::from_millis(500));
     }
 
     #[test]
-    fn policy_builders_set_limits() {
+    fn all_seven_builders_set_their_fields() {
         let system = TicketSystem::new()
             .max_steps(10)
             .max_input_tokens(1000)
-            .max_output_tokens(500);
-        assert_eq!(system.max_steps, Some(10));
-        assert_eq!(system.max_input_tokens, Some(1000));
-        assert_eq!(system.max_output_tokens, Some(500));
+            .max_output_tokens(500)
+            .max_request_tokens(256)
+            .max_schema_retries(3)
+            .max_request_retries(5)
+            .request_retry_delay(Duration::from_secs(2));
+        let p = system.policies();
+        assert_eq!(p.max_steps, Some(10));
+        assert_eq!(p.max_input_tokens, Some(1000));
+        assert_eq!(p.max_output_tokens, Some(500));
+        assert_eq!(p.max_request_tokens, Some(256));
+        assert_eq!(p.max_schema_retries, Some(3));
+        assert_eq!(p.max_request_retries, 5);
+        assert_eq!(p.request_retry_delay, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn default_max_schema_retries_constant_is_ten() {
+        assert_eq!(Policies::DEFAULT_MAX_SCHEMA_RETRIES, 10);
+    }
+
+    #[test]
+    fn default_max_request_retries_constant_is_ten() {
+        assert_eq!(Policies::DEFAULT_MAX_REQUEST_RETRIES, 10);
+    }
+
+    #[test]
+    fn default_request_retry_delay_constant_is_500ms() {
+        assert_eq!(
+            Policies::DEFAULT_REQUEST_RETRY_DELAY,
+            Duration::from_millis(500)
+        );
+    }
+
+    #[test]
+    fn policy_conform_trait_is_implemented_for_ticket_system() {
+        let system = TicketSystem::new().max_steps(7);
+        let p = <TicketSystem as PolicyConform>::policies(&system);
+        assert_eq!(p.max_steps, Some(7));
     }
 
     #[test]

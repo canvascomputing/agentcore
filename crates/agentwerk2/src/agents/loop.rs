@@ -8,6 +8,7 @@ use crate::providers::types::StreamEvent;
 use crate::providers::{ContentBlock, Message, ModelRequest};
 
 use super::agent::Agent;
+use super::policy::PolicyConform;
 use super::tickets::Status;
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -37,6 +38,7 @@ pub(super) async fn handle_tickets(agent: Agent) {
             if sys.is_interrupted() || sys.policy_violated() {
                 return;
             }
+            let max_request_tokens = sys.policies().max_request_tokens;
             sys.list_by_status(Status::Todo)
                 .first()
                 .map(|t| t.key.clone())
@@ -46,11 +48,11 @@ pub(super) async fn handle_tickets(agent: Agent) {
                     let prompt = sys
                         .get(&key)
                         .map(|t| format!("{}\n\n{}", t.summary, t.description));
-                    (key, prompt)
+                    (key, prompt, max_request_tokens)
                 })
         };
 
-        let Some((key, Some(prompt))) = work else {
+        let Some((key, Some(prompt), max_request_tokens)) = work else {
             tokio::time::sleep(IDLE_POLL_INTERVAL).await;
             continue;
         };
@@ -60,7 +62,7 @@ pub(super) async fn handle_tickets(agent: Agent) {
             system_prompt: agent.system_prompt(),
             messages: vec![Message::user(prompt)],
             tools: Vec::new(),
-            max_request_tokens: None,
+            max_request_tokens,
             tool_choice: None,
         };
         let result = agent
@@ -114,29 +116,40 @@ mod tests {
 
     /// MockProvider that yields once before responding so concurrent
     /// agents interleave. Captures the most recent observed
-    /// `system_prompt` for assertions.
+    /// `system_prompt` and `max_request_tokens` for assertions.
     struct MockProvider {
         text: String,
         usage: TokenUsage,
         captured_prompt: Arc<Mutex<Option<String>>>,
+        captured_max_tokens: Arc<Mutex<Option<u32>>>,
+    }
+
+    struct MockHandles {
+        prompt: Arc<Mutex<Option<String>>>,
+        max_tokens: Arc<Mutex<Option<u32>>>,
     }
 
     impl MockProvider {
-        fn new(text: impl Into<String>) -> (Arc<Self>, Arc<Mutex<Option<String>>>) {
+        fn new(text: impl Into<String>) -> (Arc<Self>, MockHandles) {
             Self::with_usage(text, TokenUsage::default())
         }
 
-        fn with_usage(
-            text: impl Into<String>,
-            usage: TokenUsage,
-        ) -> (Arc<Self>, Arc<Mutex<Option<String>>>) {
-            let captured = Arc::new(Mutex::new(None));
+        fn with_usage(text: impl Into<String>, usage: TokenUsage) -> (Arc<Self>, MockHandles) {
+            let prompt = Arc::new(Mutex::new(None));
+            let max_tokens = Arc::new(Mutex::new(None));
             let provider = Arc::new(Self {
                 text: text.into(),
                 usage,
-                captured_prompt: Arc::clone(&captured),
+                captured_prompt: Arc::clone(&prompt),
+                captured_max_tokens: Arc::clone(&max_tokens),
             });
-            (provider, captured)
+            (
+                provider,
+                MockHandles {
+                    prompt,
+                    max_tokens,
+                },
+            )
         }
     }
 
@@ -147,6 +160,7 @@ mod tests {
             _on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
         ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
             *self.captured_prompt.lock().unwrap() = Some(request.system_prompt);
+            *self.captured_max_tokens.lock().unwrap() = request.max_request_tokens;
             let text = self.text.clone();
             let usage = self.usage.clone();
             Box::pin(async move {
@@ -307,7 +321,7 @@ mod tests {
 
     #[tokio::test]
     async fn system_prompt_includes_role_behavior_and_context() {
-        let (provider, captured) = MockProvider::new("ok");
+        let (provider, handles) = MockProvider::new("ok");
         let (system, signal) = shared_system();
         seed(&system, "task");
 
@@ -318,7 +332,12 @@ mod tests {
             .context("CONTEXT_TEXT");
         drain_then_interrupt(Arc::clone(&system), signal, vec![agent]).await;
 
-        let prompt = captured.lock().unwrap().clone().expect("prompt captured");
+        let prompt = handles
+            .prompt
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("prompt captured");
         let role_pos = prompt.find("ROLE_TEXT").expect("role present");
         let behavior_pos = prompt.find("BEHAVIOR_TEXT").expect("behavior present");
         let context_pos = prompt.find("CONTEXT_TEXT").expect("context present");
@@ -328,7 +347,7 @@ mod tests {
 
     #[tokio::test]
     async fn system_prompt_falls_back_to_default_behavior_when_unset() {
-        let (provider, captured) = MockProvider::new("ok");
+        let (provider, handles) = MockProvider::new("ok");
         let (system, signal) = shared_system();
         seed(&system, "task");
 
@@ -336,9 +355,32 @@ mod tests {
         let agent = Agent::new("worker", runtime).role("ROLE_TEXT");
         drain_then_interrupt(Arc::clone(&system), signal, vec![agent]).await;
 
-        let prompt = captured.lock().unwrap().clone().expect("prompt captured");
+        let prompt = handles
+            .prompt
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("prompt captured");
         assert!(prompt.contains("ROLE_TEXT"));
         assert!(prompt.contains(DEFAULT_BEHAVIOR));
+    }
+
+    #[tokio::test]
+    async fn max_request_tokens_is_forwarded_to_the_provider_request() {
+        let (provider, handles) = MockProvider::new("ok");
+        let signal = Arc::new(AtomicBool::new(false));
+        let system = Arc::new(Mutex::new(
+            TicketSystem::new()
+                .interrupt_signal(Arc::clone(&signal))
+                .max_request_tokens(256),
+        ));
+        seed(&system, "task");
+
+        let runtime = build(provider, Arc::clone(&system));
+        let agent = Agent::new("worker", runtime);
+        drain_then_interrupt(Arc::clone(&system), signal, vec![agent]).await;
+
+        assert_eq!(*handles.max_tokens.lock().unwrap(), Some(256));
     }
 
     #[tokio::test]
