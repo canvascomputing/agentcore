@@ -1264,6 +1264,7 @@ name = "use-cases"
 version = "0.1.0"
 dependencies = [
  "agentwerk",
+ "agentwerk2",
  "reqwest",
  "serde_json",
  "tokio",
