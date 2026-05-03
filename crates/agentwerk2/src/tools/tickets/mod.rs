@@ -1,13 +1,13 @@
 //! Ticket tools — give an agent a call surface for reading and mutating
 //! the surrounding `TicketSystem`. Three tools share one dispatch
-//! helper: `ReadTicketsTool` (read-only), `WriteTicketsTool`
-//! (mutating), `ManageTicketsTool` (both).
+//! helper: `ReadTicketsTool` (read-only), `WriteTicketsTool` (mutating),
+//! `ManageTicketsTool` (both).
 
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
-use crate::agents::tickets::{Attachment, Status, TicketError, TicketSystem};
+use crate::agents::tickets::{Status, TicketError, TicketSystemState};
 use crate::schemas::{format_violations, Schema};
 
 use super::tool::{ToolContext, ToolResult};
@@ -24,8 +24,7 @@ pub use write_tickets::WriteTicketsTool;
 /// and lets each tool reject actions outside its allow-list with a
 /// uniform error message.
 pub(super) const READ_ACTIONS: &[&str] = &["get", "list", "search"];
-pub(super) const WRITE_ACTIONS: &[&str] =
-    &["create", "edit", "comment", "transition", "assign", "attach"];
+pub(super) const WRITE_ACTIONS: &[&str] = &["create", "edit", "done"];
 
 pub(super) fn dispatch(input: Value, ctx: &ToolContext, allowed: &[&str]) -> ToolResult {
     let action = match input["action"].as_str() {
@@ -38,20 +37,17 @@ pub(super) fn dispatch(input: Value, ctx: &ToolContext, allowed: &[&str]) -> Too
             allowed.join(", ")
         ));
     }
-    let Some(tickets) = ctx.tickets_handle().cloned() else {
+    let Some(state) = ctx.ticket_system_state_handle().cloned() else {
         return ToolResult::error("Ticket system unavailable in this context");
     };
 
     match action {
-        "get" => action_get(&tickets, &input, ctx),
-        "list" => action_list(&tickets, &input),
-        "search" => action_search(&tickets, &input),
-        "create" => action_create(&tickets, &input, ctx),
-        "edit" => action_edit(&tickets, &input, ctx),
-        "comment" => action_comment(&tickets, &input, ctx),
-        "transition" => action_transition(&tickets, &input, ctx),
-        "assign" => action_assign(&tickets, &input, ctx),
-        "attach" => action_attach(&tickets, &input, ctx),
+        "get" => action_get(&state, &input, ctx),
+        "list" => action_list(&state, &input),
+        "search" => action_search(&state, &input),
+        "create" => action_create(&state, &input, ctx),
+        "edit" => action_edit(&state, &input, ctx),
+        "done" => action_done(&state, &input, ctx),
         other => ToolResult::error(format!("Unknown action `{other}`")),
     }
 }
@@ -68,85 +64,88 @@ fn resolve_key(input: &Value, ctx: &ToolContext) -> Result<String, ToolResult> {
     }
 }
 
-fn parse_status(s: &str) -> Result<Status, ToolResult> {
-    match s {
-        "Todo" => Ok(Status::Todo),
-        "InProgress" => Ok(Status::InProgress),
-        "InReview" => Ok(Status::InReview),
-        "Done" => Ok(Status::Done),
-        "Failed" => Ok(Status::Failed),
-        other => Err(ToolResult::error(format!(
-            "Invalid status `{other}`. Expected one of Todo, InProgress, InReview, Done, Failed"
-        ))),
+fn ticket_error_message(err: TicketError) -> String {
+    err.to_string()
+}
+
+fn render_ticket(state: &TicketSystemState, key: &str) -> Option<String> {
+    let t = state.get(key)?;
+    let mut out = String::new();
+    out.push_str(&format!("# {}\n", t.key()));
+    out.push_str(&format!("- status: {}\n", status_label(t.status())));
+    out.push_str(&format!("- reporter: {}\n", t.reporter()));
+    out.push_str(&format!(
+        "- assignee: {}\n",
+        t.assignee().unwrap_or("(none)")
+    ));
+    let labels_label = if t.labels.is_empty() {
+        "(none)".to_string()
+    } else {
+        t.labels.join(", ")
+    };
+    out.push_str(&format!("- labels: {labels_label}\n"));
+    out.push('\n');
+    match &t.task {
+        serde_json::Value::String(s) => {
+            out.push_str(s);
+            out.push('\n');
+        }
+        other => {
+            out.push_str("```json\n");
+            out.push_str(&serde_json::to_string_pretty(other).unwrap_or_default());
+            out.push_str("\n```\n");
+        }
     }
+    out.push_str("\n## Result\n");
+    out.push_str(t.result().unwrap_or("(no result)"));
+    out.push('\n');
+    Some(out)
 }
 
 fn status_label(s: Status) -> &'static str {
     match s {
         Status::Todo => "Todo",
         Status::InProgress => "InProgress",
-        Status::InReview => "InReview",
         Status::Done => "Done",
         Status::Failed => "Failed",
     }
 }
 
-fn ticket_error_message(err: TicketError) -> String {
-    err.to_string()
-}
-
-fn render_ticket(sys: &TicketSystem, key: &str) -> Option<String> {
-    let t = sys.get(key)?;
-    let mut out = String::new();
-    out.push_str(&format!("# {} — {}\n", t.key, t.summary));
-    out.push_str(&format!("- status: {}\n", status_label(t.status)));
-    out.push_str(&format!("- type: {}\n", t.r#type));
-    out.push_str(&format!("- reporter: {}\n", t.reporter));
-    out.push_str(&format!(
-        "- assignee: {}\n",
-        t.assignee.as_deref().unwrap_or("(none)")
-    ));
-    if !t.description.is_empty() {
-        out.push('\n');
-        out.push_str(&t.description);
-        out.push('\n');
+fn parse_status_for_list(s: &str) -> Result<Status, ToolResult> {
+    match s {
+        "Todo" => Ok(Status::Todo),
+        "InProgress" => Ok(Status::InProgress),
+        "Done" => Ok(Status::Done),
+        "Failed" => Ok(Status::Failed),
+        other => Err(ToolResult::error(format!(
+            "Invalid status `{other}`. Expected one of Todo, InProgress, Done, Failed"
+        ))),
     }
-    if !t.comments.is_empty() {
-        out.push_str("\n## Comments\n");
-        for c in &t.comments {
-            out.push_str(&format!("- {}: {}\n", c.author, c.body));
-        }
-    }
-    if !t.attachments.is_empty() {
-        out.push_str("\n## Attachments\n");
-        for a in &t.attachments {
-            let label = if a.schema.is_some() { "schema" } else { "no schema" };
-            out.push_str(&format!(
-                "- {} ({label}): {}\n",
-                a.filename,
-                truncate_for_preview(&a.content.to_string(), 200),
-            ));
-        }
-    }
-    Some(out)
 }
 
 fn truncate_for_preview(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
+    let one_line = s.lines().next().unwrap_or("");
+    if one_line.chars().count() <= max {
+        one_line.to_string()
     } else {
-        let cut: String = s.chars().take(max).collect();
+        let cut: String = one_line.chars().take(max).collect();
         format!("{cut}…")
     }
 }
 
-fn render_summary_list(tickets: &[(&str, &str, Status, Option<&str>, &str)]) -> String {
+fn render_summary_list(
+    tickets: &[(&str, &str, Status, Option<&str>, &[String])],
+) -> String {
     let mut out = String::new();
-    for (key, summary, status, assignee, ticket_type) in tickets {
+    for (key, task_preview, status, assignee, labels) in tickets {
+        let labels_label = if labels.is_empty() {
+            String::new()
+        } else {
+            format!("[{}] ", labels.join(","))
+        };
         out.push_str(&format!(
-            "- {key} [{status}] [{ttype}] {assignee_label} — {summary}\n",
+            "- {key} [{status}] {labels_label}{assignee_label} — {task_preview}\n",
             status = status_label(*status),
-            ttype = ticket_type,
             assignee_label = match assignee {
                 Some(a) => format!("@{a}"),
                 None => "(unassigned)".to_string(),
@@ -156,22 +155,34 @@ fn render_summary_list(tickets: &[(&str, &str, Status, Option<&str>, &str)]) -> 
     out
 }
 
-fn action_get(tickets: &Arc<Mutex<TicketSystem>>, input: &Value, ctx: &ToolContext) -> ToolResult {
+fn task_preview(task: &serde_json::Value) -> String {
+    let raw = match task {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    truncate_for_preview(&raw, 80)
+}
+
+fn action_get(
+    state: &Arc<Mutex<TicketSystemState>>,
+    input: &Value,
+    ctx: &ToolContext,
+) -> ToolResult {
     let key = match resolve_key(input, ctx) {
         Ok(k) => k,
         Err(e) => return e,
     };
-    let sys = tickets.lock().unwrap();
+    let sys = state.lock().unwrap();
     match render_ticket(&sys, &key) {
         Some(text) => ToolResult::success(text),
         None => ToolResult::error(format!("Ticket {key} not found")),
     }
 }
 
-fn action_list(tickets: &Arc<Mutex<TicketSystem>>, input: &Value) -> ToolResult {
-    let sys = tickets.lock().unwrap();
+fn action_list(state: &Arc<Mutex<TicketSystemState>>, input: &Value) -> ToolResult {
+    let sys = state.lock().unwrap();
     let assignee = input["assignee"].as_str();
-    let status = input["status"].as_str().map(parse_status);
+    let status = input["status"].as_str().map(parse_status_for_list);
     let status = match status {
         Some(Ok(s)) => Some(s),
         Some(Err(e)) => return e,
@@ -182,17 +193,15 @@ fn action_list(tickets: &Arc<Mutex<TicketSystem>>, input: &Value) -> ToolResult 
         (Some(s), Some(a)) => sys
             .list_by_status(s)
             .into_iter()
-            .filter(|t| t.assignee.as_deref() == Some(a))
+            .filter(|t| t.assignee() == Some(a))
             .collect(),
         (Some(s), None) => sys.list_by_status(s),
         (None, Some(a)) => sys.list_by_assignee(a),
         (None, None) => {
-            // No filter — list everything sorted by status grouping.
             let mut all: Vec<&_> = Vec::new();
             for s in [
                 Status::Todo,
                 Status::InProgress,
-                Status::InReview,
                 Status::Done,
                 Status::Failed,
             ] {
@@ -202,217 +211,194 @@ fn action_list(tickets: &Arc<Mutex<TicketSystem>>, input: &Value) -> ToolResult 
         }
     };
 
-    let mut rows = Vec::with_capacity(pool.len().min(50));
+    let mut previews: Vec<String> = Vec::with_capacity(pool.len().min(50));
+    let mut rows: Vec<(&str, String, Status, Option<&str>, &[String])> =
+        Vec::with_capacity(pool.len().min(50));
     for t in pool.iter().take(50) {
+        previews.push(task_preview(&t.task));
         rows.push((
-            t.key.as_str(),
-            t.summary.as_str(),
-            t.status,
-            t.assignee.as_deref(),
-            t.r#type.as_str(),
+            t.key(),
+            previews.last().cloned().unwrap_or_default(),
+            t.status(),
+            t.assignee(),
+            &t.labels,
         ));
     }
     if rows.is_empty() {
         return ToolResult::success("(no matching tickets)".to_string());
     }
-    ToolResult::success(render_summary_list(&rows))
+    let borrowed: Vec<(&str, &str, Status, Option<&str>, &[String])> = rows
+        .iter()
+        .map(|(k, p, s, a, l)| (*k, p.as_str(), *s, *a, *l))
+        .collect();
+    ToolResult::success(render_summary_list(&borrowed))
 }
 
-fn action_search(tickets: &Arc<Mutex<TicketSystem>>, input: &Value) -> ToolResult {
+fn action_search(state: &Arc<Mutex<TicketSystemState>>, input: &Value) -> ToolResult {
     let query = match input["query"].as_str() {
         Some(q) => q,
         None => return ToolResult::error("Missing required parameter: query"),
     };
-    let sys = tickets.lock().unwrap();
+    let sys = state.lock().unwrap();
     let hits = sys.search(query);
-    let mut rows = Vec::with_capacity(hits.len().min(50));
+    let mut previews: Vec<String> = Vec::with_capacity(hits.len().min(50));
+    let mut rows: Vec<(&str, String, Status, Option<&str>, &[String])> =
+        Vec::with_capacity(hits.len().min(50));
     for t in hits.iter().take(50) {
+        previews.push(task_preview(&t.task));
         rows.push((
-            t.key.as_str(),
-            t.summary.as_str(),
-            t.status,
-            t.assignee.as_deref(),
-            t.r#type.as_str(),
+            t.key(),
+            previews.last().cloned().unwrap_or_default(),
+            t.status(),
+            t.assignee(),
+            &t.labels,
         ));
     }
     if rows.is_empty() {
         return ToolResult::success("(no matching tickets)".to_string());
     }
-    ToolResult::success(render_summary_list(&rows))
+    let borrowed: Vec<(&str, &str, Status, Option<&str>, &[String])> = rows
+        .iter()
+        .map(|(k, p, s, a, l)| (*k, p.as_str(), *s, *a, *l))
+        .collect();
+    ToolResult::success(render_summary_list(&borrowed))
 }
 
 fn action_create(
-    tickets: &Arc<Mutex<TicketSystem>>,
+    state: &Arc<Mutex<TicketSystemState>>,
     input: &Value,
     ctx: &ToolContext,
 ) -> ToolResult {
-    let summary = match input["summary"].as_str() {
-        Some(s) => s.to_string(),
-        None => return ToolResult::error("Missing required parameter: summary"),
-    };
-    let description = input["description"].as_str().unwrap_or("").to_string();
-    let ticket_type = input["type"].as_str().unwrap_or("task").to_string();
-    let reporter = input["reporter"]
-        .as_str()
-        .map(|s| s.to_string())
-        .or_else(|| ctx.agent_name_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| "agent".to_string());
-
-    let mut sys = tickets.lock().unwrap();
-    let key = sys
-        .create(summary, description, ticket_type, reporter)
-        .key
-        .clone();
-    ToolResult::success(format!("Created ticket {key}"))
-}
-
-fn action_edit(tickets: &Arc<Mutex<TicketSystem>>, input: &Value, ctx: &ToolContext) -> ToolResult {
-    let key = match resolve_key(input, ctx) {
-        Ok(k) => k,
-        Err(e) => return e,
-    };
-    let new_summary = input["summary"].as_str().map(|s| s.to_string());
-    let new_description = input["description"].as_str().map(|s| s.to_string());
-    if new_summary.is_none() && new_description.is_none() {
-        return ToolResult::error("Edit needs at least one of `summary` or `description`");
-    }
-    let mut sys = tickets.lock().unwrap();
-    match sys.edit_ticket(&key, new_summary, new_description) {
-        Ok(()) => ToolResult::success(format!("Edited ticket {key}")),
-        Err(e) => ToolResult::error(ticket_error_message(e)),
-    }
-}
-
-fn action_comment(
-    tickets: &Arc<Mutex<TicketSystem>>,
-    input: &Value,
-    ctx: &ToolContext,
-) -> ToolResult {
-    let key = match resolve_key(input, ctx) {
-        Ok(k) => k,
-        Err(e) => return e,
-    };
-    let body = match input["body"].as_str() {
-        Some(b) => b.to_string(),
-        None => return ToolResult::error("Missing required parameter: body"),
-    };
-    let author = input["author"]
-        .as_str()
-        .map(|s| s.to_string())
-        .or_else(|| ctx.agent_name_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| "agent".to_string());
-
-    let mut sys = tickets.lock().unwrap();
-    match sys.add_comment(&key, author, body) {
-        Ok(()) => ToolResult::success(format!("Commented on {key}")),
-        Err(e) => ToolResult::error(ticket_error_message(e)),
-    }
-}
-
-fn action_transition(
-    tickets: &Arc<Mutex<TicketSystem>>,
-    input: &Value,
-    ctx: &ToolContext,
-) -> ToolResult {
-    let key = match resolve_key(input, ctx) {
-        Ok(k) => k,
-        Err(e) => return e,
-    };
-    let status = match input["status"].as_str() {
-        Some(s) => s,
-        None => return ToolResult::error("Missing required parameter: status"),
-    };
-    let target = match parse_status(status) {
-        Ok(s) => s,
-        Err(e) => return e,
-    };
-    let mut sys = tickets.lock().unwrap();
-    match sys.update_status(&key, target) {
-        Ok(()) => ToolResult::success(format!("Transitioned {key} to {}", status_label(target))),
-        Err(e) => ToolResult::error(ticket_error_message(e)),
-    }
-}
-
-fn action_assign(
-    tickets: &Arc<Mutex<TicketSystem>>,
-    input: &Value,
-    ctx: &ToolContext,
-) -> ToolResult {
-    let key = match resolve_key(input, ctx) {
-        Ok(k) => k,
-        Err(e) => return e,
-    };
-    let assignee = match input["assignee"].as_str() {
-        Some(a) => a.to_string(),
-        None => return ToolResult::error("Missing required parameter: assignee"),
-    };
-    let mut sys = tickets.lock().unwrap();
-    if assignee.is_empty() {
-        match sys.clear_assignee(&key) {
-            Ok(()) => ToolResult::success(format!("Cleared assignee on {key}")),
-            Err(e) => ToolResult::error(ticket_error_message(e)),
-        }
-    } else {
-        match sys.assign_to(&key, assignee.clone()) {
-            Ok(()) => ToolResult::success(format!("Assigned {key} to {assignee}")),
-            Err(e) => ToolResult::error(ticket_error_message(e)),
-        }
-    }
-}
-
-fn action_attach(
-    tickets: &Arc<Mutex<TicketSystem>>,
-    input: &Value,
-    ctx: &ToolContext,
-) -> ToolResult {
-    let key = match resolve_key(input, ctx) {
-        Ok(k) => k,
-        Err(e) => return e,
-    };
-    let filename = match input["filename"].as_str() {
-        Some(f) if !f.is_empty() => f.to_string(),
-        Some(_) => return ToolResult::error("`filename` must be non-empty"),
-        None => return ToolResult::error("Missing required parameter: filename"),
-    };
-    let content = match input.get("content") {
-        Some(c) => c.clone(),
-        None => return ToolResult::error("Missing required parameter: content"),
+    let task = match input.get("task") {
+        Some(v) => v.clone(),
+        None => return ToolResult::error("Missing required parameter: task"),
     };
 
-    // Schema is optional. A malformed schema is a programming error
-    // (the agent's prompt is wrong, or the framework fed garbage in)
-    // — surface it as a plain ToolResult::error so the loop's retry
-    // budget is *not* burnt for it.
+    let labels: Vec<String> = match input.get("labels") {
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect(),
+        Some(Value::Null) | None => Vec::new(),
+        Some(_) => return ToolResult::error("`labels` must be an array of strings"),
+    };
+
     let schema = match input.get("schema") {
         Some(doc) if !doc.is_null() => match Schema::parse(doc.clone()) {
             Ok(s) => Some(s),
             Err(e) => {
                 return ToolResult::error(format!(
-                    "Cannot attach to {key}: supplied `schema` is invalid: {e}"
+                    "Cannot create: supplied `schema` is invalid: {e}"
                 ));
             }
         },
         _ => None,
     };
 
-    if let Some(schema) = &schema {
-        if let Err(violations) = schema.validate(&content) {
-            // Schema-validation failure: this is the retryable path.
-            // Returning ToolResult::SchemaError tells the registry's
-            // invoke wrapper to map this to ToolError::SchemaValidationFailed
-            // so the loop counts it against `max_schema_retries`.
+    let assign = input.get("assign").and_then(|v| v.as_str()).map(String::from);
+
+    let mut ticket = crate::agents::tickets::Ticket::new(task).labels(labels);
+    if let Some(schema) = schema {
+        ticket = ticket.schema(schema);
+    }
+    if let Some(who) = assign {
+        ticket = ticket.assign(who);
+    }
+
+    let reporter = ctx
+        .agent_name_str()
+        .expect("agent_name on ToolContext")
+        .to_string();
+    let mut sys = state.lock().unwrap();
+    let key = sys.insert(ticket, reporter).key().to_string();
+    ToolResult::success(format!("Created ticket {key}"))
+}
+
+fn action_edit(
+    state: &Arc<Mutex<TicketSystemState>>,
+    input: &Value,
+    ctx: &ToolContext,
+) -> ToolResult {
+    let key = match resolve_key(input, ctx) {
+        Ok(k) => k,
+        Err(e) => return e,
+    };
+
+    let new_task = input.get("task").cloned();
+    let new_labels: Option<Vec<String>> = match input.get("labels") {
+        Some(Value::Array(arr)) => Some(
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect(),
+        ),
+        Some(Value::Null) | None => None,
+        Some(_) => return ToolResult::error("`labels` must be an array of strings"),
+    };
+    let new_schema: Option<Option<Schema>> = match input.get("schema") {
+        Some(Value::Null) => Some(None),
+        Some(doc) => match Schema::parse(doc.clone()) {
+            Ok(s) => Some(Some(s)),
+            Err(e) => {
+                return ToolResult::error(format!(
+                    "Cannot edit {key}: supplied `schema` is invalid: {e}"
+                ));
+            }
+        },
+        None => None,
+    };
+
+    if new_task.is_none() && new_labels.is_none() && new_schema.is_none() {
+        return ToolResult::error("Edit needs at least one of `task`, `labels`, or `schema`");
+    }
+
+    let mut sys = state.lock().unwrap();
+    match sys.edit_ticket(&key, new_task, new_labels, new_schema) {
+        Ok(()) => ToolResult::success(format!("Edited ticket {key}")),
+        Err(e) => ToolResult::error(ticket_error_message(e)),
+    }
+}
+
+fn action_done(
+    state: &Arc<Mutex<TicketSystemState>>,
+    input: &Value,
+    ctx: &ToolContext,
+) -> ToolResult {
+    let key = match resolve_key(input, ctx) {
+        Ok(k) => k,
+        Err(e) => return e,
+    };
+
+    let result = input
+        .get("result")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let schema = {
+        let sys = state.lock().unwrap();
+        sys.get(&key).and_then(|t| t.schema.clone())
+    };
+
+    if let Some(schema) = schema.as_ref() {
+        let parsed: serde_json::Value = match serde_json::from_str(&result) {
+            Ok(v) => v,
+            Err(e) => {
+                return ToolResult::schema_error(format!(
+                    "Result is not valid JSON: {e}"
+                ));
+            }
+        };
+        if let Err(violations) = schema.validate(&parsed) {
             return ToolResult::schema_error(format_violations(&violations));
         }
     }
 
-    let attachment = Attachment {
-        filename,
-        content,
-        schema,
-    };
-    let mut sys = tickets.lock().unwrap();
-    match sys.add_attachment(&key, attachment) {
-        Ok(()) => ToolResult::success(format!("Attached to {key}")),
+    let mut sys = state.lock().unwrap();
+    if let Err(e) = sys.set_result(&key, result) {
+        return ToolResult::error(ticket_error_message(e));
+    }
+    match sys.update_status(&key, Status::Done) {
+        Ok(()) => ToolResult::success(format!("Ticket {key} marked done")),
         Err(e) => ToolResult::error(ticket_error_message(e)),
     }
 }
@@ -421,15 +407,16 @@ fn action_attach(
 mod tests {
     use super::super::tool::ToolLike;
     use super::*;
+    use crate::agents::tickets::Ticket;
     use std::path::PathBuf;
 
     fn ctx_with(
-        tickets: Arc<Mutex<TicketSystem>>,
+        state: Arc<Mutex<TicketSystemState>>,
         current: Option<&str>,
         agent: &str,
     ) -> ToolContext {
         let mut ctx = ToolContext::new(PathBuf::from("/tmp"))
-            .tickets(tickets)
+            .ticket_system_state(state)
             .agent_name(agent.to_string());
         if let Some(k) = current {
             ctx = ctx.current_ticket(k.to_string());
@@ -437,53 +424,52 @@ mod tests {
         ctx
     }
 
-    fn shared_with_one_ticket() -> (Arc<Mutex<TicketSystem>>, String) {
-        let mut sys = TicketSystem::new();
-        let key = sys.create("title", "body", "task", "tester").key.clone();
-        (Arc::new(Mutex::new(sys)), key)
+    fn shared_with_one_ticket() -> (Arc<Mutex<TicketSystemState>>, String) {
+        let mut state = TicketSystemState::default();
+        state.insert(Ticket::new("body"), "tester".into());
+        let key = "TICKET-1".to_string();
+        // Loop normally moves Todo → InProgress on claim; for the
+        // `done`-action tests we simulate that by force-flipping here.
+        state.update_status(&key, Status::InProgress).unwrap();
+        (Arc::new(Mutex::new(state)), key)
     }
 
-    async fn call(tool: &dyn ToolLike, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
+    async fn call(
+        tool: &dyn ToolLike,
+        input: serde_json::Value,
+        ctx: &ToolContext,
+    ) -> ToolResult {
         tool.call(input, ctx).await.unwrap()
     }
 
     fn unwrap_text(result: &ToolResult) -> &str {
-        let (ToolResult::Success(s) | ToolResult::Error(s) | ToolResult::SchemaError(s)) = result;
+        let (ToolResult::Success(s) | ToolResult::Error(s) | ToolResult::SchemaError(s)) =
+            result;
         s
     }
-
-    // ---- ReadTicketsTool ----
 
     #[tokio::test]
     async fn read_get_defaults_key_to_current_ticket() {
         let (shared, key) = shared_with_one_ticket();
         let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
-        let result = call(&ReadTicketsTool, serde_json::json!({"action": "get"}), &ctx).await;
-        let text = unwrap_text(&result);
-        assert!(text.contains(&key), "expected key in output: {text}");
-        assert!(text.contains("title"));
-    }
-
-    #[tokio::test]
-    async fn read_get_with_explicit_key() {
-        let (shared, key) = shared_with_one_ticket();
-        let ctx = ctx_with(Arc::clone(&shared), None, "alice");
         let result = call(
             &ReadTicketsTool,
-            serde_json::json!({"action": "get", "key": key}),
+            serde_json::json!({"action": "get"}),
             &ctx,
         )
         .await;
-        assert!(matches!(result, ToolResult::Success(_)));
+        let text = unwrap_text(&result);
+        assert!(text.contains(&key), "expected key in output: {text}");
+        assert!(text.contains("body"));
     }
 
     #[tokio::test]
     async fn read_list_filters_by_status() {
-        let mut sys = TicketSystem::new();
-        let in_progress = sys.create("a", "", "task", "tester").key.clone();
-        let _todo = sys.create("b", "", "task", "tester").key.clone();
-        sys.update_status(&in_progress, Status::InProgress).unwrap();
-        let shared = Arc::new(Mutex::new(sys));
+        let mut state = TicketSystemState::default();
+        state.insert(Ticket::new("a"), "tester".into());
+        state.insert(Ticket::new("b"), "tester".into());
+        state.update_status("TICKET-1", Status::InProgress).unwrap();
+        let shared = Arc::new(Mutex::new(state));
 
         let ctx = ctx_with(Arc::clone(&shared), None, "alice");
         let result = call(
@@ -493,412 +479,203 @@ mod tests {
         )
         .await;
         let text = unwrap_text(&result);
-        assert!(text.contains(&in_progress));
-        assert!(!text.contains("- TICKET-2"));
+        assert!(text.contains("TICKET-1"));
+        assert!(!text.contains("TICKET-2"));
     }
 
     #[tokio::test]
-    async fn read_list_filters_by_assignee() {
-        let mut sys = TicketSystem::new();
-        let mine = sys.create("mine", "", "task", "tester").key.clone();
-        let theirs = sys.create("theirs", "", "task", "tester").key.clone();
-        sys.assign_to(&mine, "alice").unwrap();
-        sys.assign_to(&theirs, "bob").unwrap();
-        let shared = Arc::new(Mutex::new(sys));
-
+    async fn write_create_stamps_reporter_from_agent_name() {
+        let shared: Arc<Mutex<TicketSystemState>> = Arc::new(Mutex::new(TicketSystemState::default()));
         let ctx = ctx_with(Arc::clone(&shared), None, "alice");
         let result = call(
-            &ReadTicketsTool,
-            serde_json::json!({"action": "list", "assignee": "alice"}),
+            &WriteTicketsTool,
+            serde_json::json!({"action": "create", "task": "new ticket"}),
             &ctx,
         )
         .await;
-        let text = unwrap_text(&result);
-        assert!(text.contains(&mine));
-        assert!(!text.contains(&theirs));
+        assert!(matches!(result, ToolResult::Success(_)));
+        let state = shared.lock().unwrap();
+        let t = state.get("TICKET-1").unwrap();
+        assert_eq!(t.task, serde_json::Value::String("new ticket".into()));
+        assert_eq!(t.reporter(), "alice");
     }
 
     #[tokio::test]
-    async fn read_search_matches_summary_case_insensitively() {
-        let mut sys = TicketSystem::new();
-        let _ = sys.create("Fix Login", "", "task", "tester");
-        let _ = sys.create("Other", "secret keyword", "task", "tester");
-        let shared = Arc::new(Mutex::new(sys));
-
-        let ctx = ctx_with(Arc::clone(&shared), None, "alice");
-        let result = call(
-            &ReadTicketsTool,
-            serde_json::json!({"action": "search", "query": "LOGIN"}),
-            &ctx,
-        )
-        .await;
-        let text = unwrap_text(&result);
-        assert!(text.contains("Fix Login"));
-        assert!(!text.contains("Other"));
-
-        let result = call(
-            &ReadTicketsTool,
-            serde_json::json!({"action": "search", "query": "keyword"}),
-            &ctx,
-        )
-        .await;
-        let text = unwrap_text(&result);
-        assert!(text.contains("Other"));
-    }
-
-    #[tokio::test]
-    async fn read_rejects_write_action() {
-        let (shared, _) = shared_with_one_ticket();
-        let ctx = ctx_with(Arc::clone(&shared), None, "alice");
-        let result = call(
-            &ReadTicketsTool,
-            serde_json::json!({"action": "transition", "status": "Done"}),
-            &ctx,
-        )
-        .await;
-        assert!(matches!(result, ToolResult::Error(_)));
-    }
-
-    // ---- WriteTicketsTool ----
-
-    #[tokio::test]
-    async fn write_create_defaults_reporter_to_agent() {
-        let shared: Arc<Mutex<TicketSystem>> = Arc::new(Mutex::new(TicketSystem::new()));
+    async fn write_create_with_assign_string_attaches_label() {
+        let shared: Arc<Mutex<TicketSystemState>> =
+            Arc::new(Mutex::new(TicketSystemState::default()));
         let ctx = ctx_with(Arc::clone(&shared), None, "alice");
         let result = call(
             &WriteTicketsTool,
             serde_json::json!({
                 "action": "create",
-                "summary": "new ticket",
+                "task": "new",
+                "assign": "research"
             }),
             &ctx,
         )
         .await;
         assert!(matches!(result, ToolResult::Success(_)));
-        let sys = shared.lock().unwrap();
-        let ticket = sys.get("TICKET-1").unwrap();
-        assert_eq!(ticket.summary, "new ticket");
-        assert_eq!(ticket.reporter, "alice");
-        assert_eq!(ticket.r#type, "task");
+        let state = shared.lock().unwrap();
+        let t = state.get("TICKET-1").unwrap();
+        assert_eq!(t.labels, vec!["research".to_string()]);
+        assert!(t.assignee().is_none());
+        assert_eq!(t.status(), Status::Todo);
     }
 
     #[tokio::test]
-    async fn write_edit_updates_summary_and_description() {
+    async fn write_create_with_schema_field_stores_schema() {
+        let shared: Arc<Mutex<TicketSystemState>> =
+            Arc::new(Mutex::new(TicketSystemState::default()));
+        let ctx = ctx_with(Arc::clone(&shared), None, "alice");
+        let result = call(
+            &WriteTicketsTool,
+            serde_json::json!({
+                "action": "create",
+                "task": "new",
+                "schema": {"type": "string"}
+            }),
+            &ctx,
+        )
+        .await;
+        assert!(matches!(result, ToolResult::Success(_)));
+        let state = shared.lock().unwrap();
+        assert!(state.get("TICKET-1").unwrap().schema.is_some());
+    }
+
+    #[tokio::test]
+    async fn write_done_without_schema_sets_result_and_status() {
+        let (shared, key) = shared_with_one_ticket();
+        let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
+        let result = call(
+            &WriteTicketsTool,
+            serde_json::json!({"action": "done", "result": "answer text"}),
+            &ctx,
+        )
+        .await;
+        assert!(matches!(result, ToolResult::Success(_)));
+        let state = shared.lock().unwrap();
+        let t = state.get(&key).unwrap();
+        assert_eq!(t.status(), Status::Done);
+        assert_eq!(t.result(), Some("answer text"));
+    }
+
+    #[tokio::test]
+    async fn write_done_with_schema_returns_schema_error_on_mismatch() {
+        let mut state = TicketSystemState::default();
+        let schema = Schema::parse(serde_json::json!({
+            "type": "object",
+            "properties": {"x": {"type": "string"}},
+            "required": ["x"]
+        }))
+        .unwrap();
+        state.insert(Ticket::new("hi").schema(schema), "tester".into());
+        state
+            .update_status("TICKET-1", Status::InProgress)
+            .unwrap();
+        let shared = Arc::new(Mutex::new(state));
+        let ctx = ctx_with(Arc::clone(&shared), Some("TICKET-1"), "alice");
+        let result = call(
+            &WriteTicketsTool,
+            serde_json::json!({
+                "action": "done",
+                "result": "{\"x\": 7}"
+            }),
+            &ctx,
+        )
+        .await;
+        let ToolResult::SchemaError(message) = &result else {
+            panic!("expected SchemaError, got {result:?}");
+        };
+        assert!(message.contains("Schema validation failed"));
+        // Status unchanged, result unset.
+        let state = shared.lock().unwrap();
+        assert_eq!(state.get("TICKET-1").unwrap().status(), Status::InProgress);
+        assert!(state.get("TICKET-1").unwrap().result().is_none());
+    }
+
+    #[tokio::test]
+    async fn write_done_with_schema_passes_when_result_is_valid_json() {
+        let mut state = TicketSystemState::default();
+        let schema = Schema::parse(serde_json::json!({
+            "type": "object",
+            "properties": {"x": {"type": "string"}},
+            "required": ["x"]
+        }))
+        .unwrap();
+        state.insert(Ticket::new("hi").schema(schema), "tester".into());
+        state
+            .update_status("TICKET-1", Status::InProgress)
+            .unwrap();
+        let shared = Arc::new(Mutex::new(state));
+        let ctx = ctx_with(Arc::clone(&shared), Some("TICKET-1"), "alice");
+        let result = call(
+            &WriteTicketsTool,
+            serde_json::json!({
+                "action": "done",
+                "result": "{\"x\": \"answer\"}"
+            }),
+            &ctx,
+        )
+        .await;
+        assert!(matches!(result, ToolResult::Success(_)));
+        let state = shared.lock().unwrap();
+        let t = state.get("TICKET-1").unwrap();
+        assert_eq!(t.status(), Status::Done);
+        assert_eq!(t.result(), Some("{\"x\": \"answer\"}"));
+    }
+
+    #[tokio::test]
+    async fn write_edit_updates_task_and_labels() {
         let (shared, key) = shared_with_one_ticket();
         let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
         let result = call(
             &WriteTicketsTool,
             serde_json::json!({
                 "action": "edit",
-                "summary": "new summary",
-                "description": "new body",
+                "task": "new body",
+                "labels": ["urgent", "review"]
             }),
             &ctx,
         )
         .await;
         assert!(matches!(result, ToolResult::Success(_)));
-        let sys = shared.lock().unwrap();
-        let t = sys.get(&key).unwrap();
-        assert_eq!(t.summary, "new summary");
-        assert_eq!(t.description, "new body");
+        let state = shared.lock().unwrap();
+        let t = state.get(&key).unwrap();
+        assert_eq!(t.task, serde_json::Value::String("new body".into()));
+        assert_eq!(t.labels, vec!["urgent".to_string(), "review".to_string()]);
     }
 
     #[tokio::test]
-    async fn write_comment_defaults_author_to_agent() {
+    async fn write_rejects_unsupported_actions() {
         let (shared, key) = shared_with_one_ticket();
         let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
-        let result = call(
-            &WriteTicketsTool,
-            serde_json::json!({"action": "comment", "body": "hi"}),
-            &ctx,
-        )
-        .await;
-        assert!(matches!(result, ToolResult::Success(_)));
-        let sys = shared.lock().unwrap();
-        let comments = &sys.get(&key).unwrap().comments;
-        assert_eq!(comments.len(), 1);
-        assert_eq!(comments[0].author, "alice");
-        assert_eq!(comments[0].body, "hi");
+        for action in ["transition", "comment", "assign", "attach"] {
+            let result = call(
+                &WriteTicketsTool,
+                serde_json::json!({"action": action}),
+                &ctx,
+            )
+            .await;
+            assert!(
+                matches!(result, ToolResult::Error(_)),
+                "{action}: {result:?}"
+            );
+        }
     }
 
     #[tokio::test]
-    async fn write_transition_in_progress_to_in_review_succeeds() {
-        let (shared, key) = shared_with_one_ticket();
-        shared
-            .lock()
-            .unwrap()
-            .update_status(&key, Status::InProgress)
-            .unwrap();
-        let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
-        let result = call(
-            &WriteTicketsTool,
-            serde_json::json!({"action": "transition", "status": "InReview"}),
-            &ctx,
-        )
-        .await;
-        assert!(matches!(result, ToolResult::Success(_)));
-        assert_eq!(
-            shared.lock().unwrap().get(&key).unwrap().status,
-            Status::InReview
-        );
-    }
-
-    #[tokio::test]
-    async fn write_transition_todo_to_done_returns_validator_error() {
-        let (shared, key) = shared_with_one_ticket();
-        let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
-        let result = call(
-            &WriteTicketsTool,
-            serde_json::json!({"action": "transition", "status": "Done"}),
-            &ctx,
-        )
-        .await;
-        assert!(matches!(result, ToolResult::Error(_)));
-        assert_eq!(
-            shared.lock().unwrap().get(&key).unwrap().status,
-            Status::Todo
-        );
-    }
-
-    #[tokio::test]
-    async fn write_assign_sets_and_clears_assignee() {
-        let (shared, key) = shared_with_one_ticket();
-        let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
-
-        let result = call(
-            &WriteTicketsTool,
-            serde_json::json!({"action": "assign", "assignee": "bob"}),
-            &ctx,
-        )
-        .await;
-        assert!(matches!(result, ToolResult::Success(_)));
-        assert_eq!(
-            shared
-                .lock()
-                .unwrap()
-                .get(&key)
-                .unwrap()
-                .assignee
-                .as_deref(),
-            Some("bob"),
-        );
-
-        let result = call(
-            &WriteTicketsTool,
-            serde_json::json!({"action": "assign", "assignee": ""}),
-            &ctx,
-        )
-        .await;
-        assert!(matches!(result, ToolResult::Success(_)));
-        assert!(shared.lock().unwrap().get(&key).unwrap().assignee.is_none());
-    }
-
-    #[tokio::test]
-    async fn write_rejects_read_action() {
-        let (shared, key) = shared_with_one_ticket();
-        let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
-        let result = call(
-            &WriteTicketsTool,
-            serde_json::json!({"action": "get"}),
-            &ctx,
-        )
-        .await;
-        assert!(matches!(result, ToolResult::Error(_)));
-    }
-
-    // ---- ManageTicketsTool ----
-
-    #[tokio::test]
-    async fn manage_supports_list_and_transition_in_one_tool() {
-        let (shared, key) = shared_with_one_ticket();
-        shared
-            .lock()
-            .unwrap()
-            .update_status(&key, Status::InProgress)
-            .unwrap();
-        let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
-
-        let listed = call(
-            &ManageTicketsTool,
-            serde_json::json!({"action": "list", "status": "InProgress"}),
-            &ctx,
-        )
-        .await;
-        let text = unwrap_text(&listed);
-        assert!(text.contains(&key));
-
-        let done = call(
-            &ManageTicketsTool,
-            serde_json::json!({"action": "transition", "status": "Done"}),
-            &ctx,
-        )
-        .await;
-        assert!(matches!(done, ToolResult::Success(_)));
-        assert_eq!(
-            shared.lock().unwrap().get(&key).unwrap().status,
-            Status::Done
-        );
-    }
-
-    // ---- attach action ----
-
-    #[tokio::test]
-    async fn attach_without_schema_stores_content_unchecked() {
-        let (shared, key) = shared_with_one_ticket();
-        let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
-        let result = call(
-            &WriteTicketsTool,
-            serde_json::json!({
-                "action": "attach",
-                "filename": "out.json",
-                "content": {"anything": [1, 2, 3]}
-            }),
-            &ctx,
-        )
-        .await;
-        assert!(matches!(result, ToolResult::Success(_)));
-        let sys = shared.lock().unwrap();
-        let attachments = &sys.get(&key).unwrap().attachments;
-        assert_eq!(attachments.len(), 1);
-        assert_eq!(attachments[0].filename, "out.json");
-        assert!(attachments[0].schema.is_none());
-        assert_eq!(
-            attachments[0].content,
-            serde_json::json!({"anything": [1, 2, 3]})
-        );
-    }
-
-    #[tokio::test]
-    async fn attach_validates_content_against_schema() {
-        let (shared, key) = shared_with_one_ticket();
-        let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
-        let result = call(
-            &WriteTicketsTool,
-            serde_json::json!({
-                "action": "attach",
-                "filename": "out.json",
-                "content": {"name": "alice"},
-                "schema": {
-                    "type": "object",
-                    "properties": {"name": {"type": "string"}},
-                    "required": ["name"]
-                }
-            }),
-            &ctx,
-        )
-        .await;
-        assert!(matches!(result, ToolResult::Success(_)));
-        let sys = shared.lock().unwrap();
-        assert!(sys.get(&key).unwrap().attachments[0].schema.is_some());
-    }
-
-    #[tokio::test]
-    async fn attach_returns_schema_error_with_violations() {
-        let (shared, key) = shared_with_one_ticket();
-        let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
-        let result = call(
-            &WriteTicketsTool,
-            serde_json::json!({
-                "action": "attach",
-                "filename": "out.json",
-                "content": {"name": 7},
-                "schema": {
-                    "type": "object",
-                    "properties": {"name": {"type": "string"}},
-                    "required": ["name"]
-                }
-            }),
-            &ctx,
-        )
-        .await;
-        // SchemaError is the dedicated retryable variant — distinct
-        // from a plain ToolResult::Error.
-        let ToolResult::SchemaError(message) = &result else {
-            panic!("expected SchemaError, got {result:?}");
-        };
-        assert!(message.contains("Schema validation failed"));
-        // No attachment was added.
-        let sys = shared.lock().unwrap();
-        assert!(sys.get(&key).unwrap().attachments.is_empty());
-    }
-
-    #[tokio::test]
-    async fn attach_rejects_malformed_schema_separately() {
-        let (shared, key) = shared_with_one_ticket();
-        let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
-        let result = call(
-            &WriteTicketsTool,
-            serde_json::json!({
-                "action": "attach",
-                "filename": "out.json",
-                "content": {"name": "alice"},
-                "schema": {"type": 42}
-            }),
-            &ctx,
-        )
-        .await;
-        // Malformed schema is a plain Error, not a SchemaError —
-        // does NOT count toward `max_schema_retries`.
-        assert!(matches!(result, ToolResult::Error(_)));
-        let ToolResult::Error(message) = &result else {
-            unreachable!()
-        };
-        assert!(message.contains("supplied `schema` is invalid"));
-    }
-
-    #[tokio::test]
-    async fn attach_requires_filename_and_content() {
-        let (shared, key) = shared_with_one_ticket();
-        let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
-
-        let no_filename = call(
-            &WriteTicketsTool,
-            serde_json::json!({"action": "attach", "content": {}}),
-            &ctx,
-        )
-        .await;
-        assert!(matches!(no_filename, ToolResult::Error(_)));
-
-        let no_content = call(
-            &WriteTicketsTool,
-            serde_json::json!({"action": "attach", "filename": "x.json"}),
-            &ctx,
-        )
-        .await;
-        assert!(matches!(no_content, ToolResult::Error(_)));
-    }
-
-    #[tokio::test]
-    async fn manage_supports_attach() {
+    async fn manage_supports_done_action() {
         let (shared, key) = shared_with_one_ticket();
         let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
         let result = call(
             &ManageTicketsTool,
-            serde_json::json!({
-                "action": "attach",
-                "filename": "out.json",
-                "content": {"ok": true}
-            }),
+            serde_json::json!({"action": "done", "result": "fine"}),
             &ctx,
         )
         .await;
         assert!(matches!(result, ToolResult::Success(_)));
-    }
-
-    #[tokio::test]
-    async fn read_rejects_attach_action() {
-        let (shared, key) = shared_with_one_ticket();
-        let ctx = ctx_with(Arc::clone(&shared), Some(&key), "alice");
-        let result = call(
-            &ReadTicketsTool,
-            serde_json::json!({
-                "action": "attach",
-                "filename": "out.json",
-                "content": {}
-            }),
-            &ctx,
-        )
-        .await;
-        assert!(matches!(result, ToolResult::Error(_)));
+        let state = shared.lock().unwrap();
+        assert_eq!(state.get(&key).unwrap().status(), Status::Done);
     }
 }

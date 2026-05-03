@@ -1,35 +1,35 @@
-//! Builder that assembles a prompt envelope from typed sections, mirroring `Agent::context/role/behavior/work` and the canonical Context → Role → Behavior → Tools → Task order.
+//! Builder that assembles a prompt envelope from typed sections,
+//! mirroring `Agent::context/role` and the canonical Context → Role →
+//! Tools → Task order.
 
 use std::borrow::Cow;
 
 use super::section::Section;
 
 /// Assembled prompt envelope. Field order follows the canonical spec
-/// section order: context first, then the system message (role + behavior +
-/// appended directives), then work. Tools are not present here — they reach
-/// the model as structured data via the registry, not as a section in the
-/// prompt envelope.
+/// section order: context first, then the system message (role +
+/// appended directives), then work. Tools are not present here — they
+/// reach the model as structured data via the registry, not as a
+/// section in the prompt envelope.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct Prompt {
     /// First user message; `None` means "no context block sent".
     pub context: Option<String>,
-    /// Assembled system message: role + behavior + appended directives,
-    /// joined by blank lines. May be empty when neither role nor behavior
-    /// is set.
+    /// Assembled system message: role + appended directives, joined by
+    /// blank lines. May be empty when no role is set.
     pub system: String,
     /// Task message; `None` means the caller will supply a task later.
     pub work: Option<String>,
 }
 
-/// Inverse of `Agent::{context, role, behavior, work}`. Owns spacing rules
-/// and the canonical section order; call sites never concatenate strings by
+/// Inverse of `Agent::{context, role}`. Owns spacing rules and the
+/// canonical section order; call sites never concatenate strings by
 /// hand.
 #[derive(Default)]
 pub struct PromptBuilder {
     context: Option<Section>,
     role: Option<Section>,
-    behavior: Option<Section>,
     work: Option<Section>,
     directives: Vec<Section>,
 }
@@ -46,11 +46,6 @@ impl PromptBuilder {
         self
     }
 
-    pub fn behavior(mut self, body: impl Into<Cow<'static, str>>) -> Self {
-        self.behavior = Some(Section::behavior(body));
-        self
-    }
-
     #[allow(dead_code)]
     pub fn work(mut self, body: impl Into<Cow<'static, str>>) -> Self {
         self.work = Some(Section::work(body));
@@ -58,7 +53,7 @@ impl PromptBuilder {
     }
 
     /// Append a directive (e.g. structured-output instruction) to the
-    /// system message after role and behavior.
+    /// system message after role.
     #[allow(dead_code)]
     pub fn append_directive(mut self, body: impl Into<Cow<'static, str>>) -> Self {
         self.directives.push(Section::directive(body));
@@ -74,12 +69,6 @@ impl PromptBuilder {
             let r = role.render();
             if !r.is_empty() {
                 system_parts.push(r);
-            }
-        }
-        if let Some(behavior) = self.behavior {
-            let b = behavior.render();
-            if !b.is_empty() {
-                system_parts.push(b);
             }
         }
         for d in self.directives {
@@ -112,31 +101,9 @@ mod tests {
     }
 
     #[test]
-    fn role_and_behavior_join_with_blank_line() {
-        let p = PromptBuilder::default()
-            .role("You are a senior reviewer.")
-            .behavior("- MUST cite file:line.")
-            .build();
-        assert_eq!(
-            p.system,
-            "You are a senior reviewer.\n\n- MUST cite file:line."
-        );
-    }
-
-    #[test]
-    fn empty_behavior_is_skipped() {
-        let p = PromptBuilder::default()
-            .role("You are a senior reviewer.")
-            .behavior("")
-            .build();
-        assert_eq!(p.system, "You are a senior reviewer.");
-    }
-
-    #[test]
-    fn directive_appends_after_role_and_behavior() {
+    fn directive_appends_after_role() {
         let p = PromptBuilder::default()
             .role("You answer with JSON.")
-            .behavior("")
             .append_directive("- MUST return JSON.")
             .build();
         assert_eq!(p.system, "You answer with JSON.\n\n- MUST return JSON.");
@@ -162,18 +129,5 @@ mod tests {
             .work("Review the auth module.")
             .build();
         assert_eq!(p.work.as_deref(), Some("Review the auth module."));
-    }
-
-    #[test]
-    fn full_envelope_in_canonical_order() {
-        let p = PromptBuilder::default()
-            .context("C")
-            .role("R")
-            .behavior("B")
-            .work("W")
-            .build();
-        assert_eq!(p.context.as_deref(), Some("## Context\n\nC"));
-        assert_eq!(p.system, "R\n\nB");
-        assert_eq!(p.work.as_deref(), Some("W"));
     }
 }

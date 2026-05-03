@@ -1,7 +1,7 @@
 {
   "name": "read_tickets_tool",
   "summary": [
-    "Read tickets from the queue: look up by key, list by status or assignee, or search summaries and descriptions.",
+    "Read tickets from the queue: look up by key, list by status or assignee, or search task bodies.",
     "Returns a markdown ticket block (`get`) or a bulleted summary list (`list`, `search`)."
   ],
   "constraints": [
@@ -10,17 +10,17 @@
     "`list` and `search` cap at 50 tickets per call; tighten filters rather than re-running."
   ],
   "anti_patterns": [
-    "To create, edit, comment on, transition, or assign tickets — use `write_tickets_tool`.",
+    "To create or edit tickets, or settle one with `done` — use `write_tickets_tool`.",
     "When the agent needs read AND write access in the same flow — use `manage_tickets_tool` instead of registering both.",
     "To find code or files in the working directory — use `grep_tool` / `glob_tool`."
   ],
   "cautions": [
     "IMPORTANT: tickets the agent has not yet picked up have no `assignee` — `list` with `assignee` filter excludes them.",
-    "IMPORTANT: `search` matches summary and description only — comments and attachments are not searched."
+    "IMPORTANT: `search` matches the task body only — labels and result text are not searched."
   ],
   "output": [
-    "`get`: a markdown block with key, status, type, reporter, assignee, description, and comments.",
-    "`list` / `search`: bullet lines `- KEY [STATUS] [TYPE] @assignee — summary` (one per ticket).",
+    "`get`: a markdown block with key, status, reporter, assignee, labels, task body, and result.",
+    "`list` / `search`: bullet lines `- KEY [STATUS] [labels] @assignee — task preview`.",
     "`(no matching tickets)` when nothing matches."
   ],
   "read_only": true,
@@ -37,7 +37,7 @@
       },
       "status": {
         "type": "string",
-        "description": "Filter for `list`: one of `Todo`, `InProgress`, `InReview`, `Done`, `Failed`. Combine with `assignee` to narrow further."
+        "description": "Filter for `list`: one of `Todo`, `InProgress`, `Done`, `Failed`. Combine with `assignee` to narrow further."
       },
       "assignee": {
         "type": "string",
@@ -45,7 +45,7 @@
       },
       "query": {
         "type": "string",
-        "description": "Free-text query for `search`. Case-insensitive substring match against summary and description."
+        "description": "Free-text query for `search`. Case-insensitive substring match against the task body."
       }
     },
     "required": ["action"]

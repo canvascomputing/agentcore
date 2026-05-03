@@ -1,10 +1,8 @@
-//! Policy bundle and the `PolicyConform` trait. The loop reads policy
-//! decisions through this trait; `TicketSystem` is the (currently only)
-//! implementor.
+//! Policy bundle: caps and retry tuning the loop reads through the
+//! ticket system state.
 
 use std::time::Duration;
 
-/// Policy bundle consumed by the loop: caps and retry tuning.
 #[derive(Clone, Debug)]
 pub struct Policies {
     pub max_steps: Option<u32>,
@@ -36,12 +34,6 @@ impl Default for Policies {
     }
 }
 
-/// Anything the loop can ask for policy decisions. Implemented by
-/// `TicketSystem`; future per-agent overrides could implement it too.
-pub trait PolicyConform {
-    fn policies(&self) -> &Policies;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,23 +48,5 @@ mod tests {
         assert_eq!(p.max_schema_retries, Some(10));
         assert_eq!(p.max_request_retries, 10);
         assert_eq!(p.request_retry_delay, Duration::from_millis(500));
-    }
-
-    #[test]
-    fn default_max_schema_retries_constant_is_ten() {
-        assert_eq!(Policies::DEFAULT_MAX_SCHEMA_RETRIES, 10);
-    }
-
-    #[test]
-    fn default_max_request_retries_constant_is_ten() {
-        assert_eq!(Policies::DEFAULT_MAX_REQUEST_RETRIES, 10);
-    }
-
-    #[test]
-    fn default_request_retry_delay_constant_is_500ms() {
-        assert_eq!(
-            Policies::DEFAULT_REQUEST_RETRY_DELAY,
-            Duration::from_millis(500)
-        );
     }
 }

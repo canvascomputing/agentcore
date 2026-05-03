@@ -1,6 +1,6 @@
 //! Multi-agent loop driver. Each agent runs in its own tokio task
-//! against a shared `TicketSystem` passed in by `Runnable::run`. Also
-//! defines the `Runnable` trait that `TicketSystem` implements.
+//! against a shared `TicketSystemState` passed in by `Runnable::run`.
+//! Also defines the `Runnable` trait that `TicketSystem` implements.
 
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -12,84 +12,96 @@ use crate::providers::{AsUserMessage, ContentBlock, Message, ModelRequest};
 use crate::tools::{ToolCall, ToolContext, ToolError};
 
 use super::agent::Agent;
-use super::policy::PolicyConform;
-use super::tickets::{Status, TicketSystem};
+use super::tickets::{Status, TicketSystemState};
 
-/// What it means to be a thing agents can be assigned to and run
-/// against. Implemented by `TicketSystem`. Future types could
-/// implement it the same way `PolicyConform` is implemented today.
+/// What it means to be a thing agents can be added to and run against.
+/// Implemented by `TicketSystem`.
 pub trait Runnable: Sized {
-    /// Stage one agent. Chainable.
-    fn assign(self, agent: Agent) -> Self;
+    /// Bind `agent` to this system: drain any tickets the agent had
+    /// queued in its private default system into this one, then push a
+    /// clone of `agent` onto this system's agents list. Returns the
+    /// wired agent so the caller can keep using it (chain `.task(...)`
+    /// etc.).
+    fn add(&self, agent: Agent) -> Agent;
 
-    /// Stage many agents. Default impl folds over `assign`.
-    fn assign_all<I>(self, agents: I) -> Self
-    where
-        I: IntoIterator<Item = Agent>,
-    {
-        let mut s = self;
-        for a in agents {
-            s = s.assign(a);
-        }
-        s
+    /// Bind `agent` and additionally pin it to a label scope. The second
+    /// slot mirrors the `_assigned` task-creation methods: a label, or
+    /// (by convention) an agent name when delegating.
+    fn add_assigned(&self, agent: Agent, assign: impl Into<String>) -> Agent {
+        self.add(agent.label(assign))
     }
 
-    /// Drive every staged agent. Idles on empty queue until the
-    /// implementor's interrupt signal fires.
-    fn run(self) -> impl Future<Output = Self> + Send;
+    /// Drive every staged agent until the implementor's interrupt
+    /// signal fires.
+    fn run(&self) -> impl Future<Output = ()> + Send;
 
-    /// Drive every staged agent. Auto-stops once the queue settles.
-    fn run_until_empty(self) -> impl Future<Output = Self> + Send;
+    /// Drive every staged agent until the queue settles, a policy
+    /// trips, or `.timeout(...)` elapses. Returns the result of the
+    /// most recently created `Status::Done` ticket — convenient for
+    /// single-task agents — or `None` if no ticket reached `Done`.
+    fn run_dry(&self) -> impl Future<Output = Option<String>> + Send;
 }
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Drive many agents against one shared `TicketSystem`. Each agent runs
-/// in its own tokio task; locks on the queue are held only around the
-/// queue/metric ops and never across `provider.respond().await`, so
-/// model calls really do overlap.
-pub(super) async fn run_main_loop(agents: Vec<Agent>, tickets: Arc<Mutex<TicketSystem>>) {
+/// Drive many agents against one shared `TicketSystemState`. Each agent
+/// runs in its own tokio task; locks on the shared state are held only
+/// around the queue/metric ops and never across `provider.respond().await`,
+/// so model calls really do overlap.
+pub(super) async fn run_main_loop(
+    agents: Vec<Agent>,
+    state: Arc<Mutex<TicketSystemState>>,
+) {
     let mut handles = Vec::with_capacity(agents.len());
     for agent in agents {
-        handles.push(tokio::spawn(handle_tickets(agent, Arc::clone(&tickets))));
+        handles.push(tokio::spawn(handle_tickets(agent, Arc::clone(&state))));
     }
     for h in handles {
         let _ = h.await;
     }
 }
 
-/// Per-agent loop. Picks the next `Todo` whose type the agent handles,
-/// hands it to `process_ticket`, repeats. When no eligible work is
-/// queued, idles on `IDLE_POLL_INTERVAL` until something arrives, the
-/// cancel signal fires, or a policy hits.
-pub(super) async fn handle_tickets(agent: Agent, tickets: Arc<Mutex<TicketSystem>>) {
+/// Per-agent loop. Picks the next eligible ticket, hands it to
+/// `process_ticket`, repeats. When no eligible work is queued, idles on
+/// `IDLE_POLL_INTERVAL` until something arrives, the cancel signal fires,
+/// or a policy hits.
+pub(super) async fn handle_tickets(
+    agent: Agent,
+    state: Arc<Mutex<TicketSystemState>>,
+) {
     loop {
         let claim = {
-            let mut sys = tickets.lock().unwrap();
+            let mut sys = state.lock().unwrap();
             if sys.is_interrupted() {
                 return;
             }
             if let Some((kind, limit)) = sys.policy_violated_kind() {
                 let handler = agent.resolve_event_handler();
-                handler(Event::new(agent.get_name(), EventKind::PolicyViolated { kind, limit }));
+                handler(Event::new(
+                    agent.get_name(),
+                    EventKind::PolicyViolated { kind, limit },
+                ));
                 return;
             }
-            let todos = sys.list_by_status(Status::Todo);
-            // Path A: tickets already directed to this agent (via assignee)
-            // — finish those first, regardless of ticket_types.
-            let path_a = todos
+            // Path A: tickets already directed to this agent (already
+            // InProgress with assignee == self), regardless of labels.
+            let path_a = sys
+                .list_by_status(Status::InProgress)
                 .iter()
-                .find(|t| t.assignee.as_deref() == Some(agent.get_name()))
-                .map(|t| (t.key.clone(), false));
-            // Path B: open Todos whose type matches the agent's allow-list.
-            let path_b = todos
+                .find(|t| t.assignee() == Some(agent.get_name()))
+                .map(|t| (t.key().to_string(), false));
+            // Path B: open Todos whose labels intersect the agent's
+            // declared label scope.
+            let path_b = sys
+                .list_by_status(Status::Todo)
                 .iter()
-                .find(|t| t.assignee.is_none() && agent.handles(&t.r#type))
-                .map(|t| (t.key.clone(), true));
+                .find(|t| t.assignee().is_none() && agent.handles(&t.labels))
+                .map(|t| (t.key().to_string(), true));
             let claim = path_a.or(path_b);
             if let Some((key, needs_assign)) = claim.as_ref() {
                 if *needs_assign {
                     let _ = sys.assign_to(key, agent.get_name());
+                    let _ = sys.update_status(key, Status::InProgress);
                 }
                 sys.record_step(agent.get_name());
             }
@@ -102,13 +114,17 @@ pub(super) async fn handle_tickets(agent: Agent, tickets: Arc<Mutex<TicketSystem
         };
 
         agent.set_current_ticket(Some(key.clone()));
-        process_ticket(&agent, &tickets, &key).await;
+        process_ticket(&agent, &state, &key).await;
         agent.set_current_ticket(None);
     }
 }
 
 /// One ticket from claimed → settled. Owns the per-ticket message vector.
-async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: &str) {
+async fn process_ticket(
+    agent: &Agent,
+    state: &Arc<Mutex<TicketSystemState>>,
+    key: &str,
+) {
     let handler = agent.resolve_event_handler();
     let emit = |kind: EventKind| handler(Event::new(agent.get_name(), kind));
 
@@ -117,17 +133,19 @@ async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: 
         messages.push(Message::user(ctx));
     }
     let task_msg = {
-        let sys = tickets.lock().unwrap();
+        let sys = state.lock().unwrap();
         sys.get(key).map(|t| t.as_user_message())
     };
     let Some(task_msg) = task_msg else {
         return;
     };
     messages.push(task_msg);
-    emit(EventKind::TicketClaimed { key: key.to_string() });
+    emit(EventKind::TicketClaimed {
+        key: key.to_string(),
+    });
 
     let (max_request_tokens, max_schema_retries, interrupt_signal) = {
-        let sys = tickets.lock().unwrap();
+        let sys = state.lock().unwrap();
         (
             sys.policies().max_request_tokens,
             sys.policies().max_schema_retries.unwrap_or(u32::MAX),
@@ -143,13 +161,35 @@ async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: 
         let name = agent.get_name().to_string();
         Arc::new(move |ev| {
             if let StreamEvent::TextDelta { text, .. } = ev {
-                handler(Event::new(&name, EventKind::TextChunkReceived { content: text }));
+                handler(Event::new(
+                    &name,
+                    EventKind::TextChunkReceived { content: text },
+                ));
             }
         })
     };
 
     loop {
-        emit(EventKind::RequestStarted { model: agent.model_str().to_string() });
+        // Settled? Stop the inner loop. The agent's `done` tool action
+        // is the only way to reach Done from inside this loop.
+        {
+            let sys = state.lock().unwrap();
+            if let Some(t) = sys.get(key) {
+                if matches!(t.status(), Status::Done | Status::Failed) {
+                    drop(sys);
+                    emit(EventKind::TicketFinished {
+                        key: key.to_string(),
+                    });
+                    return;
+                }
+            } else {
+                return;
+            }
+        }
+
+        emit(EventKind::RequestStarted {
+            model: agent.model_str().to_string(),
+        });
         let request = ModelRequest {
             model: agent.model_str().to_string(),
             system_prompt: agent.system_prompt(),
@@ -165,18 +205,31 @@ async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: 
         {
             Ok(r) => r,
             Err(e) => {
-                emit(EventKind::RequestFailed { kind: e.kind(), message: e.to_string() });
-                tickets.lock().unwrap().record_error(agent.get_name(), key, &e);
-                emit(EventKind::TicketFinished { key: key.to_string() });
+                emit(EventKind::RequestFailed {
+                    kind: e.kind(),
+                    message: e.to_string(),
+                });
+                state
+                    .lock()
+                    .unwrap()
+                    .record_error(agent.get_name(), key, &e);
+                emit(EventKind::TicketFinished {
+                    key: key.to_string(),
+                });
                 return;
             }
         };
 
-        emit(EventKind::RequestFinished { model: response.model.clone() });
-        emit(EventKind::TokensReported { model: response.model.clone(), usage: response.usage.clone() });
+        emit(EventKind::RequestFinished {
+            model: response.model.clone(),
+        });
+        emit(EventKind::TokensReported {
+            model: response.model.clone(),
+            usage: response.usage.clone(),
+        });
 
         {
-            let mut sys = tickets.lock().unwrap();
+            let mut sys = state.lock().unwrap();
             sys.record_request(agent.get_name(), &response.usage);
         }
         messages.push(Message::Assistant {
@@ -198,10 +251,12 @@ async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: 
             .collect();
 
         if response.status != ResponseStatus::ToolUse || calls.is_empty() {
-            // Inner loop terminates. The agent didn't request more
-            // work — it's the agent's job (via the ticket tools) to
-            // settle the ticket; the loop never writes status.
-            emit(EventKind::TicketFinished { key: key.to_string() });
+            // Inner loop terminates without a `done` call — the ticket
+            // stays InProgress and Path A may re-pick it. The agent must
+            // call the `done` tool to settle.
+            emit(EventKind::TicketFinished {
+                key: key.to_string(),
+            });
             return;
         }
 
@@ -213,13 +268,10 @@ async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: 
             });
         }
 
-        // Dispatch the tool calls. ToolContext carries working_dir,
-        // the shared cancel signal, the registry handle (for
-        // ToolSearchTool), and ticket-side info (for the ticket tools).
         let ctx = ToolContext::new(agent.working_dir_or_default())
             .interrupt_signal(Arc::clone(&interrupt_signal))
             .registry(Arc::new(agent.tool_registry().clone()))
-            .tickets(Arc::clone(tickets))
+            .ticket_system_state(Arc::clone(state))
             .current_ticket(key.to_string())
             .agent_name(agent.get_name().to_string());
         let outcomes = agent.tool_registry().execute(&calls, &ctx).await;
@@ -231,7 +283,7 @@ async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: 
                 match verdict {
                     Ok(output) => {
                         if let Some(call) = call {
-                            if is_schema_checked_call(call) {
+                            if is_done_call(call) {
                                 consecutive_schema_failures = 0;
                             }
                         }
@@ -269,7 +321,7 @@ async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: 
         messages.push(Message::User { content: blocks });
 
         {
-            let mut sys = tickets.lock().unwrap();
+            let mut sys = state.lock().unwrap();
             sys.record_tool_calls(agent.get_name(), calls.len() as u64);
         }
 
@@ -279,107 +331,79 @@ async fn process_ticket(agent: &Agent, tickets: &Arc<Mutex<TicketSystem>>, key: 
                 limit: u64::from(max_schema_retries),
             });
             // Force-fail the ticket so Path A doesn't re-pick it
-            // forever. The agent demonstrably can't satisfy the
-            // schema; the ticket is dead.
+            // forever. The agent demonstrably can't satisfy the schema;
+            // the ticket is dead.
             {
-                let mut sys = tickets.lock().unwrap();
+                let mut sys = state.lock().unwrap();
                 let _ = sys.force_status(key, Status::Failed);
             }
-            emit(EventKind::TicketFinished { key: key.to_string() });
+            emit(EventKind::TicketFinished {
+                key: key.to_string(),
+            });
             return;
         }
     }
 }
 
-/// Whether a tool call goes through schema validation. The success
-/// path uses this to decide whether to reset
-/// `consecutive_schema_failures` — a non-schema-checked success
-/// leaves the counter alone, per the plan.
-fn is_schema_checked_call(call: &ToolCall) -> bool {
+/// Whether a tool call goes through `done`-side schema validation. Used
+/// to reset `consecutive_schema_failures` on a successful `done` call.
+fn is_done_call(call: &ToolCall) -> bool {
     matches!(
         call.name.as_str(),
         "manage_tickets_tool" | "write_tickets_tool"
-    ) && call.input.get("action").and_then(|v| v.as_str()) == Some("attach")
-        && call
-            .input
-            .get("schema")
-            .map(|s| !s.is_null())
-            .unwrap_or(false)
+    ) && call.input.get("action").and_then(|v| v.as_str()) == Some("done")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prompts::DEFAULT_BEHAVIOR;
+    use crate::agents::tickets::TicketSystem;
     use crate::providers::types::{ModelResponse, ResponseStatus};
     use crate::providers::{ContentBlock, Provider, ProviderResult, TokenUsage};
+    use crate::tools::ManageTicketsTool;
+    use std::collections::VecDeque;
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex as StdMutex;
 
-    use std::collections::VecDeque;
-
+    /// Mock provider that pops responses from a queue, falling back to a
+    /// canned EndTurn text once empty.
     struct MockProvider {
-        text: String,
-        usage: TokenUsage,
-        /// When non-empty, the next call pops from the front. When empty,
-        /// the provider falls back to the static `text` + `usage`.
-        queue: Mutex<VecDeque<ModelResponse>>,
-        captured_prompt: Arc<Mutex<Option<String>>>,
-        captured_max_tokens: Arc<Mutex<Option<u32>>>,
-        captured_messages: Arc<Mutex<Option<Vec<Message>>>>,
-    }
-
-    struct MockHandles {
-        prompt: Arc<Mutex<Option<String>>>,
-        max_tokens: Arc<Mutex<Option<u32>>>,
-        messages: Arc<Mutex<Option<Vec<Message>>>>,
+        queue: StdMutex<VecDeque<ModelResponse>>,
+        fallback_text: String,
     }
 
     impl MockProvider {
-        fn new(text: impl Into<String>) -> (Arc<Self>, MockHandles) {
-            Self::with_usage(text, TokenUsage::default())
-        }
-
-        fn with_usage(text: impl Into<String>, usage: TokenUsage) -> (Arc<Self>, MockHandles) {
-            Self::build(text.into(), usage, VecDeque::new())
-        }
-
-        /// Build a provider that returns each queued response in order.
-        /// After the queue empties, falls back to the static text /
-        /// usage (set to `"end"` / default for convenience here).
-        fn queued(responses: Vec<ModelResponse>) -> (Arc<Self>, MockHandles) {
-            Self::build("end".into(), TokenUsage::default(), responses.into())
-        }
-
-        fn build(
-            text: String,
-            usage: TokenUsage,
-            queue: VecDeque<ModelResponse>,
-        ) -> (Arc<Self>, MockHandles) {
-            let prompt = Arc::new(Mutex::new(None));
-            let max_tokens = Arc::new(Mutex::new(None));
-            let messages = Arc::new(Mutex::new(None));
-            let provider = Arc::new(Self {
-                text,
-                usage,
-                queue: Mutex::new(queue),
-                captured_prompt: Arc::clone(&prompt),
-                captured_max_tokens: Arc::clone(&max_tokens),
-                captured_messages: Arc::clone(&messages),
-            });
-            (
-                provider,
-                MockHandles {
-                    prompt,
-                    max_tokens,
-                    messages,
-                },
-            )
+        fn queued(responses: Vec<ModelResponse>) -> Arc<Self> {
+            Arc::new(Self {
+                queue: StdMutex::new(responses.into()),
+                fallback_text: "end".to_string(),
+            })
         }
     }
 
-    fn tool_use_response(id: &str, name: &str, input: serde_json::Value) -> ModelResponse {
+    impl Provider for MockProvider {
+        fn respond(
+            &self,
+            _request: crate::providers::ModelRequest,
+            _on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
+        ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
+            let queued = self.queue.lock().unwrap().pop_front();
+            let fallback = self.fallback_text.clone();
+            Box::pin(async move {
+                tokio::task::yield_now().await;
+                Ok(queued.unwrap_or_else(|| ModelResponse {
+                    content: vec![ContentBlock::Text { text: fallback }],
+                    status: ResponseStatus::EndTurn,
+                    usage: TokenUsage::default(),
+                    model: "mock".into(),
+                }))
+            })
+        }
+    }
+
+    fn tool_use(id: &str, name: &str, input: serde_json::Value) -> ModelResponse {
         ModelResponse {
             content: vec![ContentBlock::ToolUse {
                 id: id.into(),
@@ -392,905 +416,260 @@ mod tests {
         }
     }
 
-    fn text_response(text: &str) -> ModelResponse {
+    fn text(t: &str) -> ModelResponse {
         ModelResponse {
-            content: vec![ContentBlock::Text { text: text.into() }],
+            content: vec![ContentBlock::Text { text: t.into() }],
             status: ResponseStatus::EndTurn,
             usage: TokenUsage::default(),
             model: "mock".into(),
         }
     }
 
-    impl Provider for MockProvider {
-        fn respond(
-            &self,
-            request: ModelRequest,
-            _on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
-        ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
-            *self.captured_prompt.lock().unwrap() = Some(request.system_prompt);
-            *self.captured_max_tokens.lock().unwrap() = request.max_request_tokens;
-            *self.captured_messages.lock().unwrap() = Some(request.messages.clone());
-
-            let queued = self.queue.lock().unwrap().pop_front();
-            let fallback_text = self.text.clone();
-            let fallback_usage = self.usage.clone();
-            Box::pin(async move {
-                tokio::task::yield_now().await;
-                let response = queued.unwrap_or_else(|| ModelResponse {
-                    content: vec![ContentBlock::Text {
-                        text: fallback_text,
-                    }],
-                    status: ResponseStatus::EndTurn,
-                    usage: fallback_usage,
-                    model: "mock".into(),
-                });
-                Ok(response)
-            })
-        }
-    }
-
-    fn agent_with(provider: Arc<dyn Provider>, name: &str) -> Agent {
-        Agent::new().name(name).provider(provider).model("mock")
-    }
-
-    /// Build the model output that drives `count` tickets all the way
-    /// to `Status::Done` via `manage_tickets_tool`. Each ticket gets
-    /// three responses, walking the legal state-machine path: a
-    /// ToolUse transitioning `Todo → InProgress`, a ToolUse
-    /// transitioning `InProgress → Done`, and a final EndTurn text.
-    /// Queue this as the mock provider's response stream when a test
-    /// drives `run_until_empty` and needs the agent to drain its
-    /// work.
-    fn transition_to_done_responses(count: usize) -> Vec<ModelResponse> {
-        transition_to_done_responses_with_usage(count, TokenUsage::default())
-    }
-
-    /// Same as `transition_to_done_responses` but stamps each response
-    /// with the given `usage` — for tests that exercise token-budget
-    /// policies.
-    fn transition_to_done_responses_with_usage(
-        count: usize,
-        usage: TokenUsage,
-    ) -> Vec<ModelResponse> {
-        let mut out = Vec::with_capacity(count * 3);
+    /// Build a response sequence that settles `count` tickets each with a
+    /// single `done` call followed by an EndTurn text.
+    fn done_responses(count: usize, result: &str) -> Vec<ModelResponse> {
+        let mut out = Vec::with_capacity(count * 2);
         for _ in 0..count {
-            let mut to_in_progress = tool_use_response(
-                "transition-in-progress",
+            out.push(tool_use(
+                "done-1",
                 "manage_tickets_tool",
-                serde_json::json!({"action": "transition", "status": "InProgress"}),
-            );
-            to_in_progress.usage = usage.clone();
-            let mut to_done = tool_use_response(
-                "transition-done",
-                "manage_tickets_tool",
-                serde_json::json!({"action": "transition", "status": "Done"}),
-            );
-            to_done.usage = usage.clone();
-            let mut text = text_response("done");
-            text.usage = usage.clone();
-            out.push(to_in_progress);
-            out.push(to_done);
-            out.push(text);
+                serde_json::json!({"action": "done", "result": result}),
+            ));
+            out.push(text("ok"));
         }
         out
     }
 
-    #[tokio::test]
-    async fn single_agent_drains_queue() {
-        let (provider, _) = MockProvider::queued(transition_to_done_responses(2));
-        let mut tickets = TicketSystem::new();
-        tickets.create("first", "", "task", "tester");
-        tickets.create("second", "", "task", "tester");
-
-        let agent = agent_with(provider, "worker")
-            .role("you are a worker")
-            .tool(ManageTicketsTool);
-        let tickets = tickets.assign(agent).run_until_empty().await;
-
-        assert_eq!(tickets.steps(), 2);
-        // 3 requests per ticket (InProgress, Done, EndTurn text);
-        // 2 dispatches per ticket (the two transitions).
-        assert_eq!(tickets.requests(), 6);
-        assert_eq!(tickets.tool_calls(), 4);
-        assert_eq!(tickets.list_by_status(Status::Done).len(), 2);
+    fn agent_with(provider: Arc<dyn Provider>, name: &str) -> Agent {
+        Agent::new()
+            .name(name)
+            .provider(provider)
+            .model("mock")
+            .silent()
     }
 
     #[tokio::test]
-    async fn interrupt_signal_stops_an_idle_agent() {
-        let (provider, _) = MockProvider::new("ok");
+    async fn path_b_claims_and_auto_flips_to_inprogress() {
+        let provider = MockProvider::queued(done_responses(1, "found it"));
+        let tickets = TicketSystem::new();
+        tickets.task_assigned("research the moon", "research");
+        let alice = agent_with(provider, "alice")
+            .label("research")
+            .tool(ManageTicketsTool);
+        tickets.add(alice);
+        tickets.run_dry().await;
+
+        let t = tickets.first().unwrap();
+        assert_eq!(t.status(), Status::Done);
+        assert_eq!(t.assignee(), Some("alice"));
+        assert_eq!(t.result(), Some("found it"));
+    }
+
+    #[tokio::test]
+    async fn path_a_picks_up_assigned_inprogress_ticket() {
+        let provider = MockProvider::queued(done_responses(1, "delivered"));
+        let tickets = TicketSystem::new();
+        // Alice is registered, so task_assigned with "alice" treats the
+        // string as an agent name and births the ticket InProgress.
+        let alice = agent_with(provider, "alice").tool(ManageTicketsTool);
+        tickets.add(alice);
+        tickets.task_assigned("specific work for alice", "alice");
+        tickets.run_dry().await;
+
+        let t = tickets.first().unwrap();
+        assert_eq!(t.status(), Status::Done);
+        assert_eq!(t.assignee(), Some("alice"));
+        assert_eq!(t.result(), Some("delivered"));
+    }
+
+    #[tokio::test]
+    async fn endturn_without_done_leaves_ticket_inprogress() {
+        // Drive max_steps(1) so the loop exits after one ticket pickup
+        // even though the agent never settles it. The watcher would
+        // otherwise spin on the still-pending ticket.
+        let provider = MockProvider::queued(vec![text("done thinking")]);
+        let tickets = TicketSystem::new().max_steps(1);
+        tickets.task_assigned("research", "research");
+        let alice = agent_with(provider, "alice")
+            .label("research")
+            .tool(ManageTicketsTool);
+        tickets.add(alice);
+        tickets.run_dry().await;
+
+        let t = tickets.first().unwrap();
+        assert_eq!(t.status(), Status::InProgress);
+        assert!(t.result().is_none());
+    }
+
+    #[tokio::test]
+    async fn done_with_schema_validates_result() {
+        let schema = crate::schemas::Schema::parse(serde_json::json!({
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"]
+        }))
+        .unwrap();
+        let provider = MockProvider::queued(vec![
+            tool_use(
+                "done-1",
+                "manage_tickets_tool",
+                serde_json::json!({
+                    "action": "done",
+                    "result": "{\"answer\": \"42\"}"
+                }),
+            ),
+            text("ok"),
+        ]);
+        let tickets = TicketSystem::new();
+        tickets.task_schema_assigned("hi", schema, "research");
+        let alice = agent_with(provider, "alice")
+            .label("research")
+            .tool(ManageTicketsTool);
+        tickets.add(alice);
+        tickets.run_dry().await;
+
+        let t = tickets.first().unwrap();
+        assert_eq!(t.status(), Status::Done);
+        assert_eq!(t.result(), Some("{\"answer\": \"42\"}"));
+    }
+
+    #[tokio::test]
+    async fn schema_failure_in_done_trips_max_schema_retries() {
+        let schema = crate::schemas::Schema::parse(serde_json::json!({
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"]
+        }))
+        .unwrap();
+        // Three bad done calls in a row; max_schema_retries(3) trips.
+        let bad_done = || {
+            tool_use(
+                "done-bad",
+                "manage_tickets_tool",
+                serde_json::json!({
+                    "action": "done",
+                    "result": "{\"answer\": 7}"
+                }),
+            )
+        };
+        let provider = MockProvider::queued(vec![
+            bad_done(),
+            bad_done(),
+            bad_done(),
+            text("never"),
+        ]);
+        let tickets = TicketSystem::new()
+            .max_schema_retries(3)
+            .max_steps(5);
+        tickets.task_schema_assigned("hi", schema, "research");
+        let alice = agent_with(provider, "alice")
+            .label("research")
+            .tool(ManageTicketsTool);
+        tickets.add(alice);
+        tickets.run_dry().await;
+
+        let t = tickets.first().unwrap();
+        assert_eq!(t.status(), Status::Failed);
+    }
+
+    #[tokio::test]
+    async fn timeout_stops_run_dry_with_pending_tickets() {
+        // Empty response queue → mock falls through to EndTurn "end".
+        // Combined with no tools registered, the inner loop exits
+        // immediately with the ticket still InProgress; Path A re-picks
+        // forever. Timeout must break the spin.
+        let provider = MockProvider::queued(Vec::new());
+        let tickets = TicketSystem::new().timeout(Duration::from_millis(150));
+        tickets.task_assigned("never settled", "research");
+        let alice = agent_with(provider, "alice").label("research");
+        tickets.add(alice);
+
+        let started = std::time::Instant::now();
+        tickets.run_dry().await;
+        let elapsed = started.elapsed();
+
+        assert!(elapsed < Duration::from_millis(800), "elapsed={elapsed:?}");
+        let unsettled = tickets
+            .tickets()
+            .into_iter()
+            .filter(|t| matches!(t.status(), Status::Todo | Status::InProgress))
+            .count();
+        assert_ne!(unsettled, 0);
+    }
+
+    #[tokio::test]
+    async fn interrupt_signal_stops_idle_agent_immediately() {
+        let provider = MockProvider::queued(Vec::new());
         let signal = Arc::new(AtomicBool::new(true));
         let tickets = TicketSystem::new().interrupt_signal(Arc::clone(&signal));
-
-        let agent = agent_with(provider, "worker");
-        let tickets = tickets.assign(agent).run().await;
-
-        assert_eq!(tickets.steps(), 0);
+        let alice = agent_with(provider, "alice");
+        tickets.add(alice);
+        // .run() (not run_dry) — uses the supplied signal, which is
+        // pre-fired so the loop exits before doing anything.
+        tickets.run().await;
         assert_eq!(tickets.requests(), 0);
+        assert_eq!(tickets.steps(), 0);
+        // Ensure the signal isn't re-cleared by any internal logic.
+        assert!(signal.load(Ordering::Relaxed));
     }
 
     #[tokio::test]
-    async fn max_steps_stops_processing_after_threshold() {
-        let (provider, _) = MockProvider::queued(transition_to_done_responses(3));
-        let mut tickets = TicketSystem::new().max_steps(2);
-        tickets.create("a", "", "task", "tester");
-        tickets.create("b", "", "task", "tester");
-        tickets.create("c", "", "task", "tester");
-
-        let agent = agent_with(provider, "worker").tool(ManageTicketsTool);
-        let tickets = tickets.assign(agent).run_until_empty().await;
-
-        assert_eq!(tickets.list_by_status(Status::Done).len(), 2);
-        assert_eq!(tickets.list_by_status(Status::Todo).len(), 1);
-    }
-
-    #[tokio::test]
-    async fn max_input_tokens_stops_processing_after_threshold() {
-        // Each ticket needs two requests (tool_use + EndTurn). With 30
-        // input tokens per response, ticket 1 spends 60, ticket 2 spends
-        // 60 more (120 total) and trips the 100-token threshold. The
-        // agent halts before picking up ticket 3.
-        let usage = TokenUsage {
-            input_tokens: 30,
-            output_tokens: 0,
-            ..TokenUsage::default()
-        };
-        let queue = transition_to_done_responses_with_usage(3, usage);
-        let (provider, _) = MockProvider::queued(queue);
-        let mut tickets = TicketSystem::new().max_input_tokens(100);
-        tickets.create("a", "", "task", "tester");
-        tickets.create("b", "", "task", "tester");
-        tickets.create("c", "", "task", "tester");
-
-        let agent = agent_with(provider, "worker").tool(ManageTicketsTool);
-        let tickets = tickets.assign(agent).run_until_empty().await;
-
-        assert_eq!(tickets.list_by_status(Status::Done).len(), 2);
-        assert_eq!(tickets.list_by_status(Status::Todo).len(), 1);
-    }
-
-    #[tokio::test]
-    async fn system_prompt_includes_role_and_behavior() {
-        let (provider, handles) = MockProvider::queued(transition_to_done_responses(1));
-        let mut tickets = TicketSystem::new();
-        tickets.create("task", "", "task", "tester");
-
-        let agent = agent_with(provider, "worker")
-            .role("ROLE_TEXT")
-            .behavior("BEHAVIOR_TEXT")
-            .context("CONTEXT_TEXT")
-            .tool(ManageTicketsTool);
-        let _ = tickets.assign(agent).run_until_empty().await;
-
-        let prompt = handles
-            .prompt
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("prompt captured");
-        let role_pos = prompt.find("ROLE_TEXT").expect("role present");
-        let behavior_pos = prompt.find("BEHAVIOR_TEXT").expect("behavior present");
-        assert!(role_pos < behavior_pos);
-        assert!(!prompt.contains("CONTEXT_TEXT"));
-        assert!(!prompt.contains("## Context"));
-    }
-
-    #[tokio::test]
-    async fn context_renders_as_first_user_message() {
-        let (provider, handles) = MockProvider::queued(transition_to_done_responses(1));
-        let mut tickets = TicketSystem::new();
-        tickets.create("task summary", "task body", "task", "tester");
-
-        let agent = agent_with(provider, "worker")
-            .context("CONTEXT_TEXT")
-            .tool(ManageTicketsTool);
-        let _ = tickets.assign(agent).run_until_empty().await;
-
-        let messages = handles
-            .messages
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("messages captured");
-        // The captured slice is from the second (final) request, so it
-        // also carries the assistant ToolUse + tool result. The first
-        // two messages remain the context block and the ticket.
-        assert!(messages.len() >= 2);
-        match &messages[0] {
-            Message::User { content } => match content.first() {
-                Some(ContentBlock::Text { text }) => {
-                    assert!(text.starts_with("## Context\n\n"));
-                    assert!(text.contains("CONTEXT_TEXT"));
-                }
-                other => panic!("expected text block, got {other:?}"),
-            },
-            other => panic!("expected User, got {other:?}"),
-        }
-        match &messages[1] {
-            Message::User { content } => match content.first() {
-                Some(ContentBlock::Text { text }) => {
-                    assert_eq!(text, "task summary\n\ntask body");
-                }
-                other => panic!("expected text block, got {other:?}"),
-            },
-            other => panic!("expected User, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn task_user_message_uses_ticket_as_user_message_format() {
-        let (provider, handles) = MockProvider::queued(transition_to_done_responses(1));
-        let mut tickets = TicketSystem::new();
-        tickets.create("the summary", "the body", "task", "tester");
-
-        let agent = agent_with(provider, "worker").tool(ManageTicketsTool);
-        let _ = tickets.assign(agent).run_until_empty().await;
-
-        let messages = handles
-            .messages
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("messages captured");
-        // Without context, the ticket is the first user message — the
-        // captured slice also carries the trailing tool exchange.
-        assert!(!messages.is_empty());
-        match &messages[0] {
-            Message::User { content } => match content.first() {
-                Some(ContentBlock::Text { text }) => {
-                    assert_eq!(text, "the summary\n\nthe body");
-                }
-                other => panic!("expected text block, got {other:?}"),
-            },
-            other => panic!("expected User, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn system_prompt_falls_back_to_default_behavior_when_unset() {
-        let (provider, handles) = MockProvider::queued(transition_to_done_responses(1));
-        let mut tickets = TicketSystem::new();
-        tickets.create("task", "", "task", "tester");
-
-        let agent = agent_with(provider, "worker")
-            .role("ROLE_TEXT")
-            .tool(ManageTicketsTool);
-        let _ = tickets.assign(agent).run_until_empty().await;
-
-        let prompt = handles
-            .prompt
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("prompt captured");
-        assert!(prompt.contains("ROLE_TEXT"));
-        assert!(prompt.contains(DEFAULT_BEHAVIOR));
-    }
-
-    #[tokio::test]
-    async fn max_request_tokens_is_forwarded_to_the_provider_request() {
-        let (provider, handles) = MockProvider::queued(transition_to_done_responses(1));
-        let mut tickets = TicketSystem::new().max_request_tokens(256);
-        tickets.create("task", "", "task", "tester");
-
-        let agent = agent_with(provider, "worker").tool(ManageTicketsTool);
-        let _ = tickets.assign(agent).run_until_empty().await;
-
-        assert_eq!(*handles.max_tokens.lock().unwrap(), Some(256));
-    }
-
-    #[tokio::test]
-    async fn run_main_loop_drives_multiple_agents_in_parallel() {
-        let mut tickets = TicketSystem::new();
-        tickets.create("a", "", "task", "tester");
-        tickets.create("b", "", "task", "tester");
-        tickets.create("c", "", "task", "tester");
-        tickets.create("d", "", "task", "tester");
-
-        // Each agent gets its own queue. With a shared provider the
-        // two agents would race on the same canned responses and pop
-        // each other's transitions out of order — leaving tickets
-        // half-settled and the loop spinning. Either may pick up 0–4
-        // tickets depending on tokio scheduling, so each queue covers
-        // the worst case alone.
-        let (alice_provider, _) = MockProvider::queued(transition_to_done_responses(4));
-        let (bob_provider, _) = MockProvider::queued(transition_to_done_responses(4));
-        let alice = agent_with(alice_provider, "alice").tool(ManageTicketsTool);
-        let bob = agent_with(bob_provider, "bob").tool(ManageTicketsTool);
-        let tickets = tickets.assign_all([alice, bob]).run_until_empty().await;
-
-        // Aggregate counters are deterministic regardless of how the
-        // load splits — 3 requests + 2 dispatches per ticket × 4
-        // tickets.
-        assert_eq!(tickets.list_by_status(Status::Done).len(), 4);
-        assert_eq!(tickets.steps(), 4);
-        assert_eq!(tickets.requests(), 12);
-        assert_eq!(tickets.tool_calls(), 8);
-    }
-
-    #[tokio::test]
-    async fn idle_agent_picks_up_a_late_arriving_ticket() {
-        let (provider, _) = MockProvider::queued(transition_to_done_responses(1));
-        let signal = Arc::new(AtomicBool::new(false));
-        let tickets = TicketSystem::new().interrupt_signal(Arc::clone(&signal));
-
-        let agent = agent_with(provider, "worker").tool(ManageTicketsTool);
-        // Wrap in Arc<Mutex<>> manually so we can keep mutating after the
-        // task starts, then use `run_main_loop` directly. We can't use the
-        // `run` consume-and-return pattern here because we need outside
-        // access to the queue while the agent is parked.
-        let shared = Arc::new(Mutex::new(tickets));
-        let task = {
-            let agents = vec![agent];
-            let shared = Arc::clone(&shared);
-            tokio::spawn(async move { run_main_loop(agents, shared).await })
-        };
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        shared.lock().unwrap().create("late", "", "task", "tester");
-
-        let watcher_signal = Arc::clone(&signal);
-        let watcher_shared = Arc::clone(&shared);
-        let watcher = tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                let sys = watcher_shared.lock().unwrap();
-                if sys.list_by_status(Status::Done).len() == 1 {
-                    watcher_signal.store(true, Ordering::Relaxed);
-                    return;
-                }
-            }
-        });
-
-        let _ = task.await;
-        let _ = watcher.await;
-
-        let sys = shared.lock().unwrap();
-        assert_eq!(sys.list_by_status(Status::Done).len(), 1);
-        // 3 requests for the one ticket: InProgress, Done, EndTurn.
-        assert_eq!(sys.requests(), 3);
-    }
-
-    /// Tiny mock implementor that exercises `assign_all`'s default impl.
-    struct Counter {
-        names: Vec<String>,
-    }
-
-    impl Runnable for Counter {
-        fn assign(mut self, agent: Agent) -> Self {
-            self.names.push(agent.get_name().to_string());
-            self
-        }
-
-        async fn run(self) -> Self {
-            self
-        }
-
-        async fn run_until_empty(self) -> Self {
-            self
-        }
-    }
-
-    #[test]
-    fn assign_all_folds_over_assign() {
-        let counter = Counter { names: Vec::new() };
-        let (provider, _) = MockProvider::new("ok");
-        let counter = counter.assign_all([
-            agent_with(
-                Arc::clone(&(provider.clone() as Arc<dyn Provider>)),
-                "alice",
-            ),
-            agent_with(Arc::clone(&(provider.clone() as Arc<dyn Provider>)), "bob"),
-            agent_with(provider, "carol"),
-        ]);
-        assert_eq!(counter.names, vec!["alice", "bob", "carol"]);
-    }
-
-    #[tokio::test]
-    async fn agent_with_ticket_type_skips_other_types() {
-        // The bug ticket stays Todo forever, so the strict watcher
-        // would never auto-stop on its own. Bound the run with
-        // max_steps(1): one pickup of the task ticket, then halt.
-        let (provider, _) = MockProvider::queued(transition_to_done_responses(1));
-        let mut tickets = TicketSystem::new().max_steps(1);
-        tickets.create("real work", "", "task", "tester");
-        tickets.create("a bug", "", "bug", "tester");
-
-        let agent = agent_with(provider, "worker")
-            .ticket_type("task")
-            .tool(ManageTicketsTool);
-        let tickets = tickets.assign(agent).run_until_empty().await;
-
-        assert_eq!(tickets.list_by_status(Status::Done).len(), 1);
-        assert_eq!(tickets.list_by_status(Status::Todo).len(), 1);
-        let done = &tickets.list_by_status(Status::Done)[0];
-        assert_eq!(done.r#type, "task");
-        let todo = &tickets.list_by_status(Status::Todo)[0];
-        assert_eq!(todo.r#type, "bug");
-        assert!(
-            todo.assignee.is_none(),
-            "bug ticket should remain unassigned"
-        );
-    }
-
-    use crate::tools::{ManageTicketsTool, Tool, ToolResult};
-
-    fn echo_tool() -> Tool {
-        Tool::new("echo", "Echo the input back")
-            .schema(serde_json::json!({
-                "type": "object",
-                "properties": { "value": { "type": "string" } },
-                "required": ["value"],
-            }))
-            .read_only(true)
-            .handler(|input, _ctx| {
-                Box::pin(async move {
-                    let v = input["value"].as_str().unwrap_or("").to_string();
-                    Ok(ToolResult::success(v))
-                })
-            })
-    }
-
-    #[tokio::test]
-    async fn tool_use_response_dispatches_and_loops() {
-        let (provider, handles) = MockProvider::queued(vec![
-            tool_use_response("call-1", "echo", serde_json::json!({"value": "hi"})),
-            tool_use_response(
-                "transition-in-progress",
+    async fn done_resets_consecutive_schema_failure_counter() {
+        let schema = crate::schemas::Schema::parse(serde_json::json!({
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"]
+        }))
+        .unwrap();
+        // Two failures, one success — the counter resets, so the trip
+        // doesn't fire even though four total bad calls would otherwise
+        // exceed max_schema_retries(3).
+        let bad = || {
+            tool_use(
+                "bad",
                 "manage_tickets_tool",
-                serde_json::json!({"action": "transition", "status": "InProgress"}),
-            ),
-            tool_use_response(
-                "transition-done",
-                "manage_tickets_tool",
-                serde_json::json!({"action": "transition", "status": "Done"}),
-            ),
-            text_response("done"),
-        ]);
-        let mut tickets = TicketSystem::new();
-        tickets.create("task", "", "task", "tester");
-
-        let agent = agent_with(provider, "worker")
-            .tool(echo_tool())
-            .tool(ManageTicketsTool);
-        let tickets = tickets.assign(agent).run_until_empty().await;
-
-        assert_eq!(tickets.list_by_status(Status::Done).len(), 1);
-        assert_eq!(tickets.requests(), 4);
-
-        // The captured slice is the third (final) request's messages —
-        // it carries every prior assistant ToolUse plus the matching
-        // user ToolResult blocks. Find the echo result among them.
-        let captured = handles
-            .messages
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("messages captured");
-        let echo_result = captured.iter().find_map(|m| {
-            let Message::User { content } = m else {
-                return None;
-            };
-            content.iter().find_map(|cb| match cb {
-                ContentBlock::ToolResult {
-                    tool_use_id,
-                    content,
-                    is_error,
-                } if tool_use_id == "call-1" => Some((content.clone(), *is_error)),
-                _ => None,
-            })
-        });
-        let (content, is_error) = echo_result.expect("echo tool result captured");
-        assert_eq!(content, "hi");
-        assert!(!is_error);
-    }
-
-    #[tokio::test]
-    async fn tool_calls_counter_increments_on_dispatch() {
-        let (provider, _) = MockProvider::queued(vec![
-            tool_use_response("c1", "echo", serde_json::json!({"value": "a"})),
-            tool_use_response(
-                "transition-in-progress",
-                "manage_tickets_tool",
-                serde_json::json!({"action": "transition", "status": "InProgress"}),
-            ),
-            tool_use_response(
-                "transition-done",
-                "manage_tickets_tool",
-                serde_json::json!({"action": "transition", "status": "Done"}),
-            ),
-            text_response("done"),
-        ]);
-        let mut tickets = TicketSystem::new();
-        tickets.create("task", "", "task", "tester");
-
-        let agent = agent_with(provider, "worker")
-            .tool(echo_tool())
-            .tool(ManageTicketsTool);
-        let tickets = tickets.assign(agent).run_until_empty().await;
-
-        // Three dispatches: echo, transition→InProgress, transition→Done.
-        assert_eq!(tickets.tool_calls(), 3);
-    }
-
-    #[tokio::test]
-    async fn tool_error_surfaces_to_model_as_is_error_block() {
-        let (provider, handles) = MockProvider::queued(vec![
-            tool_use_response("c1", "broken", serde_json::json!({})),
-            tool_use_response(
-                "transition-in-progress",
-                "manage_tickets_tool",
-                serde_json::json!({"action": "transition", "status": "InProgress"}),
-            ),
-            tool_use_response(
-                "transition-done",
-                "manage_tickets_tool",
-                serde_json::json!({"action": "transition", "status": "Done"}),
-            ),
-            text_response("done"),
-        ]);
-        let broken = Tool::new("broken", "Always fails")
-            .read_only(true)
-            .handler(|_input, _ctx| Box::pin(async move { Ok(ToolResult::error("boom")) }));
-        let mut tickets = TicketSystem::new();
-        tickets.create("task", "", "task", "tester");
-
-        let agent = agent_with(provider, "worker")
-            .tool(broken)
-            .tool(ManageTicketsTool);
-        let _ = tickets.assign(agent).run_until_empty().await;
-
-        // Find the broken tool's result among captured messages — the
-        // captured slice is from the final request and contains every
-        // tool exchange leading up to it.
-        let captured = handles
-            .messages
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("messages captured");
-        let broken_result = captured.iter().find_map(|m| {
-            let Message::User { content } = m else {
-                return None;
-            };
-            content.iter().find_map(|cb| match cb {
-                ContentBlock::ToolResult {
-                    tool_use_id,
-                    content,
-                    is_error,
-                } if tool_use_id == "c1" => Some((content.clone(), *is_error)),
-                _ => None,
-            })
-        });
-        let (content, is_error) = broken_result.expect("broken tool result captured");
-        assert!(content.contains("boom"));
-        assert!(is_error);
-    }
-
-    #[tokio::test]
-    async fn agent_picks_up_path_a_ticket_assigned_by_another_agent() {
-        // The ticket type is `bug`, but alice only handles `task`. Path
-        // B never matches; the ticket gets through only because Path A
-        // claims any Todo whose `assignee` already names the agent.
-        let (provider, _) = MockProvider::queued(transition_to_done_responses(1));
-        let mut tickets = TicketSystem::new();
-        let key = tickets
-            .create("delegated to alice", "", "bug", "tester")
-            .key
-            .clone();
-        tickets.assign_to(&key, "alice").unwrap();
-
-        let alice = agent_with(provider, "alice")
-            .ticket_type("task")
-            .tool(ManageTicketsTool);
-        let tickets = tickets.assign(alice).run_until_empty().await;
-
-        assert_eq!(tickets.list_by_status(Status::Done).len(), 1);
-        let done = tickets.get(&key).unwrap();
-        assert_eq!(done.status, Status::Done);
-        assert_eq!(done.assignee.as_deref(), Some("alice"));
-    }
-
-    #[tokio::test]
-    async fn path_a_takes_priority_over_path_b() {
-        // TICKET-1 is a Path B candidate (`task`, unassigned). TICKET-2
-        // is a Path A candidate (already assigned to alice). The loop
-        // must claim TICKET-2 first even though TICKET-1 is older.
-        let (provider, _) = MockProvider::queued(transition_to_done_responses(2));
-        let mut tickets = TicketSystem::new();
-        let path_b_key = tickets.create("path b", "", "task", "tester").key.clone();
-        let path_a_key = tickets.create("path a", "", "bug", "tester").key.clone();
-        tickets.assign_to(&path_a_key, "alice").unwrap();
-
-        let alice = agent_with(provider, "alice")
-            .ticket_type("task")
-            .tool(ManageTicketsTool);
-        let tickets = tickets.assign(alice).run_until_empty().await;
-
-        // Both end up Done — but Path A's ticket should have been
-        // picked up first. The mock doesn't capture per-ticket order
-        // directly; assert via comment timestamps left by the
-        // transition tool, which records the action sequence in
-        // `requests()` order.
-        assert_eq!(tickets.list_by_status(Status::Done).len(), 2);
-        assert_eq!(tickets.get(&path_a_key).unwrap().status, Status::Done);
-        assert_eq!(tickets.get(&path_b_key).unwrap().status, Status::Done);
-        // Both tickets carry alice as the assignee — Path B's ticket
-        // had it written by the loop, Path A's by the seeding test.
-        assert_eq!(
-            tickets.get(&path_a_key).unwrap().assignee.as_deref(),
-            Some("alice")
-        );
-        assert_eq!(
-            tickets.get(&path_b_key).unwrap().assignee.as_deref(),
-            Some("alice")
-        );
-    }
-
-    #[tokio::test]
-    async fn agent_current_ticket_is_set_during_processing_and_cleared_after() {
-        // A custom probe tool captures `agent.current_ticket()` while
-        // the agent is mid-processing. After `run_until_empty` returns,
-        // the agent's current ticket should be `None` again.
-        let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-        let probe_capture = Arc::clone(&captured);
-
-        // The probe writes the current ticket key it sees into the
-        // shared slot, via the agent_name field on ToolContext — the
-        // agent name is enough to look the ticket key up via the
-        // `current_ticket` ambient field.
-        let probe = Tool::new("probe", "Capture the current ticket")
-            .read_only(true)
-            .handler(move |_input, ctx| {
-                let probe_capture = Arc::clone(&probe_capture);
-                let key = ctx.current_ticket.clone();
-                Box::pin(async move {
-                    *probe_capture.lock().unwrap() = key;
-                    Ok(ToolResult::success("ok"))
-                })
-            });
-
-        let (provider, _) = MockProvider::queued(vec![
-            tool_use_response("probe-1", "probe", serde_json::json!({})),
-            tool_use_response(
-                "transition-in-progress",
-                "manage_tickets_tool",
-                serde_json::json!({"action": "transition", "status": "InProgress"}),
-            ),
-            tool_use_response(
-                "transition-done",
-                "manage_tickets_tool",
-                serde_json::json!({"action": "transition", "status": "Done"}),
-            ),
-            text_response("done"),
-        ]);
-        let mut tickets = TicketSystem::new();
-        let key = tickets.create("watched", "", "task", "tester").key.clone();
-
-        let alice = agent_with(provider, "alice")
-            .tool(probe)
-            .tool(ManageTicketsTool);
-        // Hold a clone so we can read current_ticket() after the run.
-        let alice_handle = alice.clone();
-        let _ = tickets.assign(alice).run_until_empty().await;
-
-        // During processing the probe saw the ticket key.
-        assert_eq!(captured.lock().unwrap().as_deref(), Some(key.as_str()));
-        // After the run, the agent's current ticket is cleared.
-        assert!(alice_handle.current_ticket().is_none());
-    }
-
-    // ---- max_schema_retries ----
-
-    use crate::event::{Event, PolicyKind};
-
-    type CapturedEvents = Arc<Mutex<Vec<crate::event::EventKind>>>;
-    type EventHandler = Arc<dyn Fn(Event) + Send + Sync>;
-
-    fn capturing_event_handler() -> (CapturedEvents, EventHandler) {
-        let captured: CapturedEvents = Arc::new(Mutex::new(Vec::new()));
-        let handler: EventHandler = {
-            let captured = Arc::clone(&captured);
-            Arc::new(move |event: Event| {
-                captured.lock().unwrap().push(event.kind);
-            })
-        };
-        (captured, handler)
-    }
-
-    fn bad_attach_response(call_id: &str) -> ModelResponse {
-        // Schema requires `name` to be a string; `content.name` is a
-        // number, so validation fails.
-        tool_use_response(
-            call_id,
-            "manage_tickets_tool",
-            serde_json::json!({
-                "action": "attach",
-                "filename": "out.json",
-                "content": {"name": 7},
-                "schema": {
-                    "type": "object",
-                    "properties": {"name": {"type": "string"}},
-                    "required": ["name"]
-                }
-            }),
-        )
-    }
-
-    fn good_attach_response(call_id: &str) -> ModelResponse {
-        tool_use_response(
-            call_id,
-            "manage_tickets_tool",
-            serde_json::json!({
-                "action": "attach",
-                "filename": "out.json",
-                "content": {"name": "alice"},
-                "schema": {
-                    "type": "object",
-                    "properties": {"name": {"type": "string"}},
-                    "required": ["name"]
-                }
-            }),
-        )
-    }
-
-    #[tokio::test]
-    async fn consecutive_schema_failures_trip_max_schema_retries() {
-        let (provider, _) = MockProvider::queued(vec![
-            bad_attach_response("a1"),
-            bad_attach_response("a2"),
-            bad_attach_response("a3"),
-            // Spare responses in case anything else pops; should not be needed.
-            text_response("done"),
-        ]);
-        // Bound the run with max_steps so even if the agent re-claims
-        // (it shouldn't, because we force-fail the ticket) the watcher
-        // still terminates promptly.
-        let mut tickets = TicketSystem::new()
-            .max_schema_retries(3)
-            .max_steps(5);
-        let key = tickets.create("task", "", "task", "tester").key.clone();
-
-        let (captured, handler) = capturing_event_handler();
-        let agent = agent_with(provider, "worker")
-            .tool(ManageTicketsTool)
-            .event_handler(handler);
-        let tickets = tickets.assign(agent).run_until_empty().await;
-
-        let events = captured.lock().unwrap().clone();
-        let schema_failures = events
-            .iter()
-            .filter(|k| {
-                matches!(
-                    k,
-                    EventKind::ToolCallFailed {
-                        kind: ToolFailureKind::SchemaValidationFailed,
-                        ..
-                    }
-                )
-            })
-            .count();
-        assert_eq!(schema_failures, 3, "events: {events:#?}");
-        assert!(events.iter().any(|k| matches!(
-            k,
-            EventKind::PolicyViolated {
-                kind: PolicyKind::MaxSchemaRetries,
-                limit: 3,
-            }
-        )));
-        assert_eq!(tickets.get(&key).unwrap().status, Status::Failed);
-    }
-
-    #[tokio::test]
-    async fn successful_schema_validation_resets_failure_counter() {
-        // Two failures, one success, then three more failures. With
-        // max_schema_retries(3), the cap should trip on the SIXTH
-        // call total — the success in the middle resets the counter,
-        // so the second batch of failures runs to its own cap.
-        let (provider, _) = MockProvider::queued(vec![
-            bad_attach_response("b1"),
-            bad_attach_response("b2"),
-            good_attach_response("g1"),
-            bad_attach_response("b3"),
-            bad_attach_response("b4"),
-            bad_attach_response("b5"),
-            text_response("done"),
-        ]);
-        let mut tickets = TicketSystem::new()
-            .max_schema_retries(3)
-            .max_steps(5);
-        tickets.create("task", "", "task", "tester");
-
-        let (captured, handler) = capturing_event_handler();
-        let agent = agent_with(provider, "worker")
-            .tool(ManageTicketsTool)
-            .event_handler(handler);
-        let _ = tickets.assign(agent).run_until_empty().await;
-
-        let events = captured.lock().unwrap().clone();
-        let schema_failures = events
-            .iter()
-            .filter(|k| {
-                matches!(
-                    k,
-                    EventKind::ToolCallFailed {
-                        kind: ToolFailureKind::SchemaValidationFailed,
-                        ..
-                    }
-                )
-            })
-            .count();
-        assert_eq!(schema_failures, 5, "events: {events:#?}");
-        assert!(events.iter().any(|k| matches!(
-            k,
-            EventKind::PolicyViolated {
-                kind: PolicyKind::MaxSchemaRetries,
-                ..
-            }
-        )));
-    }
-
-    #[tokio::test]
-    async fn non_schema_failures_do_not_count_toward_max_schema_retries() {
-        // Register a tool that always errors via ToolResult::error.
-        // That flows through ToolError::ExecutionFailed, NOT
-        // SchemaValidationFailed — so the schema-retry counter must
-        // stay at zero even after many failures.
-        let broken = Tool::new("broken", "Always fails")
-            .read_only(false)
-            .handler(|_input, _ctx| {
-                Box::pin(async move { Ok(ToolResult::error("boom")) })
-            });
-        fn broken_call(call_id: &str) -> ModelResponse {
-            tool_use_response(call_id, "broken", serde_json::json!({}))
-        }
-        let (provider, _) = MockProvider::queued(vec![
-            broken_call("c1"),
-            broken_call("c2"),
-            broken_call("c3"),
-            text_response("done"),
-        ]);
-        let mut tickets = TicketSystem::new()
-            .max_schema_retries(1)
-            .max_steps(5);
-        tickets.create("task", "", "task", "tester");
-
-        let (captured, handler) = capturing_event_handler();
-        let agent = agent_with(provider, "worker")
-            .tool(broken)
-            .event_handler(handler);
-        let _ = tickets.assign(agent).run_until_empty().await;
-
-        let events = captured.lock().unwrap().clone();
-        // Plenty of generic failures …
-        let exec_failures = events
-            .iter()
-            .filter(|k| {
-                matches!(
-                    k,
-                    EventKind::ToolCallFailed {
-                        kind: ToolFailureKind::ExecutionFailed,
-                        ..
-                    }
-                )
-            })
-            .count();
-        assert!(
-            exec_failures >= 3,
-            "expected >=3 execution failures, got {exec_failures}: {events:#?}"
-        );
-        // … but no MaxSchemaRetries policy violation.
-        let schema_violation = events.iter().any(|k| {
-            matches!(
-                k,
-                EventKind::PolicyViolated {
-                    kind: PolicyKind::MaxSchemaRetries,
-                    ..
-                }
+                serde_json::json!({"action": "done", "result": "{\"answer\": 7}"}),
             )
-        });
-        assert!(
-            !schema_violation,
-            "MaxSchemaRetries should not fire from non-schema failures: {events:#?}"
+        };
+        let good = tool_use(
+            "good",
+            "manage_tickets_tool",
+            serde_json::json!({"action": "done", "result": "{\"answer\": \"yes\"}"}),
         );
+        let provider = MockProvider::queued(vec![bad(), bad(), good, text("ok")]);
+        let tickets = TicketSystem::new().max_schema_retries(3);
+        tickets.task_schema_assigned("hi", schema, "research");
+        let alice = agent_with(provider, "alice")
+            .label("research")
+            .tool(ManageTicketsTool);
+        tickets.add(alice);
+        tickets.run_dry().await;
+
+        let t = tickets.first().unwrap();
+        assert_eq!(t.status(), Status::Done);
+    }
+
+    #[tokio::test]
+    async fn run_dry_returns_last_done_result_for_single_task() {
+        let provider = MockProvider::queued(done_responses(1, "the answer"));
+        let tickets = TicketSystem::new();
+        tickets.task_assigned("anything", "research");
+        let alice = agent_with(provider, "alice")
+            .label("research")
+            .tool(ManageTicketsTool);
+        tickets.add(alice);
+        let result = tickets.run_dry().await;
+        assert_eq!(result.as_deref(), Some("the answer"));
+    }
+
+    #[tokio::test]
+    async fn run_dry_returns_none_when_no_ticket_reaches_done() {
+        let provider = MockProvider::queued(Vec::new());
+        let tickets = TicketSystem::new().timeout(Duration::from_millis(50));
+        tickets.task_assigned("never", "research");
+        let alice = agent_with(provider, "alice").label("research");
+        tickets.add(alice);
+        let result = tickets.run_dry().await;
+        assert!(result.is_none());
     }
 }

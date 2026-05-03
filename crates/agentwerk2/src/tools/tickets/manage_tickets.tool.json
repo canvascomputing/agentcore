@@ -2,15 +2,15 @@
   "name": "manage_tickets_tool",
   "summary": [
     "Read and mutate the ticket queue from one tool: union of `read_tickets_tool` and `write_tickets_tool`.",
-    "Use `get` / `list` / `search` to read, and `create` / `edit` / `comment` / `transition` / `assign` / `attach` to write.",
-    "`attach` uploads inline JSON content; supply `schema` to validate it before storing."
+    "Use `get` / `list` / `search` to read, and `create` / `edit` / `done` to write.",
+    "`done` is the only way to settle a ticket; `Failed` is reserved for ticket-system-driven transitions."
   ],
   "constraints": [
-    "One `action` per call. Nine actions in total — see the `action` parameter.",
+    "One `action` per call. Six actions total — see the `action` parameter.",
     "Every action that takes a `key` defaults to the agent's current ticket when `key` is omitted.",
-    "`comment` defaults `author` and `create` defaults `reporter` to the agent's name.",
+    "`create` stamps `reporter` from the calling agent automatically.",
     "`list` and `search` cap at 50 tickets per call.",
-    "`attach` validates `content` against `schema` (when supplied). Validation failures count toward `max_schema_retries`; consecutive failures terminate ticket processing."
+    "`done` validates `result` against the ticket's `schema` (when set). Validation failures count toward `max_schema_retries`; consecutive failures terminate ticket processing."
   ],
   "anti_patterns": [
     "When the agent only needs reads — register `read_tickets_tool` instead. Smaller surface = fewer mistakes.",
@@ -18,14 +18,13 @@
     "To find code or files in the working directory — use `grep_tool` / `glob_tool`."
   ],
   "cautions": [
-    "IMPORTANT: status transitions follow a state machine. Allowed: `Todo↔InProgress`, `InProgress↔InReview`, `InProgress`/`InReview` → `Done`/`Failed`. Other moves return an error.",
-    "IMPORTANT: `Done` and `Failed` are terminal. Use `InReview` if a reviewer should be able to send the ticket back.",
-    "IMPORTANT: transitioning to `Todo` clears the assignee.",
-    "ALWAYS settle your current ticket before the response ends. Returning text without `transition` leaves the ticket `InProgress` and the loop re-picks it."
+    "IMPORTANT: `done` is the only agent-callable status transition. `Failed` is reserved for ticket-system-driven outcomes (schema-retry trip, policy violations).",
+    "IMPORTANT: `Done` and `Failed` are terminal — once settled a ticket cannot be re-opened.",
+    "ALWAYS settle your current ticket with `done` before the response ends. Returning text without `done` leaves the ticket `InProgress` and the loop will re-pick it."
   ],
   "output": [
-    "Reads (`get`): markdown ticket block with key, status, type, reporter, assignee, description, comments.",
-    "Reads (`list` / `search`): bullet lines `- KEY [STATUS] [TYPE] @assignee — summary`. `(no matching tickets)` when empty.",
+    "Reads (`get`): markdown ticket block with key, status, reporter, assignee, labels, task body, result.",
+    "Reads (`list` / `search`): bullet lines `- KEY [STATUS] [labels] @assignee — task preview`. `(no matching tickets)` when empty.",
     "Writes: plain text confirmation, or an error describing the failed action."
   ],
   "read_only": false,
@@ -34,58 +33,43 @@
     "properties": {
       "action": {
         "type": "string",
-        "description": "Read: `get`, `list`, `search`. Write: `create`, `edit`, `comment`, `transition`, `assign`, `attach`."
+        "description": "Read: `get`, `list`, `search`. Write: `create`, `edit`, `done`."
       },
       "key": {
         "type": "string",
-        "description": "Ticket key (e.g. `TICKET-3`). Used by `get`, `edit`, `comment`, `transition`, `assign`, `attach`. Defaults to the agent's current ticket. Ignored by `create`, `list`, `search`."
+        "description": "Ticket key (e.g. `TICKET-3`). Used by `get`, `edit`, `done`. Defaults to the agent's current ticket. Ignored by `create`, `list`, `search`."
       },
       "status": {
         "type": "string",
-        "description": "For `list`: filter by status. For `transition`: target status. One of `Todo`, `InProgress`, `InReview`, `Done`, `Failed`."
+        "description": "For `list`: filter by status. One of `Todo`, `InProgress`, `Done`, `Failed`."
       },
       "assignee": {
         "type": "string",
-        "description": "For `list`: filter by assignee (excludes unassigned tickets). For `assign`: agent or human name to take ownership; empty string clears it."
+        "description": "For `list`: filter by assignee (excludes unassigned tickets)."
       },
       "query": {
         "type": "string",
-        "description": "For `search`: case-insensitive substring matched against summary and description."
+        "description": "For `search`: case-insensitive substring matched against the task body."
       },
-      "summary": {
+      "task": {
+        "description": "For `create` (required) or `edit` (optional): the task body — any JSON value (string, object, array, scalar)."
+      },
+      "labels": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "For `create` or `edit` (optional): label scope. Determines which agents can pick up the ticket via Path B (label intersection)."
+      },
+      "assign": {
         "type": "string",
-        "description": "For `create` (required) or `edit` (optional): one-line title."
-      },
-      "description": {
-        "type": "string",
-        "description": "For `create` or `edit` (both optional): long-form body."
-      },
-      "type": {
-        "type": "string",
-        "description": "For `create`: ticket type (e.g. `task`, `bug`). Defaults to `task`. Determines which agents can pick it up via Path B."
-      },
-      "reporter": {
-        "type": "string",
-        "description": "For `create`: who filed the ticket. Defaults to the agent's name."
-      },
-      "body": {
-        "type": "string",
-        "description": "For `comment` (required): the comment text."
-      },
-      "author": {
-        "type": "string",
-        "description": "For `comment`: who wrote the comment. Defaults to the agent's name."
-      },
-      "filename": {
-        "type": "string",
-        "description": "For `attach` (required): a label for the attached payload (e.g. `result.json`). Must be non-empty."
-      },
-      "content": {
-        "description": "For `attach` (required): the JSON payload to store. Any JSON value — object, array, scalar."
+        "description": "For `create` (optional): a single label OR an agent name. If it matches a registered agent, the ticket is born `InProgress` with that assignee (Path A). Otherwise it is appended to `labels` (Path B)."
       },
       "schema": {
         "type": "object",
-        "description": "For `attach` (optional): a JSON Schema document. When supplied, `content` is validated before the attachment is stored; violations are returned as an error and counted toward `max_schema_retries`."
+        "description": "For `create` or `edit` (optional): a JSON Schema document. When set, the agent's `done` result must validate against it; failures count toward `max_schema_retries`."
+      },
+      "result": {
+        "type": "string",
+        "description": "For `done` (optional): the agent's final answer. When the ticket carries a `schema`, this string must parse as JSON and validate. Defaults to the empty string."
       }
     },
     "required": ["action"]

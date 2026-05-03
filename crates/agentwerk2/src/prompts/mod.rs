@@ -1,6 +1,5 @@
-//! Default behavior, context block, and the `Section` / `PromptBuilder`
-//! that compose them in the canonical Context → Role → Behavior →
-//! Tools → Task order.
+//! Default context block, and the `Section` / `PromptBuilder` that
+//! composes the role prompt and (caller-supplied) directives.
 
 mod builder;
 mod section;
@@ -10,10 +9,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use builder::{Prompt, PromptBuilder};
 pub(crate) use section::Section;
-
-/// Default behavioral directives appended to the system prompt after the
-/// role prompt. Override with `Agent::behavior(...)`.
-pub const DEFAULT_BEHAVIOR: &str = include_str!("default.behavior.md");
 
 const DEFAULT_CONTEXT_TEMPLATE: &str = include_str!("default.context.md");
 

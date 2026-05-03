@@ -10,17 +10,17 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agents::tickets::TicketSystem;
+use crate::agents::tickets::TicketSystemState;
 use crate::providers::types::ContentBlock;
 use crate::providers::{ProviderResult, ProviderToolDefinition};
 
 use super::error::ToolError;
 
-/// Context passed to tool execution. `tool_registry` and the three
-/// ticket-side fields are ambient internals — only the built-in
-/// `ToolSearchTool` and the ticket tools (`Read`/`Write`/`Manage`) read
-/// them. External tool authors use `working_dir`, `interrupt_signal`,
-/// and `wait_for_cancel`.
+/// Context passed to tool execution. `tool_registry` and the ticket-side
+/// fields are ambient internals — only the built-in `ToolSearchTool` and
+/// the ticket tools (`Read`/`Write`/`Manage`) read them. External tool
+/// authors use `working_dir`, `interrupt_signal`, and
+/// `wait_for_cancel`.
 #[derive(Clone)]
 pub struct ToolContext {
     /// Working directory the tool runs in. Tools that touch the filesystem
@@ -28,7 +28,7 @@ pub struct ToolContext {
     pub working_dir: PathBuf,
     pub interrupt_signal: Arc<AtomicBool>,
     pub(crate) tool_registry: Option<Arc<ToolRegistry>>,
-    pub(crate) tickets: Option<Arc<Mutex<TicketSystem>>>,
+    pub(crate) ticket_system_state: Option<Arc<Mutex<TicketSystemState>>>,
     pub(crate) current_ticket: Option<String>,
     pub(crate) agent_name: Option<String>,
 }
@@ -43,7 +43,7 @@ impl ToolContext {
             working_dir,
             interrupt_signal: Arc::new(AtomicBool::new(false)),
             tool_registry: None,
-            tickets: None,
+            ticket_system_state: None,
             current_ticket: None,
             agent_name: None,
         }
@@ -61,8 +61,11 @@ impl ToolContext {
         self
     }
 
-    pub(crate) fn tickets(mut self, tickets: Arc<Mutex<TicketSystem>>) -> Self {
-        self.tickets = Some(tickets);
+    pub(crate) fn ticket_system_state(
+        mut self,
+        state: Arc<Mutex<TicketSystemState>>,
+    ) -> Self {
+        self.ticket_system_state = Some(state);
         self
     }
 
@@ -76,8 +79,10 @@ impl ToolContext {
         self
     }
 
-    pub(crate) fn tickets_handle(&self) -> Option<&Arc<Mutex<TicketSystem>>> {
-        self.tickets.as_ref()
+    pub(crate) fn ticket_system_state_handle(
+        &self,
+    ) -> Option<&Arc<Mutex<TicketSystemState>>> {
+        self.ticket_system_state.as_ref()
     }
 
     pub(crate) fn current_ticket_key(&self) -> Option<&str> {

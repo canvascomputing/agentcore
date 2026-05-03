@@ -1,31 +1,59 @@
-//! Agent: identity + prompt parts + provider/model. Constructed
-//! independently of any ticket queue and paired with one via
-//! `TicketSystem::assign`.
+//! Agent: identity + prompt parts + provider/model + a bound ticket
+//! system. Always carries an `Arc<Mutex<TicketSystemState>>`; the default
+//! is a private one until `.ticket_system(&shared)` (or
+//! `tickets.add(agent)`) hands it a shared one.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use serde::Serialize;
+
 use crate::event::{default_logger, Event};
-use crate::prompts::{PromptBuilder, Section, DEFAULT_BEHAVIOR};
+use crate::prompts::{PromptBuilder, Section};
 use crate::providers::{Provider, ProviderToolDefinition};
 use crate::tools::{ToolLike, ToolRegistry};
 
-use super::r#loop::Runnable;
-use super::tickets::TicketSystem;
+use super::tickets::{Ticket, TicketSystem, TicketSystemState};
 
-#[derive(Default, Clone)]
+static AGENT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn default_agent_name() -> String {
+    let n = AGENT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("agent-{n}")
+}
+
+#[derive(Clone)]
 pub struct Agent {
-    name: String,
+    pub(crate) name: String,
     provider: Option<Arc<dyn Provider>>,
     model: Option<String>,
     role: Option<String>,
-    behavior: Option<String>,
     context: Option<String>,
-    ticket_types: Vec<String>,
+    pub(crate) labels: Vec<String>,
     tools: ToolRegistry,
     working_dir: Option<PathBuf>,
     current_ticket: Arc<Mutex<Option<String>>>,
     event_handler: Option<Arc<dyn Fn(Event) + Send + Sync>>,
+    pub(crate) ticket_system: Arc<Mutex<TicketSystemState>>,
+}
+
+impl Default for Agent {
+    fn default() -> Self {
+        Self {
+            name: default_agent_name(),
+            provider: None,
+            model: None,
+            role: None,
+            context: None,
+            labels: Vec::new(),
+            tools: ToolRegistry::default(),
+            working_dir: None,
+            current_ticket: Arc::new(Mutex::new(None)),
+            event_handler: None,
+            ticket_system: Arc::new(Mutex::new(TicketSystemState::default())),
+        }
+    }
 }
 
 impl Agent {
@@ -53,27 +81,43 @@ impl Agent {
         self
     }
 
-    pub fn behavior(mut self, b: impl Into<String>) -> Self {
-        self.behavior = Some(b.into());
-        self
-    }
-
     pub fn context(mut self, c: impl Into<String>) -> Self {
         self.context = Some(c.into());
         self
     }
 
-    /// Restrict the agent to handle only tickets whose type matches
-    /// one of the strings supplied. Calling more than once accumulates;
-    /// an agent with no calls handles every type.
-    pub fn ticket_type(mut self, t: impl Into<String>) -> Self {
-        self.ticket_types.push(t.into());
+    /// Add a single label to the agent's scope. Use [`Self::labels`] to
+    /// add several at once.
+    pub fn label(mut self, l: impl Into<String>) -> Self {
+        self.labels.push(l.into());
         self
     }
 
-    /// Register a tool the agent may call.
+    /// Add many labels at once.
+    pub fn labels<I, S>(mut self, iter: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.labels.extend(iter.into_iter().map(Into::into));
+        self
+    }
+
+    /// Register a single tool the agent may call.
     pub fn tool(mut self, tool: impl ToolLike + 'static) -> Self {
         self.tools.register(tool);
+        self
+    }
+
+    /// Register many tools at once.
+    pub fn tools<I, T>(mut self, tools: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: ToolLike + 'static,
+    {
+        for t in tools {
+            self.tools.register(t);
+        }
         self
     }
 
@@ -97,8 +141,23 @@ impl Agent {
         self
     }
 
+    /// Bind this agent to a shared `TicketSystem`. Drains any tickets the
+    /// agent had already enqueued in its (private) default system into the
+    /// shared one, then registers `self.clone()` into the shared system's
+    /// agents list so the loop will dispatch this agent at `run_dry` time.
+    pub fn ticket_system(mut self, sys: &TicketSystem) -> Self {
+        sys.bind_agent(&mut self);
+        self
+    }
+
     pub fn get_name(&self) -> &str {
         &self.name
+    }
+
+    /// Labels the agent declared. Empty means "default scope" — the agent
+    /// handles only tickets with no labels.
+    pub fn get_labels(&self) -> &[String] {
+        &self.labels
     }
 
     /// The key of the ticket currently being processed, if any.
@@ -114,9 +173,15 @@ impl Agent {
         self.event_handler.clone().unwrap_or_else(default_logger)
     }
 
-    /// Empty allow-list = handle any type.
-    pub fn handles(&self, ticket_type: &str) -> bool {
-        self.ticket_types.is_empty() || self.ticket_types.iter().any(|t| t == ticket_type)
+    /// Returns true when the agent's label scope intersects the ticket's
+    /// labels. Empty agent labels mean "default scope" — only tickets with
+    /// no labels match.
+    pub fn handles(&self, ticket_labels: &[String]) -> bool {
+        if self.labels.is_empty() {
+            ticket_labels.is_empty()
+        } else {
+            self.labels.iter().any(|l| ticket_labels.iter().any(|t| t == l))
+        }
     }
 
     pub(super) fn tool_definitions(&self) -> Vec<ProviderToolDefinition> {
@@ -152,13 +217,6 @@ impl Agent {
         if let Some(role) = &self.role {
             b = b.role(role.clone());
         }
-        let behavior = self
-            .behavior
-            .clone()
-            .unwrap_or_else(|| DEFAULT_BEHAVIOR.to_string());
-        if !behavior.is_empty() {
-            b = b.behavior(behavior);
-        }
         b.build().system
     }
 
@@ -171,20 +229,56 @@ impl Agent {
             .map(|body| Section::context(body.clone()).render())
     }
 
-    /// Sugar: build a default `TicketSystem`, add one Todo ticket
-    /// carrying `task`, drive this agent until the queue settles,
-    /// return the final `TicketSystem`. Panics if `provider` or
-    /// `model` is missing.
-    pub async fn run(self, task: impl Into<String>) -> TicketSystem {
-        let task = task.into();
-        let reporter = if self.name.is_empty() {
-            "user".to_string()
-        } else {
-            self.name.clone()
-        };
-        let mut tickets = TicketSystem::new();
-        tickets.create(task.clone(), task, "task", reporter);
-        tickets.assign(self).run_until_empty().await
+    /// Enqueue a ticket carrying `value` as its task body. Always available
+    /// (the agent has a bound ticket system from construction onward).
+    /// Returns `&Self` for chaining.
+    pub fn task<T: Serialize>(&self, value: T) -> &Self {
+        let ticket = Ticket::new(value);
+        self.dispatch(ticket);
+        self
+    }
+
+    /// Enqueue a ticket carrying `value` and pinned to `assign` — either
+    /// a label (Path B routing) or an agent name (Path A routing); the
+    /// ticket system disambiguates at insertion time.
+    pub fn task_assigned<T: Serialize>(&self, value: T, assign: impl Into<String>) -> &Self {
+        let ticket = Ticket::new(value).assign(assign);
+        self.dispatch(ticket);
+        self
+    }
+
+    /// Enqueue a ticket carrying `value` plus a `schema` the agent's final
+    /// `done` result must validate against.
+    pub fn task_schema<T: Serialize>(&self, value: T, schema: crate::schemas::Schema) -> &Self {
+        let ticket = Ticket::new(value).schema(schema);
+        self.dispatch(ticket);
+        self
+    }
+
+    /// `task_schema` + `task_assigned` combined.
+    pub fn task_schema_assigned<T: Serialize>(
+        &self,
+        value: T,
+        schema: crate::schemas::Schema,
+        assign: impl Into<String>,
+    ) -> &Self {
+        let ticket = Ticket::new(value).schema(schema).assign(assign);
+        self.dispatch(ticket);
+        self
+    }
+
+    /// Enqueue a fully-built `Ticket`. The ticket system overrides the
+    /// system-managed fields (key, status, created_at, reporter, assignee,
+    /// result) at insertion time; only `task`, `labels`, `schema`, and the
+    /// pending-assignee slot survive verbatim.
+    pub fn create(&self, ticket: Ticket) -> &Self {
+        self.dispatch(ticket);
+        self
+    }
+
+    fn dispatch(&self, ticket: Ticket) {
+        let mut state = self.ticket_system.lock().unwrap();
+        state.insert(ticket, self.name.clone());
     }
 }
 
@@ -193,20 +287,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn handles_returns_true_when_allow_list_empty() {
+    fn handles_default_scope_only_picks_unlabeled_tickets() {
         let agent = Agent::new();
-        assert!(agent.handles("anything"));
-        assert!(agent.handles("task"));
-        assert!(agent.handles(""));
+        assert!(agent.handles(&[]));
+        assert!(!agent.handles(&["research".into()]));
     }
 
     #[test]
-    fn handles_filters_by_configured_types() {
-        let agent = Agent::new().ticket_type("task").ticket_type("research");
-        assert!(agent.handles("task"));
-        assert!(agent.handles("research"));
-        assert!(!agent.handles("bug"));
-        assert!(!agent.handles("review"));
+    fn handles_with_labels_intersects_ticket_labels() {
+        let agent = Agent::new().label("research").label("urgent");
+        assert!(agent.handles(&["research".into()]));
+        assert!(agent.handles(&["urgent".into(), "other".into()]));
+        assert!(!agent.handles(&["report".into()]));
+        assert!(!agent.handles(&[]));
     }
 
     #[test]
@@ -216,9 +309,12 @@ mod tests {
     }
 
     #[test]
-    fn default_get_name_is_empty() {
-        let agent = Agent::new();
-        assert_eq!(agent.get_name(), "");
+    fn default_name_is_unique_per_agent() {
+        let a = Agent::new();
+        let b = Agent::new();
+        assert_ne!(a.get_name(), b.get_name());
+        assert!(a.get_name().starts_with("agent-"));
+        assert!(b.get_name().starts_with("agent-"));
     }
 
     #[test]
@@ -238,19 +334,23 @@ mod tests {
 
     #[test]
     fn system_prompt_does_not_include_context() {
-        let agent = Agent::new().role("ROLE").behavior("BEH").context("CTX");
+        let agent = Agent::new().role("ROLE").context("CTX");
         let prompt = agent.system_prompt();
         assert!(prompt.contains("ROLE"));
-        assert!(prompt.contains("BEH"));
         assert!(!prompt.contains("CTX"));
         assert!(!prompt.contains("## Context"));
     }
 
     #[test]
-    fn system_prompt_uses_default_behavior_when_unset() {
+    fn system_prompt_is_role_only() {
         let agent = Agent::new().role("ROLE");
         let prompt = agent.system_prompt();
-        assert!(prompt.contains("ROLE"));
-        assert!(prompt.contains(DEFAULT_BEHAVIOR.trim()));
+        assert_eq!(prompt, "ROLE");
+    }
+
+    #[test]
+    fn system_prompt_empty_when_role_unset() {
+        let agent = Agent::new();
+        assert!(agent.system_prompt().is_empty());
     }
 }
