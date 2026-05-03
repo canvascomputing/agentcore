@@ -1,11 +1,14 @@
 //! Agent: identity + prompt parts + provider/model + a bound ticket
-//! system. Always carries an `Arc<Mutex<TicketSystemState>>`; the default
-//! is a private one until `.ticket_system(&shared)` (or
-//! `tickets.add(agent)`) hands it a shared one.
+//! system. Holds a `Weak<TicketSystem>`; `Default` produces a dangling
+//! `Weak`, and `tickets.add(agent)` (or `agent.ticket_system(&shared)`)
+//! stamps the system's `Weak<Self>` onto the agent. The loop upgrades it
+//! once at the start of `handle_tickets` and accesses `tickets`,
+//! `policies`, `stats`, and `interrupt_signal` through the resulting
+//! `Arc<TicketSystem>`.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Weak};
 
 use serde::Serialize;
 
@@ -14,7 +17,7 @@ use crate::prompts::{PromptBuilder, Section};
 use crate::providers::{Provider, ProviderToolDefinition};
 use crate::tools::{ToolLike, ToolRegistry};
 
-use super::tickets::{Ticket, TicketSystem, TicketSystemState};
+use super::tickets::{insert_ticket, Ticket, TicketSystem};
 
 static AGENT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -33,9 +36,8 @@ pub struct Agent {
     pub(crate) labels: Vec<String>,
     tools: ToolRegistry,
     working_dir: Option<PathBuf>,
-    current_ticket: Arc<Mutex<Option<String>>>,
     event_handler: Option<Arc<dyn Fn(Event) + Send + Sync>>,
-    pub(crate) ticket_system: Arc<Mutex<TicketSystemState>>,
+    pub(crate) ticket_system: Weak<TicketSystem>,
 }
 
 impl Default for Agent {
@@ -49,9 +51,8 @@ impl Default for Agent {
             labels: Vec::new(),
             tools: ToolRegistry::default(),
             working_dir: None,
-            current_ticket: Arc::new(Mutex::new(None)),
             event_handler: None,
-            ticket_system: Arc::new(Mutex::new(TicketSystemState::default())),
+            ticket_system: Weak::new(),
         }
     }
 }
@@ -141,11 +142,12 @@ impl Agent {
         self
     }
 
-    /// Bind this agent to a shared `TicketSystem`. Drains any tickets the
-    /// agent had already enqueued in its (private) default system into the
-    /// shared one, then registers `self.clone()` into the shared system's
-    /// agents list so the loop will dispatch this agent at `run_dry` time.
-    pub fn ticket_system(mut self, sys: &TicketSystem) -> Self {
+    /// Bind this agent to a shared `TicketSystem`. Drains any tickets
+    /// the agent had already enqueued in its prior store into `sys`,
+    /// stamps `sys`'s `Weak<Self>` onto `self.ticket_system`, and
+    /// registers a clone of `self` into `sys`'s agents list so the
+    /// loop will dispatch this agent at `run` / `run_dry` time.
+    pub fn ticket_system(mut self, sys: &Arc<TicketSystem>) -> Self {
         sys.bind_agent(&mut self);
         self
     }
@@ -158,15 +160,6 @@ impl Agent {
     /// handles only tickets with no labels.
     pub fn get_labels(&self) -> &[String] {
         &self.labels
-    }
-
-    /// The key of the ticket currently being processed, if any.
-    pub fn current_ticket(&self) -> Option<String> {
-        self.current_ticket.lock().unwrap().clone()
-    }
-
-    pub(super) fn set_current_ticket(&self, key: Option<String>) {
-        *self.current_ticket.lock().unwrap() = key;
     }
 
     pub(super) fn resolve_event_handler(&self) -> Arc<dyn Fn(Event) + Send + Sync> {
@@ -238,11 +231,11 @@ impl Agent {
         self
     }
 
-    /// Enqueue a ticket carrying `value` and pinned to `assign` — either
-    /// a label (Path B routing) or an agent name (Path A routing); the
-    /// ticket system disambiguates at insertion time.
-    pub fn task_assigned<T: Serialize>(&self, value: T, assign: impl Into<String>) -> &Self {
-        let ticket = Ticket::new(value).assign(assign);
+    /// Enqueue a ticket carrying `value` and attached to `label` for
+    /// Path B routing. To pin a ticket directly to an agent (Path A),
+    /// build it explicitly: `agent.create(Ticket::new(...).assign_to("alice"))`.
+    pub fn task_assigned<T: Serialize>(&self, value: T, label: impl Into<String>) -> &Self {
+        let ticket = Ticket::new(value).label(label);
         self.dispatch(ticket);
         self
     }
@@ -260,25 +253,28 @@ impl Agent {
         &self,
         value: T,
         schema: crate::schemas::Schema,
-        assign: impl Into<String>,
+        label: impl Into<String>,
     ) -> &Self {
-        let ticket = Ticket::new(value).schema(schema).assign(assign);
+        let ticket = Ticket::new(value).schema(schema).label(label);
         self.dispatch(ticket);
         self
     }
 
-    /// Enqueue a fully-built `Ticket`. The ticket system overrides the
-    /// system-managed fields (key, status, created_at, reporter, assignee,
-    /// result) at insertion time; only `task`, `labels`, `schema`, and the
-    /// pending-assignee slot survive verbatim.
+    /// Enqueue a fully-built `Ticket`. System-managed fields (key,
+    /// reporter, created_at, status, result) are overwritten unless the
+    /// caller set `assignee` on the ticket — that case births the ticket
+    /// `InProgress` to enable Path A routing.
     pub fn create(&self, ticket: Ticket) -> &Self {
         self.dispatch(ticket);
         self
     }
 
     fn dispatch(&self, ticket: Ticket) {
-        let mut state = self.ticket_system.lock().unwrap();
-        state.insert(ticket, self.name.clone());
+        let sys = self
+            .ticket_system
+            .upgrade()
+            .expect("Agent::task requires a bound TicketSystem");
+        insert_ticket(&sys, ticket, self.name.clone());
     }
 }
 

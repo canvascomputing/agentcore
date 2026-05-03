@@ -105,18 +105,12 @@ pub enum ResponseStatus {
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
-    #[serde(default)]
-    pub cache_read_input_tokens: u64,
-    #[serde(default)]
-    pub cache_creation_input_tokens: u64,
 }
 
 impl std::ops::AddAssign<&TokenUsage> for TokenUsage {
     fn add_assign(&mut self, other: &TokenUsage) {
         self.input_tokens += other.input_tokens;
         self.output_tokens += other.output_tokens;
-        self.cache_read_input_tokens += other.cache_read_input_tokens;
-        self.cache_creation_input_tokens += other.cache_creation_input_tokens;
     }
 }
 
@@ -216,19 +210,13 @@ mod tests {
         let mut usage = TokenUsage {
             input_tokens: 100,
             output_tokens: 50,
-            cache_read_input_tokens: 10,
-            cache_creation_input_tokens: 5,
         };
         let other = TokenUsage {
             input_tokens: 200,
             output_tokens: 100,
-            cache_read_input_tokens: 20,
-            cache_creation_input_tokens: 10,
         };
         usage += &other;
         assert_eq!(usage.input_tokens, 300);
         assert_eq!(usage.output_tokens, 150);
-        assert_eq!(usage.cache_read_input_tokens, 30);
-        assert_eq!(usage.cache_creation_input_tokens, 15);
     }
 }

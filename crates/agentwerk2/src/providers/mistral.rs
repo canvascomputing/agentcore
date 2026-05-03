@@ -18,7 +18,7 @@ const DEFAULT_BASE_URL: &str = "https://api.mistral.ai";
 
 impl MistralProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
-        Self(OpenAiProvider::raw(api_key, DEFAULT_BASE_URL, false))
+        Self(OpenAiProvider::raw(api_key, DEFAULT_BASE_URL))
     }
 
     pub fn base_url(self, url: impl Into<String>) -> Self {

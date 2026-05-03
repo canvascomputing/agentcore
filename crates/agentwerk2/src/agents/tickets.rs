@@ -1,25 +1,28 @@
-//! Ticket queue, run policies, and per-run metrics. Doubles as the
-//! orchestrator: binding (or `add`-ing) an `Agent` and calling
-//! `run_dry().await` drives every staged agent until the queue is drained,
-//! the cancel signal fires, a policy is violated, or the configured
-//! timeout elapses.
+//! Ticket queue and run orchestration. `TicketSystem` owns the shared
+//! ticket store, the registered agents, the active policies, the run
+//! timeout, the interrupt signal, and the run-time [`Stats`] object.
+//! `bind_agent` stamps the ticket Arc, policies, stats, and signal onto
+//! each agent at add time; `run` / `run_dry` then drive the bound
+//! agents.
 
 use std::collections::HashMap;
 use std::fmt;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::event::PolicyKind;
-use crate::providers::{AsUserMessage, Message, ProviderError, TokenUsage};
+use crate::providers::{AsUserMessage, Message};
 
 use super::agent::Agent;
 use super::policy::Policies;
 use super::r#loop::{run_main_loop, Runnable};
+use super::stats::{Stats, TicketStats};
 
+/// A ticket. Caller-settable fields: `task`, `labels`, `schema`,
+/// `assignee`. System-managed fields (`key`, `status`, `reporter`,
+/// `created_at`, `result`) are stamped at insertion time.
 #[derive(Debug, Clone)]
 pub struct Ticket {
     pub task: serde_json::Value,
@@ -31,18 +34,13 @@ pub struct Ticket {
     pub(crate) reporter: String,
     pub(crate) created_at: u64,
     pub(crate) result: Option<String>,
-    /// Deferred routing slot: filled by `Ticket::assign(...)` and
-    /// resolved by `TicketSystemState::insert` to either `assignee` (when
-    /// the value matches a registered agent name) or appended to `labels`.
-    pub(crate) pending_assignee: Option<String>,
 }
 
 impl Ticket {
     /// New ticket carrying `task` as its body. Use the chainable helpers
-    /// (`label`, `labels`, `schema`, `assign`) to populate caller-settable
-    /// fields. System-managed fields (`key`, `status`, `assignee`,
-    /// `reporter`, `created_at`, `result`) are stamped by the ticket
-    /// system at insertion time; the placeholders set here are
+    /// (`label`, `labels`, `schema`, `assignee`) to populate
+    /// caller-settable fields. System-managed fields are stamped by the
+    /// ticket system at insertion time; the placeholders set here are
     /// overwritten.
     pub fn new<T: Serialize>(task: T) -> Self {
         let value = serde_json::to_value(task)
@@ -57,7 +55,6 @@ impl Ticket {
             reporter: String::new(),
             created_at: 0,
             result: None,
-            pending_assignee: None,
         }
     }
 
@@ -82,11 +79,12 @@ impl Ticket {
         self
     }
 
-    /// Assigns the ticket. If `who` matches a registered agent at insert
-    /// time, sets `assignee` and births the ticket `InProgress` (Path A
-    /// routing). Otherwise appends `who` as a label (Path B routing).
-    pub fn assign(mut self, who: impl Into<String>) -> Self {
-        self.pending_assignee = Some(who.into());
+    /// Pin the ticket directly to an agent by name. The ticket is born
+    /// `InProgress` and Path A on the loop side picks it up. There is no
+    /// auto-resolution between assignee and label — the caller must know
+    /// which they want.
+    pub fn assign_to(mut self, name: impl Into<String>) -> Self {
+        self.assignee = Some(name.into());
         self
     }
 
@@ -114,6 +112,32 @@ impl Ticket {
 
     pub fn result(&self) -> Option<&str> {
         self.result.as_deref()
+    }
+
+    // ---- predicate helpers (compose with TicketSystem::filter / find / count) ----
+
+    pub fn is_todo(&self) -> bool {
+        self.status == Status::Todo
+    }
+
+    pub fn is_in_progress(&self) -> bool {
+        self.status == Status::InProgress
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.status == Status::Done
+    }
+
+    pub fn is_failed(&self) -> bool {
+        self.status == Status::Failed
+    }
+
+    pub fn is_assigned_to(&self, name: &str) -> bool {
+        self.assignee.as_deref() == Some(name)
+    }
+
+    pub fn has_label(&self, label: &str) -> bool {
+        self.labels.iter().any(|l| l == label)
     }
 }
 
@@ -154,89 +178,321 @@ impl fmt::Display for TicketError {
 
 impl std::error::Error for TicketError {}
 
-#[derive(Default)]
-struct LoopMetrics {
-    steps: u64,
-    requests: u64,
-    tool_calls: u64,
-    errors: u64,
-    input_tokens: u64,
-    output_tokens: u64,
+/// Public ticket system. Owns the shared ticket store, the registered
+/// agents, the policies, the timeout, the interrupt signal, and the run
+/// stats. Always lives behind `Arc<TicketSystem>` — `new()` returns
+/// `Arc<Self>` so each bound `Agent` can hold a `Weak<TicketSystem>`
+/// without creating an Arc cycle through the system's `Vec<Agent>`.
+pub struct TicketSystem {
+    weak_self: Weak<TicketSystem>,
+    pub(crate) tickets: Mutex<HashMap<String, Ticket>>,
+    agents: Mutex<Vec<Agent>>,
+    policies: Mutex<Policies>,
+    timeout: Mutex<Option<Duration>>,
+    pub(crate) interrupt_signal: Mutex<Arc<AtomicBool>>,
+    pub(crate) stats: Stats,
 }
 
-/// Mutable inner state of a ticket system. Held behind `Arc<Mutex<...>>`
-/// by both the public `TicketSystem` handle and every `Agent` bound to
-/// the system, so caller code, the loop, and individual agents share one
-/// queue.
-pub struct TicketSystemState {
-    pub(crate) tickets: HashMap<String, Ticket>,
-    next_id: u32,
-    #[allow(dead_code)]
-    directory: PathBuf,
-    metrics: LoopMetrics,
-    interrupt_signal: Arc<AtomicBool>,
-    policies: Policies,
-    timeout: Option<Duration>,
-    pub(crate) agents: Vec<Agent>,
-}
-
-impl Default for TicketSystemState {
-    fn default() -> Self {
-        Self {
-            tickets: HashMap::new(),
-            next_id: 1,
-            directory: PathBuf::from("./tickets"),
-            metrics: LoopMetrics::default(),
-            interrupt_signal: Arc::new(AtomicBool::new(false)),
-            policies: Policies::default(),
-            timeout: None,
-            agents: Vec::new(),
-        }
+impl TicketSystem {
+    /// Build a fresh `TicketSystem` and return it inside an `Arc`. The
+    /// system captures its own `Weak<Self>` via `Arc::new_cyclic` so
+    /// `bind_agent` can hand out the back-reference each `Agent` needs
+    /// at run time.
+    pub fn new() -> Arc<Self> {
+        Arc::new_cyclic(|weak| Self {
+            weak_self: weak.clone(),
+            tickets: Mutex::new(HashMap::new()),
+            agents: Mutex::new(Vec::new()),
+            policies: Mutex::new(Policies::default()),
+            timeout: Mutex::new(None),
+            interrupt_signal: Mutex::new(Arc::new(AtomicBool::new(false))),
+            stats: Stats::new(),
+        })
     }
-}
 
-impl TicketSystemState {
-    /// Insert a caller-built ticket. Stamps every system-managed field
-    /// (key, created_at, status, assignee, reporter, result) and resolves
-    /// `pending_assignee` against the registered-agents set.
-    pub(crate) fn insert(&mut self, mut ticket: Ticket, reporter: String) -> &Ticket {
-        ticket.key = format!("TICKET-{}", self.next_id);
-        self.next_id += 1;
-        ticket.created_at = now_millis();
-        ticket.reporter = reporter;
-        ticket.result = None;
+    /// Run-time counters. Read after `run` / `run_dry` returns.
+    pub fn stats(&self) -> &Stats {
+        &self.stats
+    }
 
-        if let Some(who) = ticket.pending_assignee.take() {
-            if self.agents.iter().any(|a| a.get_name() == who) {
-                ticket.assignee = Some(who);
-                ticket.status = Status::InProgress;
-            } else {
-                ticket.labels.push(who);
-                ticket.assignee = None;
-                ticket.status = Status::Todo;
+    // ---- policy builders ----
+
+    pub fn max_steps(self: Arc<Self>, n: u32) -> Arc<Self> {
+        self.policies.lock().unwrap().max_steps = Some(n);
+        self
+    }
+
+    pub fn max_input_tokens(self: Arc<Self>, n: u64) -> Arc<Self> {
+        self.policies.lock().unwrap().max_input_tokens = Some(n);
+        self
+    }
+
+    pub fn max_output_tokens(self: Arc<Self>, n: u64) -> Arc<Self> {
+        self.policies.lock().unwrap().max_output_tokens = Some(n);
+        self
+    }
+
+    pub fn max_request_tokens(self: Arc<Self>, n: u32) -> Arc<Self> {
+        self.policies.lock().unwrap().max_request_tokens = Some(n);
+        self
+    }
+
+    pub fn max_schema_retries(self: Arc<Self>, n: u32) -> Arc<Self> {
+        self.policies.lock().unwrap().max_schema_retries = Some(n);
+        self
+    }
+
+    pub fn max_request_retries(self: Arc<Self>, n: u32) -> Arc<Self> {
+        self.policies.lock().unwrap().max_request_retries = n;
+        self
+    }
+
+    pub fn request_retry_delay(self: Arc<Self>, d: Duration) -> Arc<Self> {
+        self.policies.lock().unwrap().request_retry_delay = d;
+        self
+    }
+
+    /// Maximum wall-clock duration `run_dry` will wait before tripping
+    /// the interrupt signal and returning. Independent of the
+    /// policy-violation cap surface — a timeout is a graceful stop, not
+    /// a `PolicyViolated` event.
+    pub fn timeout(self: Arc<Self>, d: Duration) -> Arc<Self> {
+        *self.timeout.lock().unwrap() = Some(d);
+        self
+    }
+
+    /// Override the cancel signal. Useful when a caller wants to share
+    /// one `Arc<AtomicBool>` across multiple subsystems.
+    pub fn interrupt_signal(self: Arc<Self>, signal: Arc<AtomicBool>) -> Arc<Self> {
+        *self.interrupt_signal.lock().unwrap() = signal;
+        self
+    }
+
+    // ---- ticket-creation API mirrored on Agent ----
+
+    /// Enqueue a ticket carrying `value` as its task body.
+    pub fn task<T: Serialize>(&self, value: T) -> &Self {
+        self.dispatch(Ticket::new(value));
+        self
+    }
+
+    /// Enqueue a ticket carrying `value`, attached to `label` for Path B
+    /// routing.
+    pub fn task_assigned<T: Serialize>(&self, value: T, label: impl Into<String>) -> &Self {
+        self.dispatch(Ticket::new(value).label(label));
+        self
+    }
+
+    /// Enqueue a ticket whose final `done` result must validate against
+    /// `schema`.
+    pub fn task_schema<T: Serialize>(&self, value: T, schema: crate::schemas::Schema) -> &Self {
+        self.dispatch(Ticket::new(value).schema(schema));
+        self
+    }
+
+    /// `task_schema` + `task_assigned` combined.
+    pub fn task_schema_assigned<T: Serialize>(
+        &self,
+        value: T,
+        schema: crate::schemas::Schema,
+        label: impl Into<String>,
+    ) -> &Self {
+        self.dispatch(Ticket::new(value).schema(schema).label(label));
+        self
+    }
+
+    /// Enqueue a fully-built `Ticket`. System-managed fields (key,
+    /// reporter, created_at, status, result) are overwritten unless
+    /// `assignee` was explicitly set on the ticket — that case births the
+    /// ticket `InProgress` to enable Path A routing.
+    pub fn create(&self, ticket: Ticket) -> &Self {
+        self.dispatch(ticket);
+        self
+    }
+
+    fn dispatch(&self, ticket: Ticket) {
+        self.insert(ticket, "user".to_string());
+    }
+
+    // ---- inherent ticket-store methods ----
+
+    /// Insert `ticket`, stamping system fields. If `ticket.assignee` was
+    /// preset, the ticket is born `InProgress`; otherwise `Todo`. Returns
+    /// the inserted ticket's key.
+    pub(crate) fn insert(&self, ticket: Ticket, reporter: String) -> String {
+        insert_ticket(self, ticket, reporter)
+    }
+
+    /// Returns a clone of the ticket at `key`, if any.
+    pub fn get(&self, key: &str) -> Option<Ticket> {
+        tickets_get(self, key)
+    }
+
+    /// State-machine-checked status transition. Records a ticket-stats
+    /// event when the transition reaches Done or Failed.
+    pub fn update_status(&self, key: &str, status: Status) -> Result<(), TicketError> {
+        tickets_update_status(self, key, status)
+    }
+
+    /// Bypass the state machine. Reserved for the loop's recovery paths
+    /// (e.g. `MaxSchemaRetries` trip → Failed) so a stuck ticket doesn't
+    /// get re-picked indefinitely via Path A.
+    pub fn force_status(&self, key: &str, status: Status) -> Result<(), TicketError> {
+        tickets_force_status(self, key, status)
+    }
+
+    /// Snapshot of every ticket, sorted by creation time then numeric key.
+    pub fn tickets(&self) -> Vec<Ticket> {
+        let tickets = self.tickets.lock().unwrap();
+        let mut out: Vec<Ticket> = tickets.values().cloned().collect();
+        out.sort_by_key(|t| (t.created_at, numeric_id(&t.key)));
+        out
+    }
+
+    /// Earliest ticket by creation time, if any.
+    pub fn first(&self) -> Option<Ticket> {
+        self.tickets().into_iter().next()
+    }
+
+    /// Substring search over the task body, case-insensitive.
+    pub fn search(&self, query: &str) -> Vec<Ticket> {
+        tickets_search(self, query)
+    }
+
+    /// Tickets matching `predicate`, sorted by creation time then numeric key.
+    ///
+    /// The predicate runs while `self.tickets` is locked. It MUST NOT call
+    /// other `TicketSystem` methods that lock the same `Mutex` — deadlock.
+    pub fn filter<F>(&self, predicate: F) -> Vec<Ticket>
+    where
+        F: Fn(&Ticket) -> bool,
+    {
+        tickets_filter(self, predicate)
+    }
+
+    /// First ticket matching `predicate`, by creation order. Short-circuits.
+    ///
+    /// The predicate runs while `self.tickets` is locked. It MUST NOT call
+    /// other `TicketSystem` methods that lock the same `Mutex` — deadlock.
+    pub fn find<F>(&self, predicate: F) -> Option<Ticket>
+    where
+        F: Fn(&Ticket) -> bool,
+    {
+        tickets_find(self, predicate)
+    }
+
+    /// Count of tickets matching `predicate`. Does not allocate.
+    ///
+    /// The predicate runs while `self.tickets` is locked. It MUST NOT call
+    /// other `TicketSystem` methods that lock the same `Mutex` — deadlock.
+    pub fn count<F>(&self, predicate: F) -> usize
+    where
+        F: Fn(&Ticket) -> bool,
+    {
+        self.tickets
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|t| predicate(t))
+            .count()
+    }
+
+    /// Snapshot of the active policies for the loop's per-step guards.
+    pub(crate) fn policies(&self) -> Policies {
+        self.policies.lock().unwrap().clone()
+    }
+
+    /// Wire `agent` to this system. Drains any tickets the agent had
+    /// queued in its private default system into this one, then stamps
+    /// the system's `Weak<Self>` onto `agent.ticket_system`.
+    pub(crate) fn bind_agent(&self, agent: &mut Agent) {
+        if let Some(prior) = agent.ticket_system.upgrade() {
+            if !Arc::ptr_eq(&prior, &self.weak_self.upgrade().expect("self Arc dropped during bind")) {
+                let drained: Vec<Ticket> = {
+                    let mut old = prior.tickets.lock().unwrap();
+                    std::mem::take(&mut *old).into_values().collect()
+                };
+                let reporter = agent.name.clone();
+                for ticket in drained {
+                    self.insert(ticket, reporter.clone());
+                }
             }
-        } else if ticket.assignee.is_some() {
-            ticket.status = Status::InProgress;
-        } else {
-            ticket.status = Status::Todo;
         }
-
-        let key = ticket.key.clone();
-        self.tickets.insert(key.clone(), ticket);
-        &self.tickets[&key]
+        agent.ticket_system = self.weak_self.clone();
+        self.agents.lock().unwrap().push(agent.clone());
     }
+}
 
-    pub(crate) fn get(&self, key: &str) -> Option<&Ticket> {
-        self.tickets.get(key)
-    }
+/// Free helper: insert a ticket into a `TicketSystem`'s store, stamping
+/// system fields and recording the create event. Used by both
+/// `TicketSystem::insert` and `Agent::dispatch`.
+pub(crate) fn insert_ticket(
+    ticket_system: &TicketSystem,
+    mut ticket: Ticket,
+    reporter: String,
+) -> String {
+    let mut store = ticket_system.tickets.lock().unwrap();
+    let id = store.len() + 1;
+    ticket.key = format!("TICKET-{id}");
+    ticket.created_at = now_millis();
+    ticket.reporter = reporter;
+    ticket.result = None;
+    ticket.status = if ticket.assignee.is_some() {
+        Status::InProgress
+    } else {
+        Status::Todo
+    };
+    let key = ticket.key.clone();
+    store.insert(key.clone(), ticket);
+    drop(store);
+    TicketStats::record_created(&ticket_system.stats);
+    key
+}
 
-    pub(crate) fn update_status(
-        &mut self,
-        key: &str,
-        status: Status,
-    ) -> Result<(), TicketError> {
-        let ticket = self
-            .tickets
+/// Free helper: clone the ticket at `key`, if any.
+pub(crate) fn tickets_get(ticket_system: &TicketSystem, key: &str) -> Option<Ticket> {
+    ticket_system.tickets.lock().unwrap().get(key).cloned()
+}
+
+/// Free helper: tickets matching `predicate`, sorted by creation time
+/// then numeric key. See [`TicketSystem::filter`] for the deadlock note.
+pub(crate) fn tickets_filter<F>(ticket_system: &TicketSystem, predicate: F) -> Vec<Ticket>
+where
+    F: Fn(&Ticket) -> bool,
+{
+    let store = ticket_system.tickets.lock().unwrap();
+    let mut out: Vec<Ticket> = store
+        .values()
+        .filter(|t| predicate(t))
+        .cloned()
+        .collect();
+    out.sort_by_key(|t| (t.created_at, numeric_id(&t.key)));
+    out
+}
+
+/// Free helper: first ticket matching `predicate`, by creation order.
+/// Short-circuits. See [`TicketSystem::find`] for the deadlock note.
+pub(crate) fn tickets_find<F>(ticket_system: &TicketSystem, predicate: F) -> Option<Ticket>
+where
+    F: Fn(&Ticket) -> bool,
+{
+    let store = ticket_system.tickets.lock().unwrap();
+    let mut matching: Vec<&Ticket> = store.values().filter(|t| predicate(t)).collect();
+    matching.sort_by_key(|t| (t.created_at, numeric_id(&t.key)));
+    matching.into_iter().next().cloned()
+}
+
+/// Free helper: state-machine-checked status transition. Records a
+/// `done` / `failed` ticket-stats event when the transition reaches one
+/// of those states.
+pub(crate) fn tickets_update_status(
+    ticket_system: &TicketSystem,
+    key: &str,
+    status: Status,
+) -> Result<(), TicketError> {
+    let prev = {
+        let mut store = ticket_system.tickets.lock().unwrap();
+        let ticket = store
             .get_mut(key)
             .ok_or_else(|| TicketError::TicketMissing {
                 key: key.to_string(),
@@ -247,423 +503,109 @@ impl TicketSystemState {
                 to: status,
             });
         }
+        let prev = ticket.status;
         ticket.status = status;
-        Ok(())
-    }
-
-    pub(crate) fn assign_to(
-        &mut self,
-        key: &str,
-        assignee: impl Into<String>,
-    ) -> Result<(), TicketError> {
-        let ticket = self
-            .tickets
-            .get_mut(key)
-            .ok_or_else(|| TicketError::TicketMissing {
-                key: key.to_string(),
-            })?;
-        ticket.assignee = Some(assignee.into());
-        Ok(())
-    }
-
-    /// Bypass the state machine. Reserved for the loop's recovery paths
-    /// (e.g. `MaxSchemaRetries` trip → Failed) so a stuck ticket doesn't
-    /// get re-picked indefinitely via Path A.
-    pub(crate) fn force_status(
-        &mut self,
-        key: &str,
-        status: Status,
-    ) -> Result<(), TicketError> {
-        let ticket = self
-            .tickets
-            .get_mut(key)
-            .ok_or_else(|| TicketError::TicketMissing {
-                key: key.to_string(),
-            })?;
-        ticket.status = status;
-        Ok(())
-    }
-
-    pub(crate) fn edit_ticket(
-        &mut self,
-        key: &str,
-        task: Option<serde_json::Value>,
-        labels: Option<Vec<String>>,
-        schema: Option<Option<crate::schemas::Schema>>,
-    ) -> Result<(), TicketError> {
-        let ticket = self
-            .tickets
-            .get_mut(key)
-            .ok_or_else(|| TicketError::TicketMissing {
-                key: key.to_string(),
-            })?;
-        if let Some(t) = task {
-            ticket.task = t;
-        }
-        if let Some(l) = labels {
-            ticket.labels = l;
-        }
-        if let Some(s) = schema {
-            ticket.schema = s;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn set_result(
-        &mut self,
-        key: &str,
-        result: String,
-    ) -> Result<(), TicketError> {
-        let ticket = self
-            .tickets
-            .get_mut(key)
-            .ok_or_else(|| TicketError::TicketMissing {
-                key: key.to_string(),
-            })?;
-        ticket.result = Some(result);
-        Ok(())
-    }
-
-    pub(crate) fn list_by_assignee(&self, assignee: &str) -> Vec<&Ticket> {
-        let mut out: Vec<&Ticket> = self
-            .tickets
-            .values()
-            .filter(|t| t.assignee.as_deref() == Some(assignee))
-            .collect();
-        out.sort_by_key(|t| (t.created_at, numeric_id(&t.key)));
-        out
-    }
-
-    pub(crate) fn list_by_status(&self, status: Status) -> Vec<&Ticket> {
-        let mut out: Vec<&Ticket> = self
-            .tickets
-            .values()
-            .filter(|t| t.status == status)
-            .collect();
-        out.sort_by_key(|t| (t.created_at, numeric_id(&t.key)));
-        out
-    }
-
-    pub(crate) fn search(&self, query: &str) -> Vec<&Ticket> {
-        let needle = query.to_lowercase();
-        let mut out: Vec<&Ticket> = self
-            .tickets
-            .values()
-            .filter(|t| match &t.task {
-                serde_json::Value::String(s) => s.to_lowercase().contains(&needle),
-                other => other.to_string().to_lowercase().contains(&needle),
-            })
-            .collect();
-        out.sort_by_key(|t| (t.created_at, numeric_id(&t.key)));
-        out
-    }
-
-    pub(crate) fn pending(&self) -> usize {
-        self.tickets
-            .values()
-            .filter(|t| t.status == Status::Todo)
-            .count()
-    }
-
-    pub(crate) fn record_step(&mut self, _agent: &str) {
-        self.metrics.steps += 1;
-    }
-
-    pub(crate) fn record_request(&mut self, _agent: &str, usage: &TokenUsage) {
-        self.metrics.requests += 1;
-        self.metrics.input_tokens += usage.input_tokens;
-        self.metrics.output_tokens += usage.output_tokens;
-    }
-
-    pub(crate) fn record_tool_calls(&mut self, _agent: &str, n: u64) {
-        self.metrics.tool_calls += n;
-    }
-
-    pub(crate) fn record_error(
-        &mut self,
-        _agent: &str,
-        _ticket_key: &str,
-        _err: &ProviderError,
-    ) {
-        self.metrics.errors += 1;
-    }
-
-    pub(crate) fn interrupt_signal_handle(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.interrupt_signal)
-    }
-
-    pub(crate) fn is_interrupted(&self) -> bool {
-        self.interrupt_signal.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn policies(&self) -> &Policies {
-        &self.policies
-    }
-
-    pub(crate) fn policy_violated(&self) -> bool {
-        let p = &self.policies;
-        if let Some(limit) = p.max_steps {
-            if self.metrics.steps >= u64::from(limit) {
-                return true;
-            }
-        }
-        if let Some(limit) = p.max_input_tokens {
-            if self.metrics.input_tokens >= limit {
-                return true;
-            }
-        }
-        if let Some(limit) = p.max_output_tokens {
-            if self.metrics.output_tokens >= limit {
-                return true;
-            }
-        }
-        false
-    }
-
-    pub(crate) fn policy_violated_kind(&self) -> Option<(PolicyKind, u64)> {
-        let p = &self.policies;
-        if let Some(limit) = p.max_steps {
-            if self.metrics.steps >= u64::from(limit) {
-                return Some((PolicyKind::Steps, u64::from(limit)));
-            }
-        }
-        if let Some(limit) = p.max_input_tokens {
-            if self.metrics.input_tokens >= limit {
-                return Some((PolicyKind::InputTokens, limit));
-            }
-        }
-        if let Some(limit) = p.max_output_tokens {
-            if self.metrics.output_tokens >= limit {
-                return Some((PolicyKind::OutputTokens, limit));
-            }
-        }
-        None
-    }
+        prev
+    };
+    record_status_transition(&ticket_system.stats, prev, status);
+    Ok(())
 }
 
-/// Public handle to a ticket system. A thin wrapper over an
-/// `Arc<Mutex<TicketSystemState>>`; the same Arc is cloned into every
-/// agent bound to this system.
-#[derive(Default, Clone)]
-pub struct TicketSystem {
-    pub(crate) state: Arc<Mutex<TicketSystemState>>,
+/// Free helper: bypass the state machine. Reserved for the loop's
+/// recovery paths (e.g. `MaxSchemaRetries` trip → Failed) so a stuck
+/// ticket doesn't get re-picked indefinitely via Path A.
+pub(crate) fn tickets_force_status(
+    ticket_system: &TicketSystem,
+    key: &str,
+    status: Status,
+) -> Result<(), TicketError> {
+    let prev = {
+        let mut store = ticket_system.tickets.lock().unwrap();
+        let ticket = store
+            .get_mut(key)
+            .ok_or_else(|| TicketError::TicketMissing {
+                key: key.to_string(),
+            })?;
+        let prev = ticket.status;
+        ticket.status = status;
+        prev
+    };
+    record_status_transition(&ticket_system.stats, prev, status);
+    Ok(())
 }
 
-impl TicketSystem {
-    pub fn new() -> Self {
-        Self::default()
+/// Free helper: set a ticket's assignee.
+pub(crate) fn tickets_assign_to(
+    ticket_system: &TicketSystem,
+    key: &str,
+    assignee: impl Into<String>,
+) -> Result<(), TicketError> {
+    let mut store = ticket_system.tickets.lock().unwrap();
+    let ticket = store
+        .get_mut(key)
+        .ok_or_else(|| TicketError::TicketMissing {
+            key: key.to_string(),
+        })?;
+    ticket.assignee = Some(assignee.into());
+    Ok(())
+}
+
+/// Free helper: edit caller-settable fields.
+pub(crate) fn tickets_edit(
+    ticket_system: &TicketSystem,
+    key: &str,
+    task: Option<serde_json::Value>,
+    labels: Option<Vec<String>>,
+    schema: Option<Option<crate::schemas::Schema>>,
+) -> Result<(), TicketError> {
+    let mut store = ticket_system.tickets.lock().unwrap();
+    let ticket = store
+        .get_mut(key)
+        .ok_or_else(|| TicketError::TicketMissing {
+            key: key.to_string(),
+        })?;
+    if let Some(t) = task {
+        ticket.task = t;
     }
-
-    // ---- policy builders ----
-
-    pub fn max_steps(self, n: u32) -> Self {
-        self.state.lock().unwrap().policies.max_steps = Some(n);
-        self
+    if let Some(l) = labels {
+        ticket.labels = l;
     }
-
-    pub fn max_input_tokens(self, n: u64) -> Self {
-        self.state.lock().unwrap().policies.max_input_tokens = Some(n);
-        self
+    if let Some(s) = schema {
+        ticket.schema = s;
     }
+    Ok(())
+}
 
-    pub fn max_output_tokens(self, n: u64) -> Self {
-        self.state.lock().unwrap().policies.max_output_tokens = Some(n);
-        self
-    }
+/// Free helper: write the result string.
+pub(crate) fn tickets_set_result(
+    ticket_system: &TicketSystem,
+    key: &str,
+    result: String,
+) -> Result<(), TicketError> {
+    let mut store = ticket_system.tickets.lock().unwrap();
+    let ticket = store
+        .get_mut(key)
+        .ok_or_else(|| TicketError::TicketMissing {
+            key: key.to_string(),
+        })?;
+    ticket.result = Some(result);
+    Ok(())
+}
 
-    pub fn max_request_tokens(self, n: u32) -> Self {
-        self.state.lock().unwrap().policies.max_request_tokens = Some(n);
-        self
-    }
-
-    pub fn max_schema_retries(self, n: u32) -> Self {
-        self.state.lock().unwrap().policies.max_schema_retries = Some(n);
-        self
-    }
-
-    pub fn max_request_retries(self, n: u32) -> Self {
-        self.state.lock().unwrap().policies.max_request_retries = n;
-        self
-    }
-
-    pub fn request_retry_delay(self, d: Duration) -> Self {
-        self.state.lock().unwrap().policies.request_retry_delay = d;
-        self
-    }
-
-    /// Maximum wall-clock duration `run_dry` will wait before tripping
-    /// the interrupt signal and returning. Independent from the
-    /// policy-violation cap surface — a timeout is a graceful stop, not
-    /// a `PolicyViolated` event.
-    pub fn timeout(self, d: Duration) -> Self {
-        self.state.lock().unwrap().timeout = Some(d);
-        self
-    }
-
-    pub fn interrupt_signal(self, signal: Arc<AtomicBool>) -> Self {
-        self.state.lock().unwrap().interrupt_signal = signal;
-        self
-    }
-
-    // ---- ticket-creation API mirrored on Agent ----
-
-    /// Enqueue a ticket carrying `value` as its task body.
-    pub fn task<T: Serialize>(&self, value: T) -> &Self {
-        let ticket = Ticket::new(value);
-        self.dispatch(ticket);
-        self
-    }
-
-    /// Enqueue a ticket carrying `value`, pinned to `assign` (label or
-    /// agent name; the ticket system disambiguates at insertion).
-    pub fn task_assigned<T: Serialize>(&self, value: T, assign: impl Into<String>) -> &Self {
-        let ticket = Ticket::new(value).assign(assign);
-        self.dispatch(ticket);
-        self
-    }
-
-    /// Enqueue a ticket whose final `done` result must validate against
-    /// `schema`.
-    pub fn task_schema<T: Serialize>(&self, value: T, schema: crate::schemas::Schema) -> &Self {
-        let ticket = Ticket::new(value).schema(schema);
-        self.dispatch(ticket);
-        self
-    }
-
-    /// `task_schema` + `task_assigned` combined.
-    pub fn task_schema_assigned<T: Serialize>(
-        &self,
-        value: T,
-        schema: crate::schemas::Schema,
-        assign: impl Into<String>,
-    ) -> &Self {
-        let ticket = Ticket::new(value).schema(schema).assign(assign);
-        self.dispatch(ticket);
-        self
-    }
-
-    /// Enqueue a fully-built `Ticket`. System fields are overwritten.
-    pub fn create(&self, ticket: Ticket) -> &Self {
-        self.dispatch(ticket);
-        self
-    }
-
-    fn dispatch(&self, ticket: Ticket) {
-        let mut state = self.state.lock().unwrap();
-        state.insert(ticket, "user".to_string());
-    }
-
-    // ---- read-side accessors ----
-
-    pub fn steps(&self) -> u64 {
-        self.state.lock().unwrap().metrics.steps
-    }
-
-    pub fn requests(&self) -> u64 {
-        self.state.lock().unwrap().metrics.requests
-    }
-
-    pub fn tool_calls(&self) -> u64 {
-        self.state.lock().unwrap().metrics.tool_calls
-    }
-
-    pub fn errors(&self) -> u64 {
-        self.state.lock().unwrap().metrics.errors
-    }
-
-    pub fn input_tokens(&self) -> u64 {
-        self.state.lock().unwrap().metrics.input_tokens
-    }
-
-    pub fn output_tokens(&self) -> u64 {
-        self.state.lock().unwrap().metrics.output_tokens
-    }
-
-    /// Returns a clone of the ticket at `key`, if any.
-    pub fn get(&self, key: &str) -> Option<Ticket> {
-        self.state.lock().unwrap().get(key).cloned()
-    }
-
-    /// Snapshot of every ticket, sorted by creation time then numeric key.
-    pub fn tickets(&self) -> Vec<Ticket> {
-        let state = self.state.lock().unwrap();
-        let mut out: Vec<Ticket> = state.tickets.values().cloned().collect();
-        out.sort_by_key(|t| (t.created_at, numeric_id(&t.key)));
-        out
-    }
-
-    /// Earliest ticket by creation time, if any.
-    pub fn first(&self) -> Option<Ticket> {
-        self.tickets().into_iter().next()
-    }
-
-    /// Snapshot of every ticket in `Status::Done`.
-    pub fn done(&self) -> Vec<Ticket> {
-        self.list_by_status(Status::Done)
-    }
-
-    /// Snapshot of every ticket in `Status::Failed`.
-    pub fn failed(&self) -> Vec<Ticket> {
-        self.list_by_status(Status::Failed)
-    }
-
-    /// Snapshot of every ticket in `status`, ordered by creation time.
-    pub fn list_by_status(&self, status: Status) -> Vec<Ticket> {
-        self.state
-            .lock()
-            .unwrap()
-            .list_by_status(status)
-            .into_iter()
-            .cloned()
-            .collect()
-    }
-
-    /// Snapshot of every ticket assigned to `assignee`.
-    pub fn list_by_assignee(&self, assignee: &str) -> Vec<Ticket> {
-        self.state
-            .lock()
-            .unwrap()
-            .list_by_assignee(assignee)
-            .into_iter()
-            .cloned()
-            .collect()
-    }
-
-    /// Substring search over the task body.
-    pub fn search(&self, query: &str) -> Vec<Ticket> {
-        self.state
-            .lock()
-            .unwrap()
-            .search(query)
-            .into_iter()
-            .cloned()
-            .collect()
-    }
-
-    pub fn pending(&self) -> usize {
-        self.state.lock().unwrap().pending()
-    }
-
-    /// Wire `agent.ticket_system` to this system, draining any tickets
-    /// the agent had already enqueued in its prior (private) system, and
-    /// register `agent.clone()` into this system's agents list. Used by
-    /// both `Agent::ticket_system(&sys)` and `TicketSystem::add(agent)`.
-    pub(crate) fn bind_agent(&self, agent: &mut Agent) {
-        if !Arc::ptr_eq(&agent.ticket_system, &self.state) {
-            let drained: Vec<Ticket> = {
-                let mut old = agent.ticket_system.lock().unwrap();
-                std::mem::take(&mut old.tickets).into_values().collect()
-            };
-            let reporter = agent.name.clone();
-            let mut new_state = self.state.lock().unwrap();
-            for ticket in drained {
-                new_state.insert(ticket, reporter.clone());
-            }
-            drop(new_state);
-            agent.ticket_system = Arc::clone(&self.state);
-        }
-        self.state.lock().unwrap().agents.push(agent.clone());
-    }
+/// Free helper: substring search over the task body.
+pub(crate) fn tickets_search(ticket_system: &TicketSystem, query: &str) -> Vec<Ticket> {
+    let needle = query.to_lowercase();
+    let store = ticket_system.tickets.lock().unwrap();
+    let mut out: Vec<Ticket> = store
+        .values()
+        .filter(|t| match &t.task {
+            serde_json::Value::String(s) => s.to_lowercase().contains(&needle),
+            other => other.to_string().to_lowercase().contains(&needle),
+        })
+        .cloned()
+        .collect();
+    out.sort_by_key(|t| (t.created_at, numeric_id(&t.key)));
+    out
 }
 
 impl Runnable for TicketSystem {
@@ -673,23 +615,26 @@ impl Runnable for TicketSystem {
     }
 
     async fn run(&self) {
-        let agents = self.state.lock().unwrap().agents_take();
-        run_main_loop(agents, Arc::clone(&self.state)).await;
+        let agents = self.agents.lock().unwrap().clone();
+        run_main_loop(agents).await;
     }
 
     async fn run_dry(&self) -> Option<String> {
-        let agents = self.state.lock().unwrap().agents_take();
-        let signal = self.state.lock().unwrap().interrupt_signal_handle();
-        let timeout = self.state.lock().unwrap().timeout;
+        let agents = self.agents.lock().unwrap().clone();
+        let timeout = *self.timeout.lock().unwrap();
+        let signal = Arc::clone(&self.interrupt_signal.lock().unwrap());
 
-        let watcher_state = Arc::clone(&self.state);
+        let watcher_system = self
+            .weak_self
+            .upgrade()
+            .expect("TicketSystem dropped during run_dry");
         let watcher_signal = Arc::clone(&signal);
+        let watcher_policies = self.policies();
         let started = Instant::now();
         let watcher = tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_millis(20)).await;
-                let sys = watcher_state.lock().unwrap();
-                if sys.policy_violated() {
+                if policy_violated(&watcher_policies, &watcher_system.stats) {
                     watcher_signal.store(true, Ordering::Relaxed);
                     return;
                 }
@@ -699,15 +644,14 @@ impl Runnable for TicketSystem {
                         return;
                     }
                 }
-                let pending = sys.list_by_status(Status::Todo).len()
-                    + sys.list_by_status(Status::InProgress).len();
+                let pending = pending_count(&watcher_system);
                 if pending == 0 {
                     watcher_signal.store(true, Ordering::Relaxed);
                     return;
                 }
             }
         });
-        run_main_loop(agents, Arc::clone(&self.state)).await;
+        run_main_loop(agents).await;
         let _ = watcher.await;
         self.last_done_result()
     }
@@ -718,18 +662,79 @@ impl TicketSystem {
     /// `None` when no ticket has reached `Done` (or its `result` is
     /// unset).
     fn last_done_result(&self) -> Option<String> {
-        self.done().last().and_then(|t| t.result().map(String::from))
+        self.filter(Ticket::is_done)
+            .last()
+            .and_then(|t| t.result().map(String::from))
     }
 }
 
-impl TicketSystemState {
-    fn agents_take(&mut self) -> Vec<Agent> {
-        std::mem::take(&mut self.agents)
+/// Whether the run-wide policies have been exceeded by the current
+/// stats snapshot. Used by the `run_dry` watcher and by the per-agent
+/// loop's pre-claim check.
+pub(crate) fn policy_violated(policies: &Policies, stats: &Stats) -> bool {
+    if let Some(limit) = policies.max_steps {
+        if stats.steps() >= u64::from(limit) {
+            return true;
+        }
     }
+    if let Some(limit) = policies.max_input_tokens {
+        if stats.input_tokens() >= limit {
+            return true;
+        }
+    }
+    if let Some(limit) = policies.max_output_tokens {
+        if stats.output_tokens() >= limit {
+            return true;
+        }
+    }
+    false
 }
 
-// `Default::default()` on `Vec<Agent>` is needed for `mem::take` on
-// `agents` — `Vec` already implements `Default`, no extra work.
+/// Same as [`policy_violated`] but returns which policy tripped and its
+/// configured limit, for the `PolicyViolated` event.
+pub(crate) fn policy_violated_kind(
+    policies: &Policies,
+    stats: &Stats,
+) -> Option<(crate::event::PolicyKind, u64)> {
+    use crate::event::PolicyKind;
+    if let Some(limit) = policies.max_steps {
+        if stats.steps() >= u64::from(limit) {
+            return Some((PolicyKind::Steps, u64::from(limit)));
+        }
+    }
+    if let Some(limit) = policies.max_input_tokens {
+        if stats.input_tokens() >= limit {
+            return Some((PolicyKind::InputTokens, limit));
+        }
+    }
+    if let Some(limit) = policies.max_output_tokens {
+        if stats.output_tokens() >= limit {
+            return Some((PolicyKind::OutputTokens, limit));
+        }
+    }
+    None
+}
+
+fn pending_count(ticket_system: &TicketSystem) -> usize {
+    ticket_system
+        .tickets
+        .lock()
+        .unwrap()
+        .values()
+        .filter(|t| matches!(t.status, Status::Todo | Status::InProgress))
+        .count()
+}
+
+fn record_status_transition(stats: &Stats, prev: Status, next: Status) {
+    if prev == next {
+        return;
+    }
+    match next {
+        Status::Done => TicketStats::record_done(stats),
+        Status::Failed => TicketStats::record_failed(stats),
+        _ => {}
+    }
+}
 
 fn is_allowed_transition(from: Status, to: Status) -> bool {
     matches!(
@@ -774,7 +779,7 @@ mod tests {
     }
 
     #[test]
-    fn task_assigned_with_unknown_target_treats_it_as_a_label() {
+    fn task_assigned_attaches_label_and_leaves_status_todo() {
         let sys = TicketSystem::new();
         sys.task_assigned("hello", "research");
         let t = sys.get("TICKET-1").unwrap();
@@ -784,11 +789,10 @@ mod tests {
     }
 
     #[test]
-    fn task_assigned_with_known_agent_name_sets_assignee_and_inprogress() {
+    fn create_with_explicit_assignee_births_ticket_inprogress() {
         let sys = TicketSystem::new();
-        let _alice = sys.add(Agent::new().name("alice"));
-        sys.task_assigned("hello", "alice");
-        let t = sys.get("TICKET-2").unwrap_or_else(|| sys.get("TICKET-1").unwrap());
+        sys.create(Ticket::new("specific work for alice").assign_to("alice"));
+        let t = sys.get("TICKET-1").unwrap();
         assert_eq!(t.assignee(), Some("alice"));
         assert_eq!(t.status(), Status::InProgress);
     }
@@ -822,7 +826,7 @@ mod tests {
         alice.task("from alice");
         sys.task("from system");
         let all_keys: Vec<String> = sys
-            .list_by_status(Status::Todo)
+            .filter(Ticket::is_todo)
             .iter()
             .map(|t| t.key().to_string())
             .collect();
@@ -830,12 +834,20 @@ mod tests {
     }
 
     #[test]
-    fn agent_default_system_drains_into_shared_at_add_time() {
+    fn agent_must_be_bound_before_task() {
         let alice = Agent::new().name("alice");
-        alice.task("private one").task("private two");
         let sys = TicketSystem::new();
-        let _alice = sys.add(alice);
-        assert_eq!(sys.list_by_status(Status::Todo).len(), 2);
+        let alice = sys.add(alice);
+        // Bound — task() works, lands in the shared queue.
+        alice.task("first").task("second");
+        assert_eq!(sys.count(Ticket::is_todo), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Agent::task requires a bound TicketSystem")]
+    fn unbound_agent_task_panics() {
+        let alice = Agent::new().name("alice");
+        alice.task("never lands");
     }
 
     #[test]
@@ -855,10 +867,10 @@ mod tests {
 
     #[test]
     fn set_result_updates_ticket() {
-        let mut state = TicketSystemState::default();
-        state.insert(Ticket::new("hi"), "user".into());
-        state.set_result("TICKET-1", "answer".into()).unwrap();
-        assert_eq!(state.get("TICKET-1").unwrap().result(), Some("answer"));
+        let sys = TicketSystem::new();
+        sys.task("hi");
+        tickets_set_result(&sys, "TICKET-1", "answer".into()).unwrap();
+        assert_eq!(sys.get("TICKET-1").unwrap().result(), Some("answer"));
     }
 
     #[test]
@@ -892,18 +904,28 @@ mod tests {
     fn done_and_failed_filter_by_status() {
         let sys = TicketSystem::new();
         sys.task("ok").task("oops").task("pending");
-        // Force-set statuses through the state for the snapshot test.
-        {
-            let mut state = sys.state.lock().unwrap();
-            state.update_status("TICKET-1", Status::InProgress).unwrap();
-            state.update_status("TICKET-1", Status::Done).unwrap();
-            state.force_status("TICKET-2", Status::Failed).unwrap();
-        }
-        let done = sys.done();
-        let failed = sys.failed();
+        sys.update_status("TICKET-1", Status::InProgress).unwrap();
+        sys.update_status("TICKET-1", Status::Done).unwrap();
+        sys.force_status("TICKET-2", Status::Failed).unwrap();
+        let done = sys.filter(Ticket::is_done);
+        let failed = sys.filter(Ticket::is_failed);
         assert_eq!(done.len(), 1);
         assert_eq!(done[0].key(), "TICKET-1");
         assert_eq!(failed.len(), 1);
         assert_eq!(failed[0].key(), "TICKET-2");
+    }
+
+    #[test]
+    fn ticket_status_transitions_record_stats() {
+        let sys = TicketSystem::new();
+        sys.task("a").task("b").task("c");
+        // Created 3 tickets.
+        assert_eq!(sys.stats().tickets_created(), 3);
+        sys.update_status("TICKET-1", Status::InProgress).unwrap();
+        sys.update_status("TICKET-1", Status::Done).unwrap();
+        sys.update_status("TICKET-2", Status::InProgress).unwrap();
+        sys.update_status("TICKET-2", Status::Failed).unwrap();
+        assert_eq!(sys.stats().tickets_done(), 1);
+        assert_eq!(sys.stats().tickets_failed(), 1);
     }
 }

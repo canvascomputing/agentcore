@@ -266,9 +266,6 @@ fn handle_message_start(json: &Value, state: &mut StreamState) {
     state.model = message["model"].as_str().unwrap_or("unknown").to_string();
     let u = &message["usage"];
     state.usage.input_tokens = u["input_tokens"].as_u64().unwrap_or(0);
-    state.usage.cache_read_input_tokens = u["cache_read_input_tokens"].as_u64().unwrap_or(0);
-    state.usage.cache_creation_input_tokens =
-        u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
 }
 
 fn handle_block_start(json: &Value, state: &mut StreamState) {

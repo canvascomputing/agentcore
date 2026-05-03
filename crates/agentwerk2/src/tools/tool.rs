@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agents::tickets::TicketSystemState;
+use crate::agents::tickets::TicketSystem;
 use crate::providers::types::ContentBlock;
 use crate::providers::{ProviderResult, ProviderToolDefinition};
 
@@ -28,8 +28,7 @@ pub struct ToolContext {
     pub working_dir: PathBuf,
     pub interrupt_signal: Arc<AtomicBool>,
     pub(crate) tool_registry: Option<Arc<ToolRegistry>>,
-    pub(crate) ticket_system_state: Option<Arc<Mutex<TicketSystemState>>>,
-    pub(crate) current_ticket: Option<String>,
+    pub(crate) ticket_system: Option<Arc<TicketSystem>>,
     pub(crate) agent_name: Option<String>,
 }
 
@@ -43,8 +42,7 @@ impl ToolContext {
             working_dir,
             interrupt_signal: Arc::new(AtomicBool::new(false)),
             tool_registry: None,
-            ticket_system_state: None,
-            current_ticket: None,
+            ticket_system: None,
             agent_name: None,
         }
     }
@@ -61,16 +59,8 @@ impl ToolContext {
         self
     }
 
-    pub(crate) fn ticket_system_state(
-        mut self,
-        state: Arc<Mutex<TicketSystemState>>,
-    ) -> Self {
-        self.ticket_system_state = Some(state);
-        self
-    }
-
-    pub(crate) fn current_ticket(mut self, key: String) -> Self {
-        self.current_ticket = Some(key);
+    pub(crate) fn ticket_system(mut self, system: Arc<TicketSystem>) -> Self {
+        self.ticket_system = Some(system);
         self
     }
 
@@ -79,14 +69,8 @@ impl ToolContext {
         self
     }
 
-    pub(crate) fn ticket_system_state_handle(
-        &self,
-    ) -> Option<&Arc<Mutex<TicketSystemState>>> {
-        self.ticket_system_state.as_ref()
-    }
-
-    pub(crate) fn current_ticket_key(&self) -> Option<&str> {
-        self.current_ticket.as_deref()
+    pub(crate) fn ticket_system_handle(&self) -> Option<&Arc<TicketSystem>> {
+        self.ticket_system.as_ref()
     }
 
     pub(crate) fn agent_name_str(&self) -> Option<&str> {
@@ -120,6 +104,7 @@ impl std::fmt::Debug for ToolContext {
         f.debug_struct("ToolContext")
             .field("working_dir", &self.working_dir)
             .field("has_registry", &self.tool_registry.is_some())
+            .field("has_ticket_system", &self.ticket_system.is_some())
             .finish()
     }
 }

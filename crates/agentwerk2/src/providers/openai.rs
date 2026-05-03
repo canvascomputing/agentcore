@@ -21,24 +21,22 @@ pub struct OpenAiProvider {
     api_key: String,
     base_url: String,
     client: reqwest::Client,
-    cache_tokens: bool,
     timeout: Duration,
 }
 
 impl OpenAiProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
-        Self::raw(api_key, "https://api.openai.com", false)
+        Self::raw(api_key, "https://api.openai.com")
     }
 
     /// Raw constructor used by sibling provider modules (`mistral`,
     /// `litellm`) to build an `OpenAiProvider` pointed at their own
     /// endpoint. Not part of the public API.
-    pub(crate) fn raw(api_key: impl Into<String>, base_url: &str, cache_tokens: bool) -> Self {
+    pub(crate) fn raw(api_key: impl Into<String>, base_url: &str) -> Self {
         Self {
             api_key: api_key.into(),
             base_url: base_url.into(),
             client: build_client(DEFAULT_REQUEST_TIMEOUT),
-            cache_tokens,
             timeout: DEFAULT_REQUEST_TIMEOUT,
         }
     }
@@ -139,7 +137,7 @@ impl Provider for OpenAiProvider {
 
         Box::pin(async move {
             let resp = self.send_raw(&url, body).await?;
-            stream_response(resp, &on_event, self.cache_tokens).await
+            stream_response(resp, &on_event).await
         })
     }
 }
@@ -204,7 +202,6 @@ fn classify_400(body: &str) -> Option<ProviderError> {
 async fn stream_response(
     response: reqwest::Response,
     on_event: &Arc<dyn Fn(StreamEvent) + Send + Sync>,
-    cache_tokens: bool,
 ) -> ProviderResult<ModelResponse> {
     use futures_util::StreamExt;
 
@@ -219,7 +216,7 @@ async fn stream_response(
         for event in parser.push(&chunk) {
             match event {
                 SseEvent::Done => on_event(StreamEvent::MessageDone),
-                SseEvent::Data(json) => ingest_chunk(&json, &mut state, on_event, cache_tokens),
+                SseEvent::Data(json) => ingest_chunk(&json, &mut state, on_event),
             }
         }
     }
@@ -281,7 +278,6 @@ fn ingest_chunk(
     json: &Value,
     state: &mut StreamState,
     on_event: &Arc<dyn Fn(StreamEvent) + Send + Sync>,
-    cache_tokens: bool,
 ) {
     if let Some(m) = json["model"].as_str() {
         state.model = m.to_string();
@@ -293,7 +289,7 @@ fn ingest_chunk(
         state.status = parse_status_str(reason);
     }
     if let Some(u) = json.get("usage").filter(|u| !u.is_null()) {
-        parse_streaming_usage(u, cache_tokens, &mut state.usage);
+        parse_streaming_usage(u, &mut state.usage);
     }
 }
 
@@ -339,13 +335,9 @@ fn update_tool_calls(
     }
 }
 
-fn parse_streaming_usage(u: &Value, cache_tokens: bool, dst: &mut TokenUsage) {
+fn parse_streaming_usage(u: &Value, dst: &mut TokenUsage) {
     dst.input_tokens = u["prompt_tokens"].as_u64().unwrap_or(0);
     dst.output_tokens = u["completion_tokens"].as_u64().unwrap_or(0);
-    if cache_tokens {
-        dst.cache_read_input_tokens = u["cache_read_input_tokens"].as_u64().unwrap_or(0);
-        dst.cache_creation_input_tokens = u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
-    }
 }
 
 fn serialize_request(request: &ModelRequest) -> Value {

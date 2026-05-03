@@ -159,12 +159,13 @@ async fn main() {
     };
 
     println!("\n{}\n", format_title_first(&parsed));
+    let stats = tickets.stats();
     eprintln!(
         "Tokens: {} in, {} out · {} steps · {} requests",
-        tickets.input_tokens(),
-        tickets.output_tokens(),
-        tickets.steps(),
-        tickets.requests(),
+        stats.input_tokens(),
+        stats.output_tokens(),
+        stats.steps(),
+        stats.requests(),
     );
 }
 

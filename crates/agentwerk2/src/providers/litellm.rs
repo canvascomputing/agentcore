@@ -10,16 +10,15 @@ use super::openai::OpenAiProvider;
 use super::provider::{ModelRequest, Provider};
 use super::types::{ModelResponse, StreamEvent};
 
-/// LiteLLM proxy provider. Delegates to an inner [`OpenAiProvider`] with
-/// `cache_tokens = true` so cache-read / cache-creation counts from
-/// upstream providers are preserved.
+/// LiteLLM proxy provider. Points the OpenAI-compatible wire format at a
+/// LiteLLM instance.
 pub struct LiteLlmProvider(OpenAiProvider);
 
 const DEFAULT_BASE_URL: &str = "http://localhost:4000";
 
 impl LiteLlmProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
-        Self(OpenAiProvider::raw(api_key, DEFAULT_BASE_URL, true))
+        Self(OpenAiProvider::raw(api_key, DEFAULT_BASE_URL))
     }
 
     pub fn base_url(self, url: impl Into<String>) -> Self {
