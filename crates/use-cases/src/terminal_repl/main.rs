@@ -1,10 +1,14 @@
-//! Interactive terminal chat. Each input line gets a fresh
-//! `TicketSystem` + `Agent`; the model's response streams to stdout
-//! via `EventKind::TextChunkReceived`, and the agent settles its
-//! ticket via the auto-registered `mark_ticket_done_tool`. Ctrl-C at
-//! the prompt exits the REPL with code 130; Ctrl-C during a turn
-//! cancels that turn (a second Ctrl-C while the cancel is still
-//! draining force-quits with exit code 130). `/exit` quits cleanly.
+//! Interactive terminal chat. One `TicketSystem` + `Agent` lives for
+//! the whole session; each input line enqueues a ticket and runs
+//! `run_dry` once. The agent has `remember_history` set, so prior
+//! turns are replayed as context for the next one. The model's
+//! response streams to stdout via `EventKind::TextChunkReceived`,
+//! and the agent settles its ticket via the auto-registered
+//! `mark_ticket_done_tool`. Slash commands: `/exit` quits, `/history`
+//! prints the stored transcript, `/clear` resets it. Ctrl-C at the
+//! prompt exits with code 130; Ctrl-C during a turn cancels that
+//! turn (a second Ctrl-C while the cancel is still draining
+//! force-quits with exit code 130).
 //!
 //! Every exit path goes through `std::process::exit` rather than a
 //! plain `return`: the stdin reader runs on a tokio blocking thread
@@ -26,7 +30,7 @@ const ROLE: &str = include_str!("prompts/repl.role.md");
 async fn main() {
     let style = Style::detect();
     eprintln!(
-        "{}agentwerk REPL — /exit to quit, Ctrl-C to cancel.{}",
+        "{}agentwerk REPL — /exit /history /clear, Ctrl-C to cancel.{}",
         style.dim, style.reset,
     );
 
@@ -36,34 +40,17 @@ async fn main() {
 
     let user_prompt = format!("\n{}you ›{} ", style.user, style.reset);
 
-    loop {
-        let line = tokio::select! {
-            line = read_line(&user_prompt) => line,
-            _ = tokio::signal::ctrl_c() => {
-                eprintln!("\n{}^C{}", style.dim, style.reset);
-                std::process::exit(130);
-            }
-        };
-        let Some(line) = line else { std::process::exit(0) };
-        if line.is_empty() {
-            continue;
-        }
-        if line == "/exit" || line == "/quit" {
-            std::process::exit(0);
-        }
+    let cancel = Arc::new(AtomicBool::new(false));
+    let event_style = style.clone();
+    let handler: Arc<dyn Fn(Event) + Send + Sync> =
+        Arc::new(move |e: Event| print_event(&e, &event_style));
 
-        announce_assistant(&style);
+    let tickets = TicketSystem::new()
+        .interrupt_signal(Arc::clone(&cancel))
+        .max_steps(40);
 
-        let cancel = Arc::new(AtomicBool::new(false));
-        let event_style = style.clone();
-        let handler: Arc<dyn Fn(Event) + Send + Sync> =
-            Arc::new(move |e: Event| print_event(&e, &event_style));
-
-        let tickets = TicketSystem::new()
-            .interrupt_signal(Arc::clone(&cancel))
-            .max_steps(40);
-
-        let agent = Agent::new()
+    let agent = tickets.add(
+        Agent::new()
             .name("orchestrator")
             .provider(Arc::clone(&provider))
             .model(&model)
@@ -72,9 +59,47 @@ async fn main() {
             .tool(GrepTool)
             .tool(ListDirectoryTool)
             .tool(ReadFileTool)
-            .event_handler(handler);
+            .event_handler(handler)
+            .remember_history(),
+    );
 
-        tickets.add(agent);
+    let mut prev_steps: u64 = 0;
+    let mut prev_input: u64 = 0;
+    let mut prev_output: u64 = 0;
+
+    loop {
+        let line = tokio::select! {
+            line = read_line(&user_prompt) => line,
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\n{}^C{}", style.dim, style.reset);
+                std::process::exit(130);
+            }
+        };
+        let Some(line) = line else {
+            std::process::exit(0)
+        };
+        if line.is_empty() {
+            continue;
+        }
+        if line == "/exit" || line == "/quit" {
+            std::process::exit(0);
+        }
+        if line == "/history" {
+            let body = agent
+                .history()
+                .map(|msgs| serde_json::to_string_pretty(&msgs).unwrap_or_default())
+                .unwrap_or_else(|| "(history disabled)".into());
+            eprintln!("{}{}{}", style.dim, body, style.reset);
+            continue;
+        }
+        if line == "/clear" {
+            agent.clear_history();
+            eprintln!("{}history cleared{}", style.dim, style.reset);
+            continue;
+        }
+
+        announce_assistant(&style);
+        cancel.store(false, Ordering::Relaxed);
         tickets.task(line);
 
         let run_fut = tickets.run_dry();
@@ -93,24 +118,26 @@ async fn main() {
         };
 
         let stats = tickets.stats();
-        let outcome = match tickets.first().map(|t| t.status()) {
+        let outcome = match tickets.tickets().last().map(|t| t.status()) {
             Some(Status::Done) => "completed",
             Some(Status::Failed) => "failed",
             _ if cancelled => "cancelled",
             _ => "incomplete",
         };
 
+        let steps = stats.steps().saturating_sub(prev_steps);
+        let input = stats.input_tokens().saturating_sub(prev_input);
+        let output = stats.output_tokens().saturating_sub(prev_output);
+        prev_steps = stats.steps();
+        prev_input = stats.input_tokens();
+        prev_output = stats.output_tokens();
+
         if cancelled {
             println!();
         }
         eprintln!(
             "\n{}— {} · {} steps · {} in / {} out{}",
-            style.dim,
-            outcome,
-            stats.steps(),
-            stats.input_tokens(),
-            stats.output_tokens(),
-            style.reset,
+            style.dim, outcome, steps, input, output, style.reset,
         );
     }
 }

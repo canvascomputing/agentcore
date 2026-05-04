@@ -36,6 +36,17 @@ The invariants that shape how code fits together. Layout says where code lives; 
 - `task_schema*` attaches a `Schema` to the ticket; on `done` the loop validates the result and applies `max_schema_retries` on mismatch.
 - A `done` result is the ticket's final payload, surfaced through `Ticket::result()` and (for the most recent `Done` ticket) through `run_dry`'s return value.
 
+## Conversation history is opt-in and per-agent
+
+**An agent can carry its transcript across every ticket it handles via `Agent::remember_history()`, including across separate `run` / `run_dry` calls on the same `TicketSystem`. Off by default; each ticket starts cold.**
+
+Two layers of memory exist. The intra-ticket message vector inside `process_ticket` is always present; it carries a multi-step tool turn through to settlement and is dropped when the ticket reaches a terminal status. `Agent::remember_history()` toggles a separate cross-ticket layer that survives between tickets and across separate runs.
+
+- The cross-ticket transcript lives on the agent behind an `Arc<Mutex<Vec<Message>>>`; shared by every clone of the agent (including the `bind_agent` clone in `TicketSystem.agents`); survives across separate `run` / `run_dry` calls and is dropped when the last clone of the agent goes away.
+- It is flushed only at the two terminal-status sites in `process_ticket` (the terminal-reply branch and the schema-retry-exhausted branch). Mid-cycle aborts (cancel, request failure that does not force a status) are not persisted, so an unpaired `Assistant{ToolUse}` never lands in stored history.
+- A terminal `mark_ticket_done_tool` call is paired with a synthesised `User{ToolResult}` before flush, keeping the persisted log valid for replay against providers that require tool-use/tool-result pairing.
+- Callers can read the slot via `Agent::history()` (returns a clone) and reset it via `Agent::clear_history()`. Disk persistence is a separate concern, covered by `specs/2026-04-16-session-resumption.md`.
+
 ## One observer, one error path
 
 **`Event` reports state. `ProviderError` and `ToolError` report failed contracts. The two channels carry independent information.**

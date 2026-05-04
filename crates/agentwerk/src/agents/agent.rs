@@ -8,13 +8,13 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, Weak};
 
 use serde::Serialize;
 
 use crate::event::{default_logger, Event};
 use crate::prompts::{PromptBuilder, Section};
-use crate::providers::{Provider, ProviderToolDefinition};
+use crate::providers::{Message, Provider, ProviderToolDefinition};
 use crate::tools::{MarkTicketDoneTool, ToolLike, ToolRegistry};
 
 use super::r#loop::Runnable;
@@ -35,9 +35,11 @@ pub struct Agent {
     role: Option<String>,
     context: Option<String>,
     pub(crate) labels: Vec<String>,
+    template_variables: Vec<(String, String)>,
     tools: ToolRegistry,
     working_dir: Option<PathBuf>,
     event_handler: Option<Arc<dyn Fn(Event) + Send + Sync>>,
+    history: Option<Arc<Mutex<Vec<Message>>>>,
     pub(crate) ticket_system: Weak<TicketSystem>,
 }
 
@@ -52,9 +54,11 @@ impl Default for Agent {
             role: None,
             context: None,
             labels: Vec::new(),
+            template_variables: Vec::new(),
             tools,
             working_dir: None,
             event_handler: None,
+            history: None,
             ticket_system: Weak::new(),
         }
     }
@@ -107,6 +111,27 @@ impl Agent {
         self
     }
 
+    /// Bind `{key}` to `value`. The placeholder is substituted in the
+    /// agent's `role`, `context`, and any string-typed `Ticket::task`
+    /// enqueued through this agent. Unresolved placeholders are left
+    /// verbatim.
+    pub fn template_variable(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.template_variables.push((key.into(), value.into()));
+        self
+    }
+
+    /// Bind many `{key} → value` pairs at once.
+    pub fn template_variables<I, K, V>(mut self, vars: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.template_variables
+            .extend(vars.into_iter().map(|(k, v)| (k.into(), v.into())));
+        self
+    }
+
     /// Register a single tool the agent may call.
     pub fn tool(mut self, tool: impl ToolLike + 'static) -> Self {
         self.tools.register(tool);
@@ -145,6 +170,39 @@ impl Agent {
         self
     }
 
+    /// Carry this agent's conversation transcript across every ticket
+    /// it handles, including across separate `run` / `run_dry` calls
+    /// on the same `TicketSystem`. Off by default; each ticket starts
+    /// from a blank message vector. When set, prior assistant turns,
+    /// tool calls, and tool results are replayed as context for the
+    /// next ticket. Only flushed at terminal ticket status (`Done` or
+    /// `Failed`); mid-cycle aborts (cancel, request failure) are not
+    /// persisted. Storage is shared by every clone of the agent: the
+    /// `bind_agent` clone in `TicketSystem.agents` writes back to the
+    /// same slot the caller's original handle reads from.
+    pub fn remember_history(mut self) -> Self {
+        self.history = Some(Arc::new(Mutex::new(Vec::new())));
+        self
+    }
+
+    /// Read the agent's stored conversation history. Returns `None`
+    /// when [`Self::remember_history`] was not set on this agent. The
+    /// returned vector is a clone; callers cannot mutate the slot
+    /// through it.
+    pub fn history(&self) -> Option<Vec<Message>> {
+        self.history
+            .as_ref()
+            .map(|slot| slot.lock().unwrap().clone())
+    }
+
+    /// Drop everything in the agent's stored history slot. No-op when
+    /// [`Self::remember_history`] was not set on this agent.
+    pub fn clear_history(&self) {
+        if let Some(slot) = self.history.as_ref() {
+            slot.lock().unwrap().clear();
+        }
+    }
+
     /// Bind this agent to a shared `TicketSystem`. Drains any tickets
     /// the agent had already enqueued in its prior store into `sys`,
     /// stamps `sys`'s `Weak<Self>` onto `self.ticket_system`, and
@@ -167,6 +225,12 @@ impl Agent {
 
     pub(super) fn resolve_event_handler(&self) -> Arc<dyn Fn(Event) + Send + Sync> {
         self.event_handler.clone().unwrap_or_else(default_logger)
+    }
+
+    pub(super) fn replace_history(&self, messages: Vec<Message>) {
+        if let Some(slot) = self.history.as_ref() {
+            *slot.lock().unwrap() = messages;
+        }
     }
 
     /// Returns true when the agent's label scope intersects the ticket's
@@ -213,7 +277,7 @@ impl Agent {
     pub(super) fn system_prompt(&self) -> String {
         let mut b = PromptBuilder::default();
         if let Some(role) = &self.role {
-            b = b.role(role.clone());
+            b = b.role(self.interpolate(role));
         }
         b.build().system
     }
@@ -224,7 +288,18 @@ impl Agent {
     pub(super) fn context_message(&self) -> Option<String> {
         self.context
             .as_ref()
-            .map(|body| Section::context(body.clone()).render())
+            .map(|body| Section::context(self.interpolate(body)).render())
+    }
+
+    fn interpolate(&self, s: &str) -> String {
+        if self.template_variables.is_empty() {
+            return s.to_string();
+        }
+        let mut out = s.to_string();
+        for (key, value) in &self.template_variables {
+            out = out.replace(&format!("{{{key}}}"), value);
+        }
+        out
     }
 
     /// Enqueue a ticket carrying `value` as its task body. Always available
@@ -274,11 +349,14 @@ impl Agent {
         self
     }
 
-    fn dispatch(&self, ticket: Ticket) {
+    fn dispatch(&self, mut ticket: Ticket) {
         let sys = self
             .ticket_system
             .upgrade()
             .expect("Agent::task requires a bound TicketSystem");
+        if let serde_json::Value::String(s) = &ticket.task {
+            ticket.task = serde_json::Value::String(self.interpolate(s));
+        }
         insert_ticket(&sys, ticket, self.name.clone());
     }
 
@@ -377,5 +455,130 @@ mod tests {
             .map(|d| d.name)
             .collect();
         assert!(names.iter().any(|n| n == "mark_ticket_done_tool"));
+    }
+
+    #[test]
+    fn system_prompt_interpolates_role_placeholders() {
+        let agent = Agent::new()
+            .role("You are {persona}.")
+            .template_variable("persona", "a senior reviewer");
+        assert_eq!(agent.system_prompt(), "You are a senior reviewer.");
+    }
+
+    #[test]
+    fn context_message_interpolates_context_placeholders() {
+        let agent = Agent::new()
+            .context("- Topic: {topic}")
+            .template_variable("topic", "Rust generics");
+        assert_eq!(
+            agent.context_message().as_deref(),
+            Some("## Context\n\n- Topic: Rust generics"),
+        );
+    }
+
+    #[test]
+    fn unresolved_placeholders_pass_through() {
+        let agent = Agent::new()
+            .role("Hi {missing}.")
+            .context("- Note: {also_missing}");
+        assert_eq!(agent.system_prompt(), "Hi {missing}.");
+        assert_eq!(
+            agent.context_message().as_deref(),
+            Some("## Context\n\n- Note: {also_missing}"),
+        );
+    }
+
+    #[test]
+    fn multiple_variables_substitute_independently() {
+        let agent = Agent::new()
+            .role("{greeting}, {name}.")
+            .template_variables([("greeting", "Hello"), ("name", "Alice")]);
+        assert_eq!(agent.system_prompt(), "Hello, Alice.");
+    }
+
+    #[test]
+    fn no_variables_renders_role_unchanged() {
+        let agent = Agent::new().role("You are a senior reviewer.");
+        assert_eq!(agent.system_prompt(), "You are a senior reviewer.");
+    }
+
+    #[tokio::test]
+    async fn dispatch_interpolates_string_task_body() {
+        let sys = crate::agents::TicketSystem::new();
+        let agent = Agent::new()
+            .template_variable("topic", "rust")
+            .ticket_system(&sys);
+        agent.task("Search {topic} forums.");
+        let stored = sys.first().expect("ticket should have been enqueued");
+        assert_eq!(
+            stored.task,
+            serde_json::Value::String("Search rust forums.".into()),
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_leaves_object_task_unchanged() {
+        let sys = crate::agents::TicketSystem::new();
+        let agent = Agent::new()
+            .template_variable("topic", "rust")
+            .ticket_system(&sys);
+        let value = serde_json::json!({"q": "Find {topic}"});
+        agent.create(Ticket::new(value.clone()));
+        let stored = sys.first().expect("ticket should have been enqueued");
+        assert_eq!(stored.task, value);
+    }
+
+    #[test]
+    fn history_defaults_to_none() {
+        let agent = Agent::new();
+        assert!(agent.history().is_none());
+    }
+
+    #[test]
+    fn remember_history_turns_history_on() {
+        let agent = Agent::new().remember_history();
+        assert!(agent.history().is_some());
+    }
+
+    #[test]
+    fn history_storage_is_shared_across_clones() {
+        let agent = Agent::new().remember_history();
+        let cloned = agent.clone();
+
+        // bind_agent relies on this: the loop's clone writes the slot
+        // the caller's original handle later reads from.
+        cloned.replace_history(vec![Message::user("via clone")]);
+        let snap = agent.history().expect("opted in");
+        assert_eq!(snap.len(), 1);
+    }
+
+    #[test]
+    fn history_returns_clone_when_opted_in() {
+        let agent = Agent::new().remember_history();
+        agent.replace_history(vec![Message::user("hello")]);
+        let snap = agent.history().expect("opted in");
+        assert_eq!(snap.len(), 1);
+    }
+
+    #[test]
+    fn clear_history_empties_the_slot() {
+        let agent = Agent::new().remember_history();
+        agent.replace_history(vec![Message::user("hello")]);
+        agent.clear_history();
+        assert_eq!(agent.history().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn clear_history_is_no_op_when_history_off() {
+        let agent = Agent::new();
+        agent.clear_history();
+        assert!(agent.history().is_none());
+    }
+
+    #[test]
+    fn replace_history_is_no_op_when_history_off() {
+        let agent = Agent::new();
+        agent.replace_history(vec![Message::user("ignored")]);
+        assert!(agent.history().is_none());
     }
 }

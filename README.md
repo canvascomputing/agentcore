@@ -140,8 +140,16 @@ let answer = agent.run().await;
 | `working_dir(p)` | Working directory tools resolve filesystem paths against. |
 | `event_handler(fn)` | Install a custom observer for the agent's events. |
 | `silent()` | Drop every event, opting out of the default stderr logger. |
+| `remember_history()` | Carry the agent's conversation across tickets, including across separate `run_dry` calls. Off by default. |
 | `task(value)` / `task_assigned(...)` / `create(ticket)` | Enqueue work for the agent. |
 | `run().await` | Process every queued task until the queue is empty and return the last answer (empty string if nothing settled). For long-lived runs that keep accepting work, drop down to `TicketSystem::run`. |
+
+Inspect or reset the conversation slot at runtime (only meaningful when `remember_history()` is set):
+
+| Method | Description |
+|--------|-------------|
+| `history()` | Read the agent's stored conversation history (clone). Returns `None` when memory is off. |
+| `clear_history()` | Drop the agent's stored history. No-op when memory is off. |
 
 ### Ticket Systems
 
