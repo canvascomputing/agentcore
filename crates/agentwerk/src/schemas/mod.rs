@@ -214,7 +214,8 @@ fn is_integer(n: &Number) -> bool {
     }
     // f64 with no fractional part is still considered an integer by
     // JSON Schema (e.g. `1.0` validates against `type: integer`).
-    n.as_f64().is_some_and(|f| f.is_finite() && f.fract() == 0.0)
+    n.as_f64()
+        .is_some_and(|f| f.is_finite() && f.fract() == 0.0)
 }
 
 const SUPPORTED_KEYWORDS: &[&str] = &[
@@ -286,11 +287,7 @@ fn compile(value: &Value, schema_path: &str) -> Result<Node, SchemaParseError> {
                         format!("`type[{i}]` must be a string, got {}", value_label(item)),
                     )
                 })?;
-                out.push(parse_type(
-                    s,
-                    schema_path,
-                    &format!("type[{i}]"),
-                )?);
+                out.push(parse_type(s, schema_path, &format!("type[{i}]"))?);
             }
             Some(out)
         }
@@ -370,10 +367,7 @@ fn compile(value: &Value, schema_path: &str) -> Result<Node, SchemaParseError> {
         Some(other) => {
             return Err(parse_err(
                 schema_path,
-                format!(
-                    "`properties` must be an object, got {}",
-                    value_label(other)
-                ),
+                format!("`properties` must be an object, got {}", value_label(other)),
             ));
         }
     };
@@ -455,9 +449,8 @@ fn empty_node(schema_path: String) -> Node {
 }
 
 fn parse_type(s: &str, schema_path: &str, key: &str) -> Result<JsonType, SchemaParseError> {
-    JsonType::parse(s).ok_or_else(|| {
-        parse_err(schema_path, format!("`{key}` has unknown type `{s}`"))
-    })
+    JsonType::parse(s)
+        .ok_or_else(|| parse_err(schema_path, format!("`{key}` has unknown type `{s}`")))
 }
 
 fn parse_number(
@@ -573,12 +566,7 @@ impl Node {
         // enum
         if let Some(values) = &self.enum_values {
             if !values.iter().any(|v| v == instance) {
-                self.violation(
-                    instance_path,
-                    "/enum",
-                    "value is not in `enum`",
-                    out,
-                );
+                self.violation(instance_path, "/enum", "value is not in `enum`", out);
             }
         }
 
@@ -619,8 +607,7 @@ impl Node {
         if let Some(props) = &self.properties {
             for (name, sub) in props {
                 if let Some(v) = map.get(name) {
-                    let child_path =
-                        format!("{instance_path}/{}", escape_pointer(name));
+                    let child_path = format!("{instance_path}/{}", escape_pointer(name));
                     sub.check(v, &child_path, out);
                 }
             }
@@ -640,12 +627,7 @@ impl Node {
         }
     }
 
-    fn check_array(
-        &self,
-        arr: &[Value],
-        instance_path: &str,
-        out: &mut Vec<SchemaViolation>,
-    ) {
+    fn check_array(&self, arr: &[Value], instance_path: &str, out: &mut Vec<SchemaViolation>) {
         if let Some(min) = self.min_items {
             if arr.len() < min {
                 self.violation(
@@ -798,11 +780,12 @@ mod tests {
             "required": ["name", "age"],
         }))
         .unwrap();
-        let violations = schema
-            .validate(&json!({"name": 7, "age": -1}))
-            .unwrap_err();
+        let violations = schema.validate(&json!({"name": 7, "age": -1})).unwrap_err();
         assert!(violations.len() >= 2);
-        let paths: Vec<&str> = violations.iter().map(|v| v.instance_path.as_str()).collect();
+        let paths: Vec<&str> = violations
+            .iter()
+            .map(|v| v.instance_path.as_str())
+            .collect();
         assert!(paths.iter().any(|p| p.contains("/name")));
         assert!(paths.iter().any(|p| p.contains("/age")));
     }
@@ -829,7 +812,9 @@ mod tests {
         .unwrap();
         assert!(schema.validate(&json!([1, 2, 3])).is_ok());
         let violations = schema.validate(&json!([])).unwrap_err();
-        assert!(violations.iter().any(|v| v.schema_path.ends_with("/minItems")));
+        assert!(violations
+            .iter()
+            .any(|v| v.schema_path.ends_with("/minItems")));
         let violations = schema.validate(&json!([0, -1])).unwrap_err();
         assert!(violations.iter().any(|v| v.instance_path == "/1"));
     }
@@ -847,7 +832,8 @@ mod tests {
 
     #[test]
     fn validate_string_length_bounds() {
-        let schema = Schema::parse(json!({"type": "string", "minLength": 2, "maxLength": 4})).unwrap();
+        let schema =
+            Schema::parse(json!({"type": "string", "minLength": 2, "maxLength": 4})).unwrap();
         assert!(schema.validate(&json!("ok")).is_ok());
         assert!(schema.validate(&json!("a")).is_err());
         assert!(schema.validate(&json!("toolong")).is_err());

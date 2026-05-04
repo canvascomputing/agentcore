@@ -90,9 +90,7 @@ async fn main() {
         .collect();
 
     if findings.iter().all(|f| f.lines().count() <= 1) {
-        eprintln!(
-            "\nNo researcher findings recorded — aborting before the report writer."
-        );
+        eprintln!("\nNo researcher findings recorded — aborting before the report writer.");
         std::process::exit(1);
     }
 
@@ -137,9 +135,7 @@ async fn main() {
 
     if report.is_empty() {
         let status = tickets.first().map(|t| t.status());
-        eprintln!(
-            "\nReport writer left the ticket in {status:?}; expected Done with a result."
-        );
+        eprintln!("\nReport writer left the ticket in {status:?}; expected Done with a result.");
         std::process::exit(1);
     }
     let parsed: serde_json::Value = match serde_json::from_str(&report) {
@@ -160,10 +156,7 @@ async fn main() {
         stats.tickets_failed(),
         stats.success_rate().map(|r| r * 100.0).unwrap_or(0.0),
     );
-    eprintln!(
-        "Avg time:  {:?}",
-        stats.avg_run_time().unwrap_or_default()
-    );
+    eprintln!("Avg time:  {:?}", stats.avg_run_time().unwrap_or_default());
     eprintln!(
         "Tokens:    {} in, {} out",
         stats.input_tokens(),
@@ -262,8 +255,8 @@ fn urlencode(s: &str) -> String {
 
 fn log_event(event: &Event) {
     match &event.kind {
-        EventKind::TicketClaimed { key } => {
-            eprintln!("[{}] claimed {key}", event.agent_name);
+        EventKind::TicketStarted { key } => {
+            eprintln!("[{}] started {key}", event.agent_name);
         }
         EventKind::RequestStarted { model } => {
             eprintln!("[{}] requesting {model}…", event.agent_name);
@@ -286,10 +279,16 @@ fn log_event(event: &Event) {
             eprintln!("[{}] ✗ {tool_name} ({kind:?}): {message}", event.agent_name);
         }
         EventKind::PolicyViolated { kind, limit } => {
-            eprintln!("[{}] policy violated: {kind:?} limit={limit}", event.agent_name);
+            eprintln!(
+                "[{}] policy violated: {kind:?} limit={limit}",
+                event.agent_name
+            );
         }
-        EventKind::TicketFinished { key } => {
-            eprintln!("[{}] finished {key}", event.agent_name);
+        EventKind::TicketDone { key } => {
+            eprintln!("[{}] done {key}", event.agent_name);
+        }
+        EventKind::TicketFailed { key } => {
+            eprintln!("[{}] failed {key}", event.agent_name);
         }
         _ => {}
     }

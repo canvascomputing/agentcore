@@ -151,8 +151,8 @@ impl Stats {
     /// Mean of finished tickets' creation→terminal spans. `None`
     /// while no ticket has finished.
     pub fn avg_run_time(&self) -> Option<Duration> {
-        let n = self.tickets_done.load(Ordering::Relaxed)
-            + self.tickets_failed.load(Ordering::Relaxed);
+        let n =
+            self.tickets_done.load(Ordering::Relaxed) + self.tickets_failed.load(Ordering::Relaxed);
         if n == 0 {
             None
         } else {
@@ -190,7 +190,8 @@ impl LoopStats for Stats {
     fn record_request(&self, input_tokens: u64, output_tokens: u64) {
         self.requests.fetch_add(1, Ordering::Relaxed);
         self.input_tokens.fetch_add(input_tokens, Ordering::Relaxed);
-        self.output_tokens.fetch_add(output_tokens, Ordering::Relaxed);
+        self.output_tokens
+            .fetch_add(output_tokens, Ordering::Relaxed);
     }
 
     fn record_tool_call(&self) {
@@ -210,12 +211,9 @@ impl TicketStats for Stats {
     fn record_started(&self, when: u64) {
         // First call wins. Subsequent claims (Path A reclaim, late
         // bind) leave the original run-start untouched.
-        let _ = self.started_at.compare_exchange(
-            0,
-            when,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        );
+        let _ = self
+            .started_at
+            .compare_exchange(0, when, Ordering::Relaxed, Ordering::Relaxed);
     }
 
     fn record_done(&self, run_time: Duration, work_time: Duration) {

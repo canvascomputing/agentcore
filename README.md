@@ -134,7 +134,7 @@ let answer = agent.run().await;
 | `role(text)` | Set the persistent role prompt the agent identifies with. |
 | `context(text)` | Set a per-run context block prepended as the first user message. |
 | `label(l)` / `labels([..])` | Restrict ticket pickup to matching labels (Path B). |
-| `tool(t)` / `tools([..])` | Register tools the agent may call. |
+| `tool(t)` / `tools([..])` | Register tools the agent may call. `MarkTicketDoneTool` is registered by default so every agent can mark its current ticket done. |
 | `working_dir(p)` | Working directory tools resolve filesystem paths against. |
 | `event_handler(fn)` | Install a custom observer for the agent's events. |
 | `silent()` | Drop every event, opting out of the default stderr logger. |
@@ -229,7 +229,8 @@ let greet = Tool::new("greet", "Say hello")
 | | `ListDirectoryTool` | List files and folders. |
 | **Shell** | `BashTool` | Pattern-restricted shell access; `BashTool::unrestricted()` for the full shell. |
 | **Web** | `WebFetchTool` | Fetch a URL and return its body. |
-| **Tickets** | `ManageTicketsTool` | Create, claim, and settle tickets (`done` / `failed`). |
+| **Tickets** | `MarkTicketDoneTool` | Mark the current ticket done; takes an optional `result` validated against the ticket's `schema`. Auto-registered on every `Agent`. |
+| | `ManageTicketsTool` | Create, claim, and settle tickets (`done` / `failed`). |
 | | `ReadTicketsTool` / `WriteTicketsTool` | Read-only and write-only ticket operations. |
 | **Discovery** | `ToolSearchTool` | Pair with `Tool::defer(true)` to keep tools hidden until discovered. |
 
@@ -283,8 +284,11 @@ let handler = Arc::new(|event: Event| match &event.kind {
     EventKind::ToolCallFailed { tool_name, message, .. } => {
         eprintln!("[{}] ✗ {tool_name}: {message}", event.agent_name);
     }
-    EventKind::TicketFinished { key } => {
-        eprintln!("[{}] finished {key}", event.agent_name);
+    EventKind::TicketDone { key } => {
+        eprintln!("[{}] done {key}", event.agent_name);
+    }
+    EventKind::TicketFailed { key } => {
+        eprintln!("[{}] failed {key}", event.agent_name);
     }
     _ => {}
 });
@@ -292,8 +296,9 @@ let handler = Arc::new(|event: Event| match &event.kind {
 
 | | Kind | Description |
 |-|------|-------------|
-| **Ticket** | `TicketClaimed` | Agent claimed a ticket and began working on it |
-| | `TicketFinished` | Agent finished processing a ticket (any terminal status) |
+| **Ticket** | `TicketStarted` | Agent claimed a ticket and began working on it |
+| | `TicketDone` | Ticket reached `Status::Done` |
+| | `TicketFailed` | Ticket reached `Status::Failed` |
 | **Provider** | `RequestStarted` | Provider request began |
 | | `RequestFinished` | Provider request finished successfully |
 | | `RequestFailed` | Provider request failed; the run is about to stop for this ticket |

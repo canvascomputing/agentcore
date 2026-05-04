@@ -139,7 +139,9 @@ mod tests {
         for case in cases {
             let result = tool.call(case.input, &ctx).await.unwrap();
             let is_error = matches!(result, ToolResult::Error(_));
-            let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
+            let (ToolResult::Success(content)
+            | ToolResult::Error(content)
+            | ToolResult::SchemaError(content)) = &result;
             assert_eq!(
                 is_error, case.expect_error,
                 "case '{}': expected is_error={}, got is_error={}",

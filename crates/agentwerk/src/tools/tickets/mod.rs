@@ -14,10 +14,12 @@ use crate::schemas::{format_violations, Schema};
 use super::tool::{ToolContext, ToolResult};
 
 mod manage_tickets;
+mod mark_ticket_done;
 mod read_tickets;
 mod write_tickets;
 
 pub use manage_tickets::ManageTicketsTool;
+pub use mark_ticket_done::MarkTicketDoneTool;
 pub use read_tickets::ReadTicketsTool;
 pub use write_tickets::WriteTicketsTool;
 
@@ -61,6 +63,13 @@ fn resolve_key(
     if let Some(k) = input["key"].as_str() {
         return Ok(k.to_string());
     }
+    resolve_current_key(ticket_system, ctx)
+}
+
+pub(super) fn resolve_current_key(
+    ticket_system: &TicketSystem,
+    ctx: &ToolContext,
+) -> Result<String, ToolResult> {
     let agent_name = ctx.agent_name_str().ok_or_else(|| {
         ToolResult::error("Missing `key` and no agent_name set on this tool context")
     })?;
@@ -72,7 +81,7 @@ fn resolve_key(
     }
 }
 
-fn ticket_error_message(err: TicketError) -> String {
+pub(super) fn ticket_error_message(err: TicketError) -> String {
     err.to_string()
 }
 
@@ -140,9 +149,7 @@ fn truncate_for_preview(s: &str, max: usize) -> String {
     }
 }
 
-fn render_summary_list(
-    tickets: &[(&str, &str, Status, Option<&str>, &[String])],
-) -> String {
+fn render_summary_list(tickets: &[(&str, &str, Status, Option<&str>, &[String])]) -> String {
     let mut out = String::new();
     for (key, task_preview, status, assignee, labels) in tickets {
         let labels_label = if labels.is_empty() {
@@ -205,12 +212,24 @@ fn action_list(ticket_system: &TicketSystem, input: &Value) -> ToolResult {
     if pool.is_empty() {
         return ToolResult::success("(no matching tickets)".to_string());
     }
-    let previews: Vec<String> = pool.iter().take(50).map(|t| task_preview(&t.task)).collect();
+    let previews: Vec<String> = pool
+        .iter()
+        .take(50)
+        .map(|t| task_preview(&t.task))
+        .collect();
     let rows: Vec<(&str, &str, Status, Option<&str>, &[String])> = pool
         .iter()
         .take(50)
         .zip(previews.iter())
-        .map(|(t, p)| (t.key(), p.as_str(), t.status(), t.assignee(), t.labels.as_slice()))
+        .map(|(t, p)| {
+            (
+                t.key(),
+                p.as_str(),
+                t.status(),
+                t.assignee(),
+                t.labels.as_slice(),
+            )
+        })
         .collect();
     ToolResult::success(render_summary_list(&rows))
 }
@@ -224,12 +243,24 @@ fn action_search(ticket_system: &TicketSystem, input: &Value) -> ToolResult {
     if hits.is_empty() {
         return ToolResult::success("(no matching tickets)".to_string());
     }
-    let previews: Vec<String> = hits.iter().take(50).map(|t| task_preview(&t.task)).collect();
+    let previews: Vec<String> = hits
+        .iter()
+        .take(50)
+        .map(|t| task_preview(&t.task))
+        .collect();
     let rows: Vec<(&str, &str, Status, Option<&str>, &[String])> = hits
         .iter()
         .take(50)
         .zip(previews.iter())
-        .map(|(t, p)| (t.key(), p.as_str(), t.status(), t.assignee(), t.labels.as_slice()))
+        .map(|(t, p)| {
+            (
+                t.key(),
+                p.as_str(),
+                t.status(),
+                t.assignee(),
+                t.labels.as_slice(),
+            )
+        })
         .collect();
     ToolResult::success(render_summary_list(&rows))
 }
@@ -326,22 +357,22 @@ fn action_done(ticket_system: &TicketSystem, input: &Value, ctx: &ToolContext) -
         Ok(k) => k,
         Err(e) => return e,
     };
-
     let result = input
         .get("result")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    mark_done(ticket_system, &key, result)
+}
 
-    let schema = tickets_get(ticket_system, &key).and_then(|t| t.schema.clone());
+pub(super) fn mark_done(ticket_system: &TicketSystem, key: &str, result: String) -> ToolResult {
+    let schema = tickets_get(ticket_system, key).and_then(|t| t.schema.clone());
 
     if let Some(schema) = schema.as_ref() {
         let parsed: serde_json::Value = match serde_json::from_str(&result) {
             Ok(v) => v,
             Err(e) => {
-                return ToolResult::schema_error(format!(
-                    "Result is not valid JSON: {e}"
-                ));
+                return ToolResult::schema_error(format!("Result is not valid JSON: {e}"));
             }
         };
         if let Err(violations) = schema.validate(&parsed) {
@@ -349,33 +380,29 @@ fn action_done(ticket_system: &TicketSystem, input: &Value, ctx: &ToolContext) -
         }
     }
 
-    if let Err(e) = tickets_set_result(ticket_system, &key, result) {
+    if let Err(e) = tickets_set_result(ticket_system, key, result) {
         return ToolResult::error(ticket_error_message(e));
     }
-    match tickets_update_status(ticket_system, &key, Status::Done) {
+    match tickets_update_status(ticket_system, key, Status::Done) {
         Ok(()) => ToolResult::success(format!("Ticket {key} marked done")),
         Err(e) => ToolResult::error(ticket_error_message(e)),
     }
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::super::tool::ToolLike;
     use super::*;
     use crate::agents::tickets::{
-        insert_ticket, tickets_assign_to, tickets_force_status, tickets_get,
-        tickets_update_status, TicketSystem,
+        insert_ticket, tickets_assign_to, tickets_force_status, tickets_get, tickets_update_status,
+        TicketSystem,
     };
     use std::path::PathBuf;
     use std::sync::Arc;
 
     /// Build a context for a tool test, optionally with a "current
     /// ticket" already InProgress and assigned to `agent`.
-    fn ctx_with(
-        ticket_system: Arc<TicketSystem>,
-        agent: &str,
-    ) -> ToolContext {
+    fn ctx_with(ticket_system: Arc<TicketSystem>, agent: &str) -> ToolContext {
         ToolContext::new(PathBuf::from("/tmp"))
             .ticket_system(ticket_system)
             .agent_name(agent.to_string())
@@ -391,17 +418,12 @@ mod tests {
         (sys, key)
     }
 
-    async fn call(
-        tool: &dyn ToolLike,
-        input: serde_json::Value,
-        ctx: &ToolContext,
-    ) -> ToolResult {
+    async fn call(tool: &dyn ToolLike, input: serde_json::Value, ctx: &ToolContext) -> ToolResult {
         tool.call(input, ctx).await.unwrap()
     }
 
     fn unwrap_text(result: &ToolResult) -> &str {
-        let (ToolResult::Success(s) | ToolResult::Error(s) | ToolResult::SchemaError(s)) =
-            result;
+        let (ToolResult::Success(s) | ToolResult::Error(s) | ToolResult::SchemaError(s)) = result;
         s
     }
 
@@ -409,12 +431,7 @@ mod tests {
     async fn read_get_defaults_key_to_current_ticket() {
         let (sys, key) = shared_with_one_ticket("alice");
         let ctx = ctx_with(Arc::clone(&sys), "alice");
-        let result = call(
-            &ReadTicketsTool,
-            serde_json::json!({"action": "get"}),
-            &ctx,
-        )
-        .await;
+        let result = call(&ReadTicketsTool, serde_json::json!({"action": "get"}), &ctx).await;
         let text = unwrap_text(&result);
         assert!(text.contains(&key), "expected key in output: {text}");
         assert!(text.contains("body"));
@@ -539,11 +556,7 @@ mod tests {
             "required": ["x"]
         }))
         .unwrap();
-        let key = insert_ticket(
-            &sys,
-            Ticket::new("hi").schema(schema),
-            "tester".into(),
-        );
+        let key = insert_ticket(&sys, Ticket::new("hi").schema(schema), "tester".into());
         tickets_update_status(&sys, &key, Status::InProgress).unwrap();
         tickets_assign_to(&sys, &key, "alice").unwrap();
         let ctx = ctx_with(Arc::clone(&sys), "alice");
@@ -574,11 +587,7 @@ mod tests {
             "required": ["x"]
         }))
         .unwrap();
-        let key = insert_ticket(
-            &sys,
-            Ticket::new("hi").schema(schema),
-            "tester".into(),
-        );
+        let key = insert_ticket(&sys, Ticket::new("hi").schema(schema), "tester".into());
         tickets_update_status(&sys, &key, Status::InProgress).unwrap();
         tickets_assign_to(&sys, &key, "alice").unwrap();
         let ctx = ctx_with(Arc::clone(&sys), "alice");

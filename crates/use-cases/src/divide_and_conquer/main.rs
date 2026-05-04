@@ -107,7 +107,10 @@ async fn main() {
             .and_then(|r| serde_json::from_str::<Value>(r).ok())
             .and_then(|v| {
                 let idx = v.get("idx").and_then(|x| x.as_u64()).map(|n| n as usize)?;
-                let sum = v.get("partial_sum").and_then(|x| x.as_i64()).map(i128::from)?;
+                let sum = v
+                    .get("partial_sum")
+                    .and_then(|x| x.as_i64())
+                    .map(i128::from)?;
                 Some((idx, sum))
             });
 
@@ -127,11 +130,14 @@ async fn main() {
                 failures += 1;
                 let detail = match (ticket.status(), parsed) {
                     (Status::Done, Some((idx, _))) => {
-                        format!("{:?}, idx mismatch: body={idx_from_body:?}, result={idx}", Status::Done)
+                        format!(
+                            "{:?}, idx mismatch: body={idx_from_body:?}, result={idx}",
+                            Status::Done
+                        )
                     }
-                    (status, None) => format!(
-                        "{status:?}; result not parseable as {{idx, partial_sum}}"
-                    ),
+                    (status, None) => {
+                        format!("{status:?}; result not parseable as {{idx, partial_sum}}")
+                    }
                     (status, Some(_)) => format!("{status:?}"),
                 };
                 let body_idx = idx_from_body
@@ -284,17 +290,25 @@ fn log_worker_event(
 ) {
     let agent = &event.agent_name;
     match &event.kind {
-        EventKind::TicketClaimed { key } => {
+        EventKind::TicketStarted { key } => {
             eprintln!(
                 "{dim}│       ▶ {agent:<10} {key} dispatched{reset}",
                 dim = style.dim,
                 reset = style.reset,
             );
         }
-        EventKind::TicketFinished { key } => {
+        EventKind::TicketDone { key } => {
             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
             eprintln!(
-                "{dim}│ {n:>width$}/{total} ▾ {agent:<10} {key} finished{reset}",
+                "{dim}│ {n:>width$}/{total} ▾ {agent:<10} {key} done{reset}",
+                dim = style.dim,
+                reset = style.reset,
+            );
+        }
+        EventKind::TicketFailed { key } => {
+            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+            eprintln!(
+                "{dim}│ {n:>width$}/{total} ▾ {agent:<10} {key} failed{reset}",
                 dim = style.dim,
                 reset = style.reset,
             );

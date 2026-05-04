@@ -52,8 +52,7 @@ impl Ticket {
     /// ticket system at insertion time; the placeholders set here are
     /// overwritten.
     pub fn new<T: Serialize>(task: T) -> Self {
-        let value = serde_json::to_value(task)
-            .expect("Ticket::new: value must serialize to JSON");
+        let value = serde_json::to_value(task).expect("Ticket::new: value must serialize to JSON");
         Self {
             task: value,
             labels: Vec::new(),
@@ -138,7 +137,9 @@ impl Ticket {
     /// Failed), `None` while the ticket has not yet reached one.
     pub fn run_time(&self) -> Option<Duration> {
         let terminal = self.finished_at.or(self.failed_at)?;
-        Some(Duration::from_millis(terminal.saturating_sub(self.created_at)))
+        Some(Duration::from_millis(
+            terminal.saturating_sub(self.created_at),
+        ))
     }
 
     pub fn result(&self) -> Option<&str> {
@@ -438,7 +439,13 @@ impl TicketSystem {
     /// the system's `Weak<Self>` onto `agent.ticket_system`.
     pub(crate) fn bind_agent(&self, agent: &mut Agent) {
         if let Some(prior) = agent.ticket_system.upgrade() {
-            if !Arc::ptr_eq(&prior, &self.weak_self.upgrade().expect("self Arc dropped during bind")) {
+            if !Arc::ptr_eq(
+                &prior,
+                &self
+                    .weak_self
+                    .upgrade()
+                    .expect("self Arc dropped during bind"),
+            ) {
                 let drained: Vec<Ticket> = {
                     let mut old = prior.tickets.lock().unwrap();
                     std::mem::take(&mut *old).into_values().collect()
@@ -492,11 +499,7 @@ where
     F: Fn(&Ticket) -> bool,
 {
     let store = ticket_system.tickets.lock().unwrap();
-    let mut out: Vec<Ticket> = store
-        .values()
-        .filter(|t| predicate(t))
-        .cloned()
-        .collect();
+    let mut out: Vec<Ticket> = store.values().filter(|t| predicate(t)).cloned().collect();
     out.sort_by_key(|t| (t.created_at, numeric_id(&t.key)));
     out
 }

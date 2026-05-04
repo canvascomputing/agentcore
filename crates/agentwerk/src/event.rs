@@ -43,7 +43,10 @@ pub struct Event {
 
 impl Event {
     pub(crate) fn new(agent_name: impl Into<String>, kind: EventKind) -> Self {
-        Self { agent_name: agent_name.into(), kind }
+        Self {
+            agent_name: agent_name.into(),
+            kind,
+        }
     }
 }
 
@@ -51,27 +54,44 @@ impl Event {
 #[derive(Debug, Clone)]
 pub enum EventKind {
     /// Agent claimed a ticket and began working on it.
-    TicketClaimed { key: String },
-    /// Agent finished processing a ticket. Status transition is the agent's
-    /// responsibility via ticket tools; this fires regardless of outcome.
-    TicketFinished { key: String },
+    TicketStarted { key: String },
+    /// Ticket settled with `Status::Done`.
+    TicketDone { key: String },
+    /// Ticket settled with `Status::Failed`.
+    TicketFailed { key: String },
     /// Provider request began.
     RequestStarted { model: String },
     /// Provider request finished successfully.
     RequestFinished { model: String },
     /// Provider request failed. The run is about to stop for this ticket.
-    RequestFailed { kind: RequestErrorKind, message: String },
+    RequestFailed {
+        kind: RequestErrorKind,
+        message: String,
+    },
     /// Provider reported token counts for the last request.
     TokensReported { model: String, usage: TokenUsage },
     /// A streamed text chunk arrived from the provider.
     TextChunkReceived { content: String },
     /// Tool invocation began.
-    ToolCallStarted { tool_name: String, call_id: String, input: serde_json::Value },
+    ToolCallStarted {
+        tool_name: String,
+        call_id: String,
+        input: serde_json::Value,
+    },
     /// Tool invocation succeeded.
-    ToolCallFinished { tool_name: String, call_id: String, output: String },
+    ToolCallFinished {
+        tool_name: String,
+        call_id: String,
+        output: String,
+    },
     /// Tool invocation failed. The error is sent back to the model as a
     /// tool-result message; the run continues.
-    ToolCallFailed { tool_name: String, call_id: String, message: String, kind: ToolFailureKind },
+    ToolCallFailed {
+        tool_name: String,
+        call_id: String,
+        message: String,
+        kind: ToolFailureKind,
+    },
     /// A configured policy was exceeded; the run is about to stop.
     PolicyViolated { kind: PolicyKind, limit: u64 },
 }
@@ -83,16 +103,26 @@ pub fn default_logger() -> Arc<dyn Fn(Event) + Send + Sync> {
     Arc::new(|event: Event| {
         let agent = &event.agent_name;
         match &event.kind {
-            EventKind::TicketClaimed { key } => {
-                eprintln!("[{agent}] claimed {key}");
+            EventKind::TicketStarted { key } => {
+                eprintln!("[{agent}] started {key}");
             }
-            EventKind::TicketFinished { key } => {
-                eprintln!("[{agent}] finished {key}");
+            EventKind::TicketDone { key } => {
+                eprintln!("[{agent}] done {key}");
             }
-            EventKind::ToolCallStarted { tool_name, input, .. } => {
+            EventKind::TicketFailed { key } => {
+                eprintln!("[{agent}] failed {key}");
+            }
+            EventKind::ToolCallStarted {
+                tool_name, input, ..
+            } => {
                 eprintln!("[{agent}] {tool_name}({})", compact_input(input));
             }
-            EventKind::ToolCallFailed { tool_name, message, kind, .. } => {
+            EventKind::ToolCallFailed {
+                tool_name,
+                message,
+                kind,
+                ..
+            } => {
                 eprintln!("[{agent}] {tool_name} failed ({kind:?}): {message}");
             }
             EventKind::RequestFailed { message, .. } => {
@@ -124,8 +154,9 @@ mod tests {
 
     fn all_variants() -> Vec<EventKind> {
         vec![
-            EventKind::TicketClaimed { key: "T-1".into() },
-            EventKind::TicketFinished { key: "T-1".into() },
+            EventKind::TicketStarted { key: "T-1".into() },
+            EventKind::TicketDone { key: "T-1".into() },
+            EventKind::TicketFailed { key: "T-1".into() },
             EventKind::RequestStarted { model: "m".into() },
             EventKind::RequestFinished { model: "m".into() },
             EventKind::RequestFailed {
@@ -136,7 +167,9 @@ mod tests {
                 model: "m".into(),
                 usage: TokenUsage::default(),
             },
-            EventKind::TextChunkReceived { content: "hello".into() },
+            EventKind::TextChunkReceived {
+                content: "hello".into(),
+            },
             EventKind::ToolCallStarted {
                 tool_name: "bash".into(),
                 call_id: "c1".into(),

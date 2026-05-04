@@ -137,7 +137,8 @@ mod tests {
             .await
             .unwrap();
 
-        let (ToolResult::Success(out) | ToolResult::Error(out) | ToolResult::SchemaError(out)) = &result;
+        let (ToolResult::Success(out) | ToolResult::Error(out) | ToolResult::SchemaError(out)) =
+            &result;
         assert!(
             matches!(result, ToolResult::Success(_)),
             "unexpected error: {out}"
@@ -166,7 +167,9 @@ mod tests {
             .await
             .unwrap();
 
-        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
+        let (ToolResult::Success(content)
+        | ToolResult::Error(content)
+        | ToolResult::SchemaError(content)) = &result;
         assert!(matches!(result, ToolResult::Error(_)));
         assert!(content.contains("2"));
     }
@@ -192,7 +195,8 @@ mod tests {
             .await
             .unwrap();
 
-        let (ToolResult::Success(out) | ToolResult::Error(out) | ToolResult::SchemaError(out)) = &result;
+        let (ToolResult::Success(out) | ToolResult::Error(out) | ToolResult::SchemaError(out)) =
+            &result;
         assert!(
             matches!(result, ToolResult::Success(_)),
             "unexpected error: {out}"
@@ -221,7 +225,9 @@ mod tests {
             .await
             .unwrap();
 
-        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
+        let (ToolResult::Success(content)
+        | ToolResult::Error(content)
+        | ToolResult::SchemaError(content)) = &result;
         assert!(matches!(result, ToolResult::Error(_)));
         assert!(content.contains("not found"));
     }

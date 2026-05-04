@@ -280,7 +280,9 @@ mod tests {
             .await
             .unwrap();
 
-        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
+        let (ToolResult::Success(content)
+        | ToolResult::Error(content)
+        | ToolResult::SchemaError(content)) = &result;
         assert!(content.contains("main.rs"));
         // lib.rs has "Hello" but not "Hello world"
         assert!(!content.contains("lib.rs"));
@@ -304,7 +306,9 @@ mod tests {
             .await
             .unwrap();
 
-        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
+        let (ToolResult::Success(content)
+        | ToolResult::Error(content)
+        | ToolResult::SchemaError(content)) = &result;
         assert!(content.contains("main.rs"));
     }
 
@@ -326,7 +330,9 @@ mod tests {
             .await
             .unwrap();
 
-        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
+        let (ToolResult::Success(content)
+        | ToolResult::Error(content)
+        | ToolResult::SchemaError(content)) = &result;
         // Should include the matching line and context
         assert!(content.contains("Hello world"));
         // With 1 context line, should also include fn main() line (line before)
@@ -347,7 +353,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
+        let (ToolResult::Success(content)
+        | ToolResult::Error(content)
+        | ToolResult::SchemaError(content)) = &result;
         let file_lines: Vec<&str> = content.lines().collect();
         // Should find matches in main.rs, lib.rs, and readme.md
         assert!(file_lines.len() >= 2);
@@ -360,7 +368,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
+        let (ToolResult::Success(content)
+        | ToolResult::Error(content)
+        | ToolResult::SchemaError(content)) = &result;
         // Content lines have format "file:line_no: content"
         for line in content.lines() {
             assert!(line.contains(':'), "Expected colon in content line: {line}");
@@ -374,7 +384,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
+        let (ToolResult::Success(content)
+        | ToolResult::Error(content)
+        | ToolResult::SchemaError(content)) = &result;
         // Count lines have format "file: N matches"
         for line in content.lines() {
             assert!(

@@ -223,7 +223,9 @@ mod tests {
         let ctx = test_tool_context();
         let input = serde_json::json!({ "command": "echo hello" });
         let result = tool.call(input, &ctx).await.unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
+        let (ToolResult::Success(content)
+        | ToolResult::Error(content)
+        | ToolResult::SchemaError(content)) = &result;
         assert!(content.contains("hello"));
         assert!(matches!(result, ToolResult::Success(_)));
     }
@@ -234,7 +236,9 @@ mod tests {
         let ctx = test_tool_context();
         let input = serde_json::json!({ "command": "sleep 10", "timeout_ms": 100 });
         let result = tool.call(input, &ctx).await.unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
+        let (ToolResult::Success(content)
+        | ToolResult::Error(content)
+        | ToolResult::SchemaError(content)) = &result;
         assert!(matches!(result, ToolResult::Error(_)));
         assert!(content.contains("timed out"));
     }
@@ -254,7 +258,9 @@ mod tests {
         let ctx = test_tool_context();
         let input = serde_json::json!({ "command": "rm -rf /" });
         let result = tool.call(input, &ctx).await.unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
+        let (ToolResult::Success(content)
+        | ToolResult::Error(content)
+        | ToolResult::SchemaError(content)) = &result;
         assert!(matches!(result, ToolResult::Error(_)));
         assert!(content.contains("does not match"));
     }
@@ -265,7 +271,9 @@ mod tests {
         let ctx = test_tool_context();
         let input = serde_json::json!({ "command": "echo hello" });
         let result = tool.call(input, &ctx).await.unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
+        let (ToolResult::Success(content)
+        | ToolResult::Error(content)
+        | ToolResult::SchemaError(content)) = &result;
         assert!(matches!(result, ToolResult::Success(_)));
         assert!(content.contains("hello"));
     }

@@ -107,8 +107,7 @@ pub(super) async fn handle_tickets(agent: Agent) {
             Some((key, needs_assign)) => {
                 if needs_assign {
                     let _ = tickets_assign_to(&ticket_system, &key, agent.get_name());
-                    let _ =
-                        tickets_update_status(&ticket_system, &key, Status::InProgress);
+                    let _ = tickets_update_status(&ticket_system, &key, Status::InProgress);
                 }
                 ticket_system.stats.record_step();
                 key
@@ -142,7 +141,7 @@ async fn process_ticket(
         return;
     };
     messages.push(task_msg);
-    emit(EventKind::TicketClaimed {
+    emit(EventKind::TicketStarted {
         key: key.to_string(),
     });
 
@@ -171,9 +170,7 @@ async fn process_ticket(
         // is the only way to reach Done from inside this loop.
         match tickets_get(ticket_system, key) {
             Some(t) if matches!(t.status(), Status::Done | Status::Failed) => {
-                emit(EventKind::TicketFinished {
-                    key: key.to_string(),
-                });
+                emit(terminal_event(t.status(), key));
                 return;
             }
             Some(_) => {}
@@ -203,7 +200,7 @@ async fn process_ticket(
                     message: e.to_string(),
                 });
                 ticket_system.stats.record_error();
-                emit(EventKind::TicketFinished {
+                emit(EventKind::TicketFailed {
                     key: key.to_string(),
                 });
                 return;
@@ -242,8 +239,8 @@ async fn process_ticket(
         if response.status != ResponseStatus::ToolUse || calls.is_empty() {
             // Inner loop terminates without a `done` call — the ticket
             // stays InProgress and Path A may re-pick it. The agent must
-            // call the `done` tool to settle.
-            emit(EventKind::TicketFinished {
+            // call the `done` tool to mark the ticket done.
+            emit(EventKind::TicketFailed {
                 key: key.to_string(),
             });
             return;
@@ -321,7 +318,7 @@ async fn process_ticket(
             // forever. The agent demonstrably can't satisfy the schema;
             // the ticket is dead.
             let _ = tickets_force_status(ticket_system, key, Status::Failed);
-            emit(EventKind::TicketFinished {
+            emit(EventKind::TicketFailed {
                 key: key.to_string(),
             });
             return;
@@ -332,8 +329,23 @@ async fn process_ticket(
 /// Whether a tool call goes through `done`-side schema validation. Used
 /// to reset `consecutive_schema_failures` on a successful `done` call.
 fn is_done_call(call: &ToolCall) -> bool {
+    if call.name == "mark_ticket_done_tool" {
+        return true;
+    }
     matches!(
         call.name.as_str(),
         "manage_tickets_tool" | "write_tickets_tool"
     ) && call.input.get("action").and_then(|v| v.as_str()) == Some("done")
+}
+
+fn terminal_event(status: Status, key: &str) -> EventKind {
+    match status {
+        Status::Done => EventKind::TicketDone {
+            key: key.to_string(),
+        },
+        Status::Failed => EventKind::TicketFailed {
+            key: key.to_string(),
+        },
+        other => unreachable!("terminal_event called with non-terminal status {other:?}"),
+    }
 }

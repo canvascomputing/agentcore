@@ -28,7 +28,7 @@ pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use list_directory::ListDirectoryTool;
 pub use read_file::ReadFileTool;
-pub use tickets::{ManageTicketsTool, ReadTicketsTool, WriteTicketsTool};
+pub use tickets::{ManageTicketsTool, MarkTicketDoneTool, ReadTicketsTool, WriteTicketsTool};
 pub use tool_search::ToolSearchTool;
 pub use web_fetch::WebFetchTool;
 pub use write_file::WriteFileTool;

@@ -15,7 +15,7 @@ use serde::Serialize;
 use crate::event::{default_logger, Event};
 use crate::prompts::{PromptBuilder, Section};
 use crate::providers::{Provider, ProviderToolDefinition};
-use crate::tools::{ToolLike, ToolRegistry};
+use crate::tools::{MarkTicketDoneTool, ToolLike, ToolRegistry};
 
 use super::r#loop::Runnable;
 use super::tickets::{insert_ticket, Ticket, TicketSystem};
@@ -43,6 +43,8 @@ pub struct Agent {
 
 impl Default for Agent {
     fn default() -> Self {
+        let mut tools = ToolRegistry::default();
+        tools.register(MarkTicketDoneTool);
         Self {
             name: default_agent_name(),
             provider: None,
@@ -50,7 +52,7 @@ impl Default for Agent {
             role: None,
             context: None,
             labels: Vec::new(),
-            tools: ToolRegistry::default(),
+            tools,
             working_dir: None,
             event_handler: None,
             ticket_system: Weak::new(),
@@ -174,7 +176,9 @@ impl Agent {
         if self.labels.is_empty() {
             ticket_labels.is_empty()
         } else {
-            self.labels.iter().any(|l| ticket_labels.iter().any(|t| t == l))
+            self.labels
+                .iter()
+                .any(|l| ticket_labels.iter().any(|t| t == l))
         }
     }
 
@@ -362,5 +366,16 @@ mod tests {
     fn system_prompt_empty_when_role_unset() {
         let agent = Agent::new();
         assert!(agent.system_prompt().is_empty());
+    }
+
+    #[test]
+    fn new_agent_has_mark_ticket_done_registered() {
+        let agent = Agent::new();
+        let names: Vec<String> = agent
+            .tool_definitions()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert!(names.iter().any(|n| n == "mark_ticket_done_tool"));
     }
 }
