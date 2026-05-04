@@ -128,28 +128,37 @@ agent.task("Compute 2+2.");
 let answer = agent.run().await;
 ```
 
-| Method | Description |
-|--------|-------------|
-| `Agent::new()` | Start an agent builder. |
-| `provider(p)` | Attach the LLM provider the agent talks to. |
-| `model(m)` | Pick the model the provider should run. |
-| `role(text)` | Set the persistent role prompt the agent identifies with. |
-| `context(text)` | Set a per-run context block prepended as the first user message. |
-| `label(l)` / `labels([..])` | Restrict ticket pickup to matching labels (Path B). |
-| `tool(t)` / `tools([..])` | Register tools the agent may call. `MarkTicketDoneTool` is registered by default so every agent can mark its current ticket done. |
-| `working_dir(p)` | Working directory tools resolve filesystem paths against. |
-| `event_handler(fn)` | Install a custom observer for the agent's events. |
-| `silent()` | Drop every event, opting out of the default stderr logger. |
-| `remember_history()` | Carry the agent's conversation across tickets, including across separate `run_dry` calls. Off by default. |
-| `task(value)` / `task_assigned(...)` / `create(ticket)` | Enqueue work for the agent. |
-| `run().await` | Process every queued task until the queue is empty and return the last answer (empty string if nothing settled). For long-lived runs that keep accepting work, drop down to `TicketSystem::run`. |
-
-Inspect or reset the conversation slot at runtime (only meaningful when `remember_history()` is set):
+Builder methods (each returns the `Agent` for chaining):
 
 | Method | Description |
 |--------|-------------|
-| `history()` | Read the agent's stored conversation history (clone). Returns `None` when memory is off. |
-| `clear_history()` | Drop the agent's stored history. No-op when memory is off. |
+| `Agent::new()` | Returns a new agent builder. |
+| `provider(p)` | Sets the provider the agent uses. |
+| `model(m)` | Sets the model the provider runs. |
+| `role(text)` | Sets the agent's role prompt. |
+| `context(text)` | Sets a context block prepended to the first message of every ticket. |
+| `label(l)` / `labels([..])` | Restricts the agent to tickets carrying matching labels. |
+| `tool(t)` / `tools([..])` | Registers tools the agent may call. `MarkTicketDoneTool` is registered automatically. |
+| `working_dir(p)` | Sets the directory tools resolve paths against. |
+| `event_handler(fn)` | Sets a custom observer for the agent's events. |
+| `silent()` | Drops every event instead of using the default logger. |
+| `remember_history()` | Persists the agent's conversation across tickets and across `run_dry` calls. Off by default. |
+
+Methods called after the agent is built:
+
+| Method | Description |
+|--------|-------------|
+| `task(value)` | Creates a new task. |
+| `task_assigned(value, label)` | Creates a labelled task. |
+| `task_schema(value, schema)` | Creates a task whose result must match `schema`. |
+| `task_schema_assigned(value, schema, label)` | Creates a labelled task whose result must match `schema`. |
+| `create(ticket)` | Adds a `Ticket` constructed by the caller. A preset `assignee` starts it as `InProgress`. |
+| `run().await` | Processes every queued task and returns the last result. |
+| `get_name()` | Returns the configured name. |
+| `get_labels()` | Returns the configured label scope. |
+| `handles(labels)` | Returns true when the agent's label scope overlaps the given labels. |
+| `history()` | Returns a clone of the stored conversation history, or `None` when memory is off. |
+| `clear_history()` | Clears the stored conversation history, if any. |
 
 ### Ticket Systems
 
@@ -169,15 +178,15 @@ let result = tickets.run_dry().await;
 
 | Method | Description |
 |--------|-------------|
-| `TicketSystem::new()` | Construct a fresh system. |
-| `task(value)` / `task_assigned(value, label)` | Enqueue a ticket carrying `value`, optionally label-routed (Path B). |
-| `task_schema(value, schema)` / `task_schema_assigned(...)` | Enqueue with a `Schema` the agent's `done` result must validate against. |
-| `create(ticket)` | Enqueue a fully-built `Ticket`. Setting `assignee` births it `InProgress` (Path A). |
-| `add(agent)` | Bind an `Agent` to this system; returns the wired `Agent` for further chaining. |
-| `run().await` | Stay alive until the interrupt signal fires, processing tickets as they arrive. Use this when work keeps coming in. |
-| `run_dry().await` | Process every queued ticket until the queue is empty, then return the most recent `Done` ticket's `result` (empty string if none settled). Use this when the batch is fixed up front. |
-| `get(key)` / `tickets()` / `first()` | Read settled tickets. |
-| `stats()` | Run-time counters and timings. |
+| `TicketSystem::new()` | Returns an `Arc<TicketSystem>`; multiple agents can share one queue. |
+| `add(agent)` | Binds an `Agent` to this system and returns it for chaining. |
+| `task(value)` / `task_assigned(value, label)` | Creates a new task, optionally labelled. |
+| `task_schema(value, schema)` / `task_schema_assigned(...)` | Creates a task whose result must match `schema`, optionally labelled. |
+| `create(ticket)` | Adds a `Ticket` constructed by the caller. A preset `assignee` starts it as `InProgress`. |
+| `run().await` | Runs continuously, processing tickets as they arrive, until the interrupt signal fires. |
+| `run_dry().await` | Processes every queued ticket and returns the most recent finished ticket's result, or an empty string when nothing finished. |
+| `get(key)` / `tickets()` / `first()` | Returns finished tickets. |
+| `stats()` | Returns the run's counters and timings. |
 
 Configure run limits on the system:
 
@@ -195,14 +204,14 @@ let tickets = TicketSystem::new()
 
 | Method | Description |
 |--------|-------------|
-| `max_steps(n)` | Cap the per-ticket step count. |
-| `max_input_tokens(n)` | Cap total input tokens across the run. |
-| `max_output_tokens(n)` | Cap total output tokens across the run. |
-| `max_request_tokens(n)` | Cap the input tokens of any single request. |
-| `max_schema_retries(n)` | Cap how many times the loop asks the model to retry after a schema-validation failure. |
-| `max_request_retries(n)` | Cap how many times a transient provider error is retried. |
-| `request_retry_delay(d)` | Base delay between request retries. |
-| `timeout(d)` | Wall-clock cap on the whole run. |
+| `max_steps(n)` | Caps the total step count across the run. |
+| `max_input_tokens(n)` | Caps total input tokens across the run. |
+| `max_output_tokens(n)` | Caps total output tokens across the run. |
+| `max_request_tokens(n)` | Caps the input tokens of any single request. |
+| `timeout(d)` | Caps the duration of the run. |
+| `max_schema_retries(n)` | Caps schema-validation retry attempts. |
+| `max_request_retries(n)` | Caps recoverable provider-error retry attempts. |
+| `request_retry_delay(d)` | Sets the base delay between request retries. |
 
 A breach fires `EventKind::PolicyViolated` and stops the run.
 
@@ -231,18 +240,18 @@ let greet = Tool::new("greet", "Say hello")
 
 | | Tool | Description |
 |-|------|-------------|
-| **File** | `ReadFileTool` | Read a file with line numbers, offset, and limit. |
-| | `WriteFileTool` | Create or overwrite a file. |
-| | `EditFileTool` | Find-and-replace in a file. |
-| **Search** | `GlobTool` | Find files by pattern. |
-| | `GrepTool` | Search file contents. |
-| | `ListDirectoryTool` | List files and folders. |
-| **Shell** | `BashTool` | Pattern-restricted shell access; `BashTool::unrestricted()` for the full shell. |
-| **Web** | `WebFetchTool` | Fetch a URL and return its body. |
-| **Tickets** | `MarkTicketDoneTool` | Mark the current ticket done; takes an optional `result` validated against the ticket's `schema`. Auto-registered on every `Agent`. |
-| | `ManageTicketsTool` | Create, claim, and settle tickets (`done` / `failed`). |
-| | `ReadTicketsTool` / `WriteTicketsTool` | Read-only and write-only ticket operations. |
-| **Discovery** | `ToolSearchTool` | Pair with `Tool::defer(true)` to keep tools hidden until discovered. |
+| **File** | `ReadFileTool` | Reads a file with line numbers, offset, and limit. |
+| | `WriteFileTool` | Creates or overwrites a file. |
+| | `EditFileTool` | Replaces text in a file. |
+| **Search** | `GlobTool` | Finds files by pattern. |
+| | `GrepTool` | Searches file contents. |
+| | `ListDirectoryTool` | Lists files and folders. |
+| **Shell** | `BashTool` | Runs shell commands matching an allowed pattern; `BashTool::unrestricted()` allows any command. |
+| **Web** | `WebFetchTool` | Fetches a URL and returns its body. |
+| **Tickets** | `MarkTicketDoneTool` | Marks the current ticket done. Auto-registered on every agent; the optional `result` is validated against the ticket's `schema`. |
+| | `ManageTicketsTool` | Creates, claims, and finishes tickets. |
+| | `ReadTicketsTool` / `WriteTicketsTool` | Read-only and write-only halves of `ManageTicketsTool`. |
+| **Discovery** | `ToolSearchTool` | Discovers tools registered with `Tool::defer(true)`. |
 
 ### Schemas
 
@@ -306,18 +315,18 @@ let handler = Arc::new(|event: Event| match &event.kind {
 
 | | Kind | Description |
 |-|------|-------------|
-| **Ticket** | `TicketStarted` | Agent claimed a ticket and began working on it |
-| | `TicketDone` | Ticket reached `Status::Done` |
-| | `TicketFailed` | Ticket reached `Status::Failed` |
-| **Provider** | `RequestStarted` | Provider request began |
-| | `RequestFinished` | Provider request finished successfully |
-| | `RequestFailed` | Provider request failed; the run is about to stop for this ticket |
-| | `TextChunkReceived` | Streamed text chunk arrived from the provider |
-| | `TokensReported` | Provider reported token counts for the last request |
-| **Tool** | `ToolCallStarted` | Tool invocation began |
-| | `ToolCallFinished` | Tool invocation succeeded |
-| | `ToolCallFailed` | Tool invocation failed; the error is sent back to the model and the run continues |
-| **Run** | `PolicyViolated` | A configured policy (`max_steps`, `max_input_tokens`, `max_output_tokens`, `max_schema_retries`, `max_request_retries`) was exceeded |
+| **Ticket** | `TicketStarted` | An agent claimed a ticket and started work. |
+| | `TicketDone` | A ticket reached `Status::Done`. |
+| | `TicketFailed` | A ticket reached `Status::Failed`. |
+| **Provider** | `RequestStarted` | A provider request started. |
+| | `RequestFinished` | A provider request finished successfully. |
+| | `RequestFailed` | A provider request failed; the ticket will not continue. |
+| | `TextChunkReceived` | A streamed text chunk arrived from the provider. |
+| | `TokensReported` | The provider reported token counts for the last request. |
+| **Tool** | `ToolCallStarted` | A tool invocation started. |
+| | `ToolCallFinished` | A tool invocation succeeded. |
+| | `ToolCallFailed` | A tool invocation failed; the error is returned to the model and the ticket continues. |
+| **Run** | `PolicyViolated` | A configured policy limit was reached and the run is stopping. |
 
 > When `.event_handler(...)` is not set, agents log ticket lifecycle, tool activity, request failures, and policy violations to stderr via `default_logger()`. Call `.silent()` on the agent to drop every event.
 
@@ -327,20 +336,20 @@ Run-wide counters and timings. Read after `run()` / `run_dry()` (or any time dur
 
 | | Method | Description |
 |-|--------|-------------|
-| **Run** | `run_duration()` | Wall-clock duration from first ticket start to run-watcher firing. `None` while the run hasn't started or is still going. |
-| | `work_time()` | Sum of all finished tickets' `started → terminal` spans. With concurrent agents this can exceed `run_duration`. |
-| **Tickets** | `tickets_created()` | Total tickets enqueued during the run. |
-| | `tickets_done()` | Tickets settled with `Status::Done`. |
-| | `tickets_failed()` | Tickets settled with `Status::Failed`. |
-| | `success_rate()` | `tickets_done / (tickets_done + tickets_failed)`. `None` until at least one ticket finishes. |
-| | `run_time()` | Sum of finished tickets' `creation → terminal` spans. |
-| | `avg_run_time()` | Mean of finished tickets' `creation → terminal` spans. `None` until at least one ticket finishes. |
-| **Tokens** | `input_tokens()` | Total input tokens across all provider responses. |
-| | `output_tokens()` | Total output tokens across all provider responses. |
-| **Activity** | `steps()` | Total ticket-claim iterations across all agents. |
-| | `requests()` | Total provider responses received. |
-| | `tool_calls()` | Total tool dispatches. |
-| | `errors()` | Total provider errors. |
+| **Run** | `run_duration()` | Returns the duration from the first ticket start to the end of the run, or `None` while the run is still active. |
+| | `work_time()` | Returns the sum of every finished ticket's `started → terminal` span; may exceed `run_duration` with concurrent agents. |
+| **Tickets** | `tickets_created()` | Returns the total number of tickets created during the run. |
+| | `tickets_done()` | Returns the number of tickets that reached `Status::Done`. |
+| | `tickets_failed()` | Returns the number of tickets that reached `Status::Failed`. |
+| | `success_rate()` | Returns `tickets_done / (tickets_done + tickets_failed)`, or `None` until at least one ticket finishes. |
+| | `run_time()` | Returns the sum of every finished ticket's `creation → terminal` span. |
+| | `avg_run_time()` | Returns the mean of every finished ticket's `creation → terminal` span, or `None` until at least one ticket finishes. |
+| **Tokens** | `input_tokens()` | Returns the total input tokens across all provider responses. |
+| | `output_tokens()` | Returns the total output tokens across all provider responses. |
+| **Activity** | `steps()` | Returns the total ticket-claim iterations across all agents. |
+| | `requests()` | Returns the total number of provider responses received. |
+| | `tool_calls()` | Returns the total number of tool calls made. |
+| | `errors()` | Returns the total number of provider errors. |
 
 ```rust
 let s = tickets.stats();
@@ -439,8 +448,8 @@ Use cases and integration tests use the following environment variables:
 
 | Variable | Description |
 |----------|-------------|
-| `MODEL` | Generic model override for `model_from_env()` |
-| `BRAVE_API_KEY` | Required by the `deep-research-v2` example |
+| `MODEL` | Generic model override for `model_from_env()`. |
+| `BRAVE_API_KEY` | Required by the `deep-research-v2` example. |
 
 **Anthropic**
 

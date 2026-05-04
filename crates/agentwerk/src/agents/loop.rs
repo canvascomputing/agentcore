@@ -1195,9 +1195,10 @@ mod tests {
     // Bucket F — cross-ticket conversation history
     // =====================================================================
 
-    /// First user-side text in each `User` message, in order. Lets a
-    /// test assert how a conversation transcript was assembled without
-    /// pattern-matching nested `ContentBlock` enums every time.
+    /// First user-side text in each `User` message, in order, with the
+    /// auto-injected `## Context` block filtered out so history-replay
+    /// tests can assert on task bodies without re-stating the environment
+    /// prelude every time.
     fn user_texts(messages: &[Message]) -> Vec<String> {
         messages
             .iter()
@@ -1208,6 +1209,7 @@ mod tests {
                 }),
                 _ => None,
             })
+            .filter(|text| !text.starts_with("## Context\n\n"))
             .collect()
     }
 
@@ -1453,7 +1455,18 @@ mod tests {
         tickets.task("which one is the smallest?");
         let _ = tickets.run_dry().await;
 
-        let stored = agent.history().expect("history must be on");
+        let stored: Vec<Message> = agent
+            .history()
+            .expect("history must be on")
+            .into_iter()
+            .filter(|m| match m {
+                Message::User { content } => !content.iter().any(|b| matches!(
+                    b,
+                    ContentBlock::Text { text } if text.starts_with("## Context\n\n")
+                )),
+                _ => true,
+            })
+            .collect();
         let actual = serde_json::to_string_pretty(&stored).unwrap();
         let expected = r#"[
   {

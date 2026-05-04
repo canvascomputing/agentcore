@@ -49,12 +49,15 @@ async fn main() {
         .interrupt_signal(Arc::clone(&cancel))
         .max_steps(40);
 
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
     let agent = tickets.add(
         Agent::new()
             .name("orchestrator")
             .provider(Arc::clone(&provider))
             .model(&model)
             .role(role)
+            .working_dir(cwd)
             .tool(GlobTool)
             .tool(GrepTool)
             .tool(ListDirectoryTool)

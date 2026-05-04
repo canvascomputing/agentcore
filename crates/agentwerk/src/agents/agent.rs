@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, Weak};
 use serde::Serialize;
 
 use crate::event::{default_logger, Event};
-use crate::prompts::{PromptBuilder, Section};
+use crate::prompts::{default_context, PromptBuilder, Section};
 use crate::providers::{Message, Provider, ProviderToolDefinition};
 use crate::tools::{MarkTicketDoneTool, ToolLike, ToolRegistry};
 
@@ -282,13 +282,14 @@ impl Agent {
         b.build().system
     }
 
-    /// Render the agent's `context` (if set) as a `## Context\n\n…`
-    /// section, ready to be pushed as the first user message in the
-    /// loop. Returns `None` when no context was configured.
+    /// Render the context block pushed as the first user message in the
+    /// loop. Falls back to [`default_context`] (working directory, platform,
+    /// OS version, date) when [`Self::context`] was not set.
     pub(super) fn context_message(&self) -> Option<String> {
-        self.context
-            .as_ref()
-            .map(|body| Section::context(self.interpolate(body)).render())
+        match &self.context {
+            Some(body) => Some(Section::context(self.interpolate(body)).render()),
+            None => Some(default_context(&self.working_dir_or_default())),
+        }
     }
 
     fn interpolate(&self, s: &str) -> String {
@@ -410,9 +411,13 @@ mod tests {
     }
 
     #[test]
-    fn context_message_returns_none_when_unset() {
+    fn context_message_falls_back_to_default_when_unset() {
         let agent = Agent::new().role("R");
-        assert!(agent.context_message().is_none());
+        let rendered = agent.context_message().expect("default context");
+        assert!(rendered.starts_with("## Context\n\n"));
+        assert!(rendered.contains("- Working directory: "));
+        assert!(rendered.contains("- Platform: "));
+        assert!(rendered.contains("- Date: "));
     }
 
     #[test]
