@@ -33,6 +33,15 @@ pub struct Ticket {
     pub(crate) assignee: Option<String>,
     pub(crate) reporter: String,
     pub(crate) created_at: u64,
+    /// Set when the ticket transitions `Todo → InProgress`. Millis
+    /// since epoch.
+    pub(crate) started_at: Option<u64>,
+    /// Set when the ticket reaches `Status::Done`. Millis since epoch.
+    /// Mutually exclusive with `failed_at`.
+    pub(crate) finished_at: Option<u64>,
+    /// Set when the ticket reaches `Status::Failed`. Millis since
+    /// epoch. Mutually exclusive with `finished_at`.
+    pub(crate) failed_at: Option<u64>,
     pub(crate) result: Option<String>,
 }
 
@@ -54,6 +63,9 @@ impl Ticket {
             assignee: None,
             reporter: String::new(),
             created_at: 0,
+            started_at: None,
+            finished_at: None,
+            failed_at: None,
             result: None,
         }
     }
@@ -108,6 +120,25 @@ impl Ticket {
 
     pub fn created_at(&self) -> u64 {
         self.created_at
+    }
+
+    pub fn started_at(&self) -> Option<u64> {
+        self.started_at
+    }
+
+    pub fn finished_at(&self) -> Option<u64> {
+        self.finished_at
+    }
+
+    pub fn failed_at(&self) -> Option<u64> {
+        self.failed_at
+    }
+
+    /// Wall-clock time from creation to terminal status (Done or
+    /// Failed), `None` while the ticket has not yet reached one.
+    pub fn run_time(&self) -> Option<Duration> {
+        let terminal = self.finished_at.or(self.failed_at)?;
+        Some(Duration::from_millis(terminal.saturating_sub(self.created_at)))
     }
 
     pub fn result(&self) -> Option<&str> {
@@ -490,7 +521,8 @@ pub(crate) fn tickets_update_status(
     key: &str,
     status: Status,
 ) -> Result<(), TicketError> {
-    let prev = {
+    let now = now_millis();
+    let outcome = {
         let mut store = ticket_system.tickets.lock().unwrap();
         let ticket = store
             .get_mut(key)
@@ -504,10 +536,12 @@ pub(crate) fn tickets_update_status(
             });
         }
         let prev = ticket.status;
+        stamp_transition_timestamps(ticket, status, now);
         ticket.status = status;
-        prev
+        let durations = terminal_durations(ticket);
+        (prev, durations)
     };
-    record_status_transition(&ticket_system.stats, prev, status);
+    fire_transition_recorder(&ticket_system.stats, outcome.0, status, now, outcome.1);
     Ok(())
 }
 
@@ -519,7 +553,8 @@ pub(crate) fn tickets_force_status(
     key: &str,
     status: Status,
 ) -> Result<(), TicketError> {
-    let prev = {
+    let now = now_millis();
+    let outcome = {
         let mut store = ticket_system.tickets.lock().unwrap();
         let ticket = store
             .get_mut(key)
@@ -527,10 +562,12 @@ pub(crate) fn tickets_force_status(
                 key: key.to_string(),
             })?;
         let prev = ticket.status;
+        stamp_transition_timestamps(ticket, status, now);
         ticket.status = status;
-        prev
+        let durations = terminal_durations(ticket);
+        (prev, durations)
     };
-    record_status_transition(&ticket_system.stats, prev, status);
+    fire_transition_recorder(&ticket_system.stats, outcome.0, status, now, outcome.1);
     Ok(())
 }
 
@@ -636,17 +673,20 @@ impl Runnable for TicketSystem {
                 tokio::time::sleep(Duration::from_millis(20)).await;
                 if policy_violated(&watcher_policies, &watcher_system.stats) {
                     watcher_signal.store(true, Ordering::Relaxed);
+                    watcher_system.stats.mark_finished(now_millis());
                     return;
                 }
                 if let Some(limit) = timeout {
                     if started.elapsed() >= limit {
                         watcher_signal.store(true, Ordering::Relaxed);
+                        watcher_system.stats.mark_finished(now_millis());
                         return;
                     }
                 }
                 let pending = pending_count(&watcher_system);
                 if pending == 0 {
                     watcher_signal.store(true, Ordering::Relaxed);
+                    watcher_system.stats.mark_finished(now_millis());
                     return;
                 }
             }
@@ -725,13 +765,54 @@ fn pending_count(ticket_system: &TicketSystem) -> usize {
         .count()
 }
 
-fn record_status_transition(stats: &Stats, prev: Status, next: Status) {
+/// Stamp `started_at` / `finished_at` / `failed_at` on a ticket whose
+/// status is about to flip. Called inside the locked critical section.
+fn stamp_transition_timestamps(ticket: &mut Ticket, next: Status, now: u64) {
+    if ticket.status == Status::Todo && next == Status::InProgress {
+        ticket.started_at = Some(now);
+    }
+    match next {
+        Status::Done => {
+            ticket.finished_at = Some(now);
+        }
+        Status::Failed => {
+            ticket.failed_at = Some(now);
+        }
+        _ => {}
+    }
+}
+
+/// Compute (run_time, work_time) for a ticket that just reached a
+/// terminal status. `run_time` is creation→terminal; `work_time` is
+/// started→terminal. Both default to zero if the relevant timestamps
+/// aren't both set.
+fn terminal_durations(ticket: &Ticket) -> (Duration, Duration) {
+    let run_time = ticket.run_time().unwrap_or_default();
+    let work_time = match (ticket.started_at, ticket.finished_at.or(ticket.failed_at)) {
+        (Some(start), Some(end)) => Duration::from_millis(end.saturating_sub(start)),
+        _ => Duration::ZERO,
+    };
+    (run_time, work_time)
+}
+
+/// Fire the appropriate recorder hook for a status transition. Called
+/// after the lock is released.
+fn fire_transition_recorder(
+    stats: &Stats,
+    prev: Status,
+    next: Status,
+    now: u64,
+    (run_time, work_time): (Duration, Duration),
+) {
     if prev == next {
         return;
     }
+    if prev == Status::Todo && next == Status::InProgress {
+        stats.record_started(now);
+    }
     match next {
-        Status::Done => TicketStats::record_done(stats),
-        Status::Failed => TicketStats::record_failed(stats),
+        Status::Done => stats.record_done(run_time, work_time),
+        Status::Failed => stats.record_failed(run_time, work_time),
         _ => {}
     }
 }

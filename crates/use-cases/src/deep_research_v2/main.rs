@@ -160,12 +160,28 @@ async fn main() {
 
     println!("\n{}\n", format_title_first(&parsed));
     let stats = tickets.stats();
+    eprintln!("Duration:  {:?}", stats.run_duration().unwrap_or_default());
+    eprintln!("Work time: {:?}", stats.work_time());
     eprintln!(
-        "Tokens: {} in, {} out · {} steps · {} requests",
+        "Tickets:   {} done, {} failed ({:.0}%)",
+        stats.tickets_done(),
+        stats.tickets_failed(),
+        stats.success_rate().map(|r| r * 100.0).unwrap_or(0.0),
+    );
+    eprintln!(
+        "Avg time:  {:?}",
+        stats.avg_run_time().unwrap_or_default()
+    );
+    eprintln!(
+        "Tokens:    {} in, {} out",
         stats.input_tokens(),
         stats.output_tokens(),
-        stats.steps(),
+    );
+    eprintln!(
+        "Activity:  {} requests · {} tool calls · {} errors",
         stats.requests(),
+        stats.tool_calls(),
+        stats.errors(),
     );
 }
 
