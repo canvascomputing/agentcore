@@ -4,12 +4,10 @@ How tests are organized and written. Commands used to run them live in [workflow
 
 ## Layers
 
-**Three layers: unit, integration, inline.**
+**Two layers: integration and inline.**
 
-- `tests/unit/` uses `MockProvider`; bundled by `tests/unit.rs`.
 - `tests/integration/` uses a real provider; bundled by `tests/integration.rs`.
-- Inline `#[cfg(test)] mod tests` lives next to the code it covers.
-- `MockProvider` and `TestHarness` live in `testutil.rs`.
+- Inline `#[cfg(test)] mod tests` lives next to the code it covers and runs without a network.
 - Shared integration helpers live in `tests/integration/common.rs`.
 
 ## Purpose

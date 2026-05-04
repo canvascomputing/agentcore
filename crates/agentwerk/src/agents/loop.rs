@@ -38,14 +38,16 @@ pub trait Runnable: Sized {
     }
 
     /// Drive every staged agent until the implementor's interrupt
-    /// signal fires.
+    /// signal fires. Use this when tickets keep arriving over time and
+    /// the run is bounded by an external stop signal.
     fn run(&self) -> impl Future<Output = ()> + Send;
 
     /// Drive every staged agent until the queue settles, a policy
     /// trips, or `.timeout(...)` elapses. Returns the result of the
-    /// most recently created `Status::Done` ticket — convenient for
-    /// single-task agents — or `None` if no ticket reached `Done`.
-    fn run_dry(&self) -> impl Future<Output = Option<String>> + Send;
+    /// most recently created `Status::Done` ticket, or an empty string
+    /// when no ticket reached `Done`. Use this for fixed-batch runs
+    /// where every ticket is enqueued up front.
+    fn run_dry(&self) -> impl Future<Output = String> + Send;
 }
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);

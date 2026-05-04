@@ -1,4 +1,4 @@
-//! Deep Research, ported to agentwerk2.
+//! Deep Research.
 //!
 //! Two phases run against separate `TicketSystem`s:
 //!   1. Three `researcher` agents drain three research tickets in
@@ -20,14 +20,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use agentwerk2::agents::agent::Agent;
-use agentwerk2::agents::r#loop::Runnable;
-use agentwerk2::agents::tickets::TicketSystem;
-use agentwerk2::event::EventKind;
-use agentwerk2::providers::{from_env, model_from_env, ProviderResult};
-use agentwerk2::schemas::Schema;
-use agentwerk2::tools::{ManageTicketsTool, Tool, ToolResult};
-use agentwerk2::Event;
+use agentwerk::providers::{from_env, model_from_env, ProviderResult};
+use agentwerk::tools::ManageTicketsTool;
+use agentwerk::{Agent, Event, EventKind, Runnable, Schema, TicketSystem, Tool, ToolResult};
 
 const RESEARCHER_ROLE: &str = include_str!("prompts/researcher.role.md");
 const REPORT_WRITER_ROLE: &str = include_str!("prompts/report-writer.role.md");
@@ -140,16 +135,13 @@ async fn main() {
         std::process::exit(130);
     }
 
-    let report = match report {
-        Some(r) if !r.is_empty() => r,
-        _ => {
-            let status = tickets.first().map(|t| t.status());
-            eprintln!(
-                "\nReport writer left the ticket in {status:?}; expected Done with a result."
-            );
-            std::process::exit(1);
-        }
-    };
+    if report.is_empty() {
+        let status = tickets.first().map(|t| t.status());
+        eprintln!(
+            "\nReport writer left the ticket in {status:?}; expected Done with a result."
+        );
+        std::process::exit(1);
+    }
     let parsed: serde_json::Value = match serde_json::from_str(&report) {
         Ok(v) => v,
         Err(e) => {

@@ -4,9 +4,9 @@
 build: fmt
 	RUSTFLAGS="-D warnings" cargo build
 
-# Run unit tests (warnings are errors) — inline `#[cfg(test)]` + mock-driven tests in tests/unit/
+# Run unit tests (warnings are errors) — inline `#[cfg(test)] mod tests` blocks
 test:
-	RUSTFLAGS="-D warnings" cargo test --lib --test unit
+	RUSTFLAGS="-D warnings" cargo test --workspace --lib
 
 # Run integration tests (requires a live LLM LITELLM_PROVIDER)
 # Usage: make test_integration              (run all)

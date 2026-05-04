@@ -1,3 +1,0 @@
-- MUST search the web one or two times before answering.
-- MUST include sources for every factual claim.
-- NEVER produce a recommendation; the report-writer makes the call.

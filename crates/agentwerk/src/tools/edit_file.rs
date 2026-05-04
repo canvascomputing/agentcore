@@ -6,9 +6,9 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
-use crate::error::Result;
-use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
-use crate::tools::tool_file::ToolFile;
+use super::tool::{ToolContext, ToolLike, ToolResult};
+use super::tool_file::ToolFile;
+use crate::providers::ProviderResult as Result;
 
 /// In-place string replacement in an existing file. The model supplies the
 /// old and new strings; the tool fails if the old string is absent or
@@ -137,7 +137,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (ToolResult::Success(out) | ToolResult::Error(out)) = &result;
+        let (ToolResult::Success(out) | ToolResult::Error(out) | ToolResult::SchemaError(out)) = &result;
         assert!(
             matches!(result, ToolResult::Success(_)),
             "unexpected error: {out}"
@@ -166,7 +166,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(matches!(result, ToolResult::Error(_)));
         assert!(content.contains("2"));
     }
@@ -192,7 +192,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (ToolResult::Success(out) | ToolResult::Error(out)) = &result;
+        let (ToolResult::Success(out) | ToolResult::Error(out) | ToolResult::SchemaError(out)) = &result;
         assert!(
             matches!(result, ToolResult::Success(_)),
             "unexpected error: {out}"
@@ -221,7 +221,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(matches!(result, ToolResult::Error(_)));
         assert!(content.contains("not found"));
     }

@@ -6,12 +6,12 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
-use crate::error::Result;
-use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
-use crate::tools::tool_file::ToolFile;
+use super::tool::{ToolContext, ToolLike, ToolResult};
+use super::tool_file::ToolFile;
+use crate::providers::ProviderResult as Result;
 
 /// Search the tool registry by query string. Pair with tools that set
-/// [`Tool::should_defer`](crate::Tool::should_defer) to `true`: the
+/// [`Tool::defer`](crate::tools::Tool::defer) to `true`: the
 /// model sees only their names until it discovers them through this tool,
 /// keeping the initial system prompt small.
 pub struct ToolSearchTool;
@@ -96,12 +96,55 @@ impl ToolLike for ToolSearchTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::MockTool;
-    use crate::tools::tool::ToolRegistry;
+    use std::future::Future;
+    use std::pin::Pin;
     use std::sync::Arc;
 
+    use crate::providers::ProviderResult;
+    use crate::tools::ToolRegistry;
+
+    /// Minimal mock tool inlined for tests (no shared testutil module).
+    struct MockTool {
+        name: String,
+        read_only: bool,
+        result: String,
+    }
+
+    impl MockTool {
+        fn new(name: &str, read_only: bool, result: &str) -> Self {
+            Self {
+                name: name.into(),
+                read_only,
+                result: result.into(),
+            }
+        }
+    }
+
+    impl ToolLike for MockTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn description(&self) -> &str {
+            "mock"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn is_read_only(&self) -> bool {
+            self.read_only
+        }
+        fn call<'a>(
+            &'a self,
+            _input: serde_json::Value,
+            _ctx: &'a ToolContext,
+        ) -> Pin<Box<dyn Future<Output = ProviderResult<ToolResult>> + Send + 'a>> {
+            let result = self.result.clone();
+            Box::pin(async move { Ok(ToolResult::success(result)) })
+        }
+    }
+
     fn registry_with_mock_tools() -> Arc<ToolRegistry> {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::default();
         registry.register(MockTool::new("read_file", true, "file contents"));
         registry.register(MockTool::new("write_file", false, "written"));
         registry.register(MockTool::new("list_directory", true, "listing"));
@@ -120,7 +163,7 @@ mod tests {
         let tool = ToolSearchTool;
         let input = serde_json::json!({ "query": "read_file" });
         let result = tool.call(input, &ctx).await.unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(content.contains("read_file"));
     }
 
@@ -131,7 +174,7 @@ mod tests {
         let tool = ToolSearchTool;
         let input = serde_json::json!({ "query": "file" });
         let result = tool.call(input, &ctx).await.unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(content.contains("read_file"));
         assert!(content.contains("write_file"));
     }
@@ -143,7 +186,7 @@ mod tests {
         let tool = ToolSearchTool;
         let input = serde_json::json!({ "query": "nonexistent_xyz" });
         let result = tool.call(input, &ctx).await.unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(content.contains("No tools found"));
     }
 
@@ -154,7 +197,7 @@ mod tests {
         let tool = ToolSearchTool;
         let input = serde_json::json!({ "query": "read_file" });
         let result = tool.call(input, &ctx).await.unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(content.contains("```json"));
         assert!(content.contains("\"type\""));
     }
@@ -166,7 +209,7 @@ mod tests {
         let tool = ToolSearchTool;
         let input = serde_json::json!({});
         let result = tool.call(input, &ctx).await.unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(matches!(result, ToolResult::Error(_)));
         assert!(content.contains("Missing required field: query"));
     }
@@ -179,7 +222,7 @@ mod tests {
         let tool = ToolSearchTool;
         let input = serde_json::json!({ "query": "anything" });
         let result = tool.call(input, &ctx).await.unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(matches!(result, ToolResult::Error(_)));
         assert!(content.contains("No tool registry available"));
     }
@@ -198,28 +241,15 @@ mod tests {
 
     #[tokio::test]
     async fn marks_found_tools_as_discovered() {
-        use crate::agent::Agent;
-
         let registry = registry_with_mock_tools();
-        let agent = Agent::new()
-            .name("t")
-            .model("mock")
-            .role("")
-            .provider(Arc::new(crate::testutil::MockProvider::text("ok")));
-        let (_spec, runtime) = agent.compile(None);
-        let runtime = Arc::new(runtime);
-        let ctx = ToolContext::new(
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-        )
-        .registry(registry)
-        .runtime(runtime.clone());
+        let ctx = ctx_registry(Arc::clone(&registry));
 
         let tool = ToolSearchTool;
         tool.call(serde_json::json!({ "query": "read_file" }), &ctx)
             .await
             .unwrap();
 
-        let discovered = runtime.tool_registry.discovered.lock().unwrap();
+        let discovered = registry.discovered.lock().unwrap();
         assert!(discovered.contains("read_file"));
     }
 }

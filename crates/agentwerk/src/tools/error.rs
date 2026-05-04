@@ -2,8 +2,6 @@
 
 use std::fmt;
 
-use crate::event::ToolFailureKind;
-
 /// A tool failed for reasons the model can't fix by retrying with different
 /// arguments. Most tool failures (bad args, non-zero bash exit, file-not-found,
 /// timeouts) flow through [`ToolResult::Error`](super::ToolResult::Error)
@@ -14,9 +12,14 @@ pub enum ToolError {
     /// the model as a tool-result error so it can pick a different tool.
     ToolNotFound { tool_name: String },
     /// The tool was invoked but its execution raised an error. Covers harness
-    /// wiring gaps, persistence/IO failures, sub-agent crashes, and anything
-    /// else a tool returns via `Err(...)`.
+    /// wiring gaps, persistence/IO failures, and anything else a tool returns
+    /// via `Err(...)`.
     ExecutionFailed { tool_name: String, message: String },
+    /// A schema-checked tool rejected the model's payload. Distinct from
+    /// `ExecutionFailed` so the loop can apply the dedicated retry budget
+    /// (`policies.max_schema_retries`) and emit
+    /// `ToolFailureKind::SchemaValidationFailed`.
+    SchemaValidationFailed { tool_name: String, message: String },
 }
 
 impl ToolError {
@@ -25,6 +28,7 @@ impl ToolError {
         match self {
             ToolError::ToolNotFound { tool_name } => tool_name,
             ToolError::ExecutionFailed { tool_name, .. } => tool_name,
+            ToolError::SchemaValidationFailed { tool_name, .. } => tool_name,
         }
     }
 
@@ -34,6 +38,7 @@ impl ToolError {
         match self {
             ToolError::ToolNotFound { tool_name } => format!("Unknown tool: {tool_name}"),
             ToolError::ExecutionFailed { message, .. } => message.clone(),
+            ToolError::SchemaValidationFailed { message, .. } => message.clone(),
         }
     }
 }
@@ -45,17 +50,11 @@ impl fmt::Display for ToolError {
             ToolError::ExecutionFailed { tool_name, message } => {
                 write!(f, "Tool {tool_name} failed: {message}")
             }
+            ToolError::SchemaValidationFailed { tool_name, message } => {
+                write!(f, "Tool {tool_name} schema validation failed: {message}")
+            }
         }
     }
 }
 
 impl std::error::Error for ToolError {}
-
-impl From<&ToolError> for ToolFailureKind {
-    fn from(err: &ToolError) -> Self {
-        match err {
-            ToolError::ToolNotFound { .. } => ToolFailureKind::ToolNotFound,
-            ToolError::ExecutionFailed { .. } => ToolFailureKind::ExecutionFailed,
-        }
-    }
-}

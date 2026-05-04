@@ -656,7 +656,7 @@ impl Runnable for TicketSystem {
         run_main_loop(agents).await;
     }
 
-    async fn run_dry(&self) -> Option<String> {
+    async fn run_dry(&self) -> String {
         let agents = self.agents.lock().unwrap().clone();
         let timeout = *self.timeout.lock().unwrap();
         let signal = Arc::clone(&self.interrupt_signal.lock().unwrap());
@@ -699,12 +699,13 @@ impl Runnable for TicketSystem {
 
 impl TicketSystem {
     /// Result of the most recently created `Status::Done` ticket, or
-    /// `None` when no ticket has reached `Done` (or its `result` is
-    /// unset).
-    fn last_done_result(&self) -> Option<String> {
+    /// an empty string when no ticket has reached `Done` (or its
+    /// `result` is unset).
+    fn last_done_result(&self) -> String {
         self.filter(Ticket::is_done)
             .last()
             .and_then(|t| t.result().map(String::from))
+            .unwrap_or_default()
     }
 }
 

@@ -2,13 +2,13 @@
 
 use std::time::Duration;
 
-use crate::tools::tool::{ToolContext, ToolResult};
+use super::tool::{ToolContext, ToolResult};
 
 /// Execute a command via `sh -c`, returning combined stdout/stderr. Bounded by
-/// `timeout_ms` and interruptible via the context's cancel signal: a fired
+/// `timeout` and interruptible via the context's cancel signal: a fired
 /// cancel drops the pending output future, and `kill_on_drop(true)` cascades
 /// SIGKILL to the subprocess so a hanging `python3` / `sleep` doesn't outlive
-/// Ctrl-C.
+/// the cancel.
 pub(crate) async fn run_shell_command(
     command: &str,
     timeout: Duration,
@@ -60,7 +60,6 @@ fn glob_match_bytes(pattern: &[u8], text: &[u8]) -> bool {
 
     match pattern[0] {
         b'*' => {
-            // Star matches zero chars (skip star) or one char (advance text).
             glob_match_bytes(&pattern[1..], text)
                 || (!text.is_empty() && glob_match_bytes(pattern, &text[1..]))
         }
@@ -90,7 +89,7 @@ mod tests {
         let result = run_shell_command("sleep 30", Duration::from_millis(60_000), &ctx).await;
         let elapsed = started.elapsed();
 
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(
             matches!(result, ToolResult::Error(_)),
             "expected cancelled result"

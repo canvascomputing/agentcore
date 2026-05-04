@@ -7,10 +7,10 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
-use crate::error::Result;
-use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
-use crate::tools::tool_file::ToolFile;
-use crate::tools::util::glob_match;
+use super::tool::{ToolContext, ToolLike, ToolResult};
+use super::tool_file::ToolFile;
+use super::util::glob_match;
+use crate::providers::ProviderResult as Result;
 
 /// Search file contents by substring under the working directory. Read-only.
 /// Returns matching line snippets with file paths and line numbers; capped
@@ -121,11 +121,11 @@ fn search_content(
         for &idx in &match_indices {
             let start = idx.saturating_sub(context_lines);
             let end = (idx + context_lines + 1).min(lines.len());
-            for li in start..end {
+            for (li, line) in lines.iter().enumerate().take(end).skip(start) {
                 if !emitted.insert(li) {
                     continue;
                 }
-                output.push(format!("{}:{}: {}", rel, li + 1, lines[li]));
+                output.push(format!("{}:{}: {}", rel, li + 1, line));
                 if output.len() >= max_results {
                     break 'outer;
                 }
@@ -239,7 +239,6 @@ fn collect_files(dir: &Path, glob_filter: &Option<String>, results: &mut Vec<Pat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::tool::ToolContext;
     use std::fs;
 
     fn test_ctx(path: &std::path::Path) -> ToolContext {
@@ -281,7 +280,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(content.contains("main.rs"));
         // lib.rs has "Hello" but not "Hello world"
         assert!(!content.contains("lib.rs"));
@@ -305,7 +304,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(content.contains("main.rs"));
     }
 
@@ -327,7 +326,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         // Should include the matching line and context
         assert!(content.contains("Hello world"));
         // With 1 context line, should also include fn main() line (line before)
@@ -348,7 +347,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         let file_lines: Vec<&str> = content.lines().collect();
         // Should find matches in main.rs, lib.rs, and readme.md
         assert!(file_lines.len() >= 2);
@@ -361,7 +360,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         // Content lines have format "file:line_no: content"
         for line in content.lines() {
             assert!(line.contains(':'), "Expected colon in content line: {line}");
@@ -375,7 +374,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         // Count lines have format "file: N matches"
         for line in content.lines() {
             assert!(

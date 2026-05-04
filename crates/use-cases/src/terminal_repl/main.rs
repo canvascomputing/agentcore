@@ -1,24 +1,21 @@
-//! Interactive terminal chat with an agent. Demonstrates `Agent::keep_working` + `AgentWorking` for back-and-forth conversation against a live LLM.
+//! Interactive terminal chat. Each input line gets a fresh
+//! `TicketSystem` + `Agent`; the model's response streams to stdout
+//! via `EventKind::TextChunkReceived`, and the agent settles its
+//! ticket via `manage_tickets_tool`. Ctrl-C at the prompt exits the
+//! REPL; Ctrl-C during a turn cancels that turn (a second Ctrl-C
+//! while the cancel is still draining force-quits with exit code 130).
+//! `/exit` quits cleanly.
 
-use std::future::IntoFuture;
 use std::io::{self, IsTerminal, Write};
-use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use agentwerk::event::EventKind;
-use agentwerk::output::Outcome;
-use agentwerk::tools::{GlobTool, GrepTool, ListDirectoryTool, ReadFileTool};
-use agentwerk::{Agent, Error, Event, Output};
-use tokio::sync::Notify;
+use agentwerk::providers::{from_env, model_from_env};
+use agentwerk::tools::{GlobTool, GrepTool, ListDirectoryTool, ManageTicketsTool, ReadFileTool};
+use agentwerk::{Agent, Event, EventKind, Runnable, Status, TicketSystem};
 
-const ROLE_FILE: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/src/terminal_repl/prompts/repl.role.md",
-);
-const BEHAVIOR_FILE: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/src/terminal_repl/prompts/repl.behavior.md",
-);
+const ROLE: &str = include_str!("prompts/repl.role.md");
+const BEHAVIOR: &str = include_str!("prompts/repl.behavior.md");
 
 #[tokio::main]
 async fn main() {
@@ -28,86 +25,96 @@ async fn main() {
         style.dim, style.reset,
     );
 
+    let provider = from_env().expect("LLM provider required");
+    let model = model_from_env().expect("model name required");
+    let role = format!(
+        "{}\n\n{}\n\n- When you have answered the user, settle the ticket by \
+         calling `manage_tickets_tool` with `action: \"done\"` and `result` set \
+         to a brief one-line summary.",
+        ROLE.trim(),
+        BEHAVIOR.trim(),
+    );
+
     let user_prompt = format!("\n{}you ›{} ", style.user, style.reset);
-    let Some(first) = read_line(&user_prompt).await else {
-        return;
-    };
-    if first.is_empty() || first == "/exit" || first == "/quit" {
-        return;
-    }
 
-    let idle = Arc::new(Notify::new());
-    let handler_idle = idle.clone();
-    let handler_style = style.clone();
-    announce_assistant(&style);
-    let (running, output) = Agent::new()
-        .name("orchestrator")
-        .provider_from_env()
-        .expect("LLM provider required")
-        .model_from_env()
-        .expect("model name required")
-        .role(Path::new(ROLE_FILE))
-        .behavior(Path::new(BEHAVIOR_FILE))
-        .work(first)
-        .tool(GlobTool)
-        .tool(GrepTool)
-        .tool(ListDirectoryTool)
-        .tool(ReadFileTool)
-        .event_handler(Arc::new(move |e: Event| {
-            print_event(&e, &handler_idle, &handler_style)
-        }))
-        .keep_working();
-
-    let output = output.into_future();
-    tokio::pin!(output);
-    let mut early_result: Option<Result<Output, Error>> = None;
-
-    'session: loop {
-        tokio::select! {
-            _ = idle.notified() => {}
-            res = &mut output => {
-                early_result = Some(res);
-                break 'session;
-            }
-            _ = tokio::signal::ctrl_c() => break 'session,
-        }
+    loop {
         let line = tokio::select! {
             line = read_line(&user_prompt) => line,
-            _ = tokio::signal::ctrl_c() => { eprintln!("{}^C{}", style.dim, style.reset); None }
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\n{}^C{}", style.dim, style.reset);
+                return;
+            }
         };
-        let Some(line) = line else { break };
+        let Some(line) = line else { return };
         if line.is_empty() {
             continue;
         }
         if line == "/exit" || line == "/quit" {
-            break;
+            return;
         }
-        announce_assistant(&style);
-        running.work(line);
-    }
 
-    running.interrupt();
-    let result = match early_result {
-        Some(r) => r,
-        None => (&mut output).await,
-    };
-    match result {
-        Ok(o) => eprintln!(
+        announce_assistant(&style);
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let event_style = style.clone();
+        let handler: Arc<dyn Fn(Event) + Send + Sync> =
+            Arc::new(move |e: Event| print_event(&e, &event_style));
+
+        let tickets = TicketSystem::new()
+            .interrupt_signal(Arc::clone(&cancel))
+            .max_steps(40);
+
+        let agent = Agent::new()
+            .name("orchestrator")
+            .provider(Arc::clone(&provider))
+            .model(&model)
+            .role(&role)
+            .tool(GlobTool)
+            .tool(GrepTool)
+            .tool(ListDirectoryTool)
+            .tool(ReadFileTool)
+            .tool(ManageTicketsTool)
+            .event_handler(handler);
+
+        tickets.add(agent);
+        tickets.task(line);
+
+        let run_fut = tickets.run_dry();
+        tokio::pin!(run_fut);
+        let cancelled = tokio::select! {
+            _ = &mut run_fut => false,
+            _ = tokio::signal::ctrl_c() => {
+                cancel.store(true, Ordering::Relaxed);
+                eprintln!("\n{}cancelling…{}", style.dim, style.reset);
+                tokio::select! {
+                    _ = &mut run_fut => {}
+                    _ = tokio::signal::ctrl_c() => std::process::exit(130),
+                }
+                true
+            }
+        };
+
+        let stats = tickets.stats();
+        let outcome = match tickets.first().map(|t| t.status()) {
+            Some(Status::Done) => "completed",
+            Some(Status::Failed) => "failed",
+            _ if cancelled => "cancelled",
+            _ => "incomplete",
+        };
+
+        if cancelled {
+            println!();
+        }
+        eprintln!(
             "\n{}— {} · {} steps · {} in / {} out{}",
             style.dim,
-            outcome_label(&o.outcome),
-            o.statistics.steps,
-            o.statistics.input_tokens,
-            o.statistics.output_tokens,
+            outcome,
+            stats.steps(),
+            stats.input_tokens(),
+            stats.output_tokens(),
             style.reset,
-        ),
-        Err(e) => {
-            let msg = e.to_string();
-            let short = msg.split_once(':').map(|(h, _)| h).unwrap_or(&msg);
-            eprintln!("{}error:{} {short}", style.red, style.reset);
-        }
+        );
     }
-    std::process::exit(0);
 }
 
 fn announce_assistant(style: &Style) {
@@ -115,15 +122,7 @@ fn announce_assistant(style: &Style) {
     let _ = io::stdout().flush();
 }
 
-fn outcome_label(outcome: &Outcome) -> &'static str {
-    match outcome {
-        Outcome::Completed => "completed",
-        Outcome::Cancelled => "cancelled",
-        Outcome::Failed => "failed",
-    }
-}
-
-fn print_event(event: &Event, idle: &Arc<Notify>, style: &Style) {
+fn print_event(event: &Event, style: &Style) {
     match &event.kind {
         EventKind::TextChunkReceived { content } => {
             print!("{content}");
@@ -135,6 +134,7 @@ fn print_event(event: &Event, idle: &Arc<Notify>, style: &Style) {
             let arg = input["pattern"]
                 .as_str()
                 .or_else(|| input["path"].as_str())
+                .or_else(|| input["query"].as_str())
                 .unwrap_or("");
             if arg.is_empty() {
                 eprintln!("\n{}· {tool_name}{}", style.dim, style.reset);
@@ -145,24 +145,15 @@ fn print_event(event: &Event, idle: &Arc<Notify>, style: &Style) {
         EventKind::ToolCallFailed {
             tool_name, message, ..
         } => eprintln!("\n{}✗ {tool_name}: {message}{}", style.red, style.reset),
-        EventKind::RequestRetried {
-            attempt,
-            max_attempts,
-            message,
-            ..
-        } => {
-            let short = message.split_once(':').map(|(h, _)| h).unwrap_or(message);
-            eprintln!(
-                "\n{}↻ retry {attempt}/{max_attempts}: {short}{}",
-                style.yellow, style.reset,
-            );
-        }
         EventKind::RequestFailed { message, .. } => {
             let short = message.split_once(':').map(|(h, _)| h).unwrap_or(message);
             eprintln!("\n{}✗ request failed: {short}{}", style.red, style.reset);
         }
-        EventKind::AgentPaused | EventKind::AgentFinished { .. } => {
-            idle.notify_one();
+        EventKind::PolicyViolated { kind, limit } => {
+            eprintln!(
+                "\n{}✗ policy {kind:?} (limit {limit}){}",
+                style.red, style.reset
+            );
         }
         _ => {}
     }
@@ -182,7 +173,6 @@ struct Style {
     dim: &'static str,
     user: &'static str,
     agent: &'static str,
-    yellow: &'static str,
     red: &'static str,
     reset: &'static str,
 }
@@ -194,7 +184,6 @@ impl Style {
                 dim: "\x1b[2m",
                 user: "\x1b[1;33m",
                 agent: "\x1b[1;36m",
-                yellow: "\x1b[33m",
                 red: "\x1b[31m",
                 reset: "\x1b[0m",
             }
@@ -203,7 +192,6 @@ impl Style {
                 dim: "",
                 user: "",
                 agent: "",
-                yellow: "",
                 red: "",
                 reset: "",
             }

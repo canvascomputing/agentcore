@@ -1,140 +1,166 @@
 //! Divide-and-conquer sum of squares.
 //!
-//! Partitions `[1, N]` into K subranges, dispatches one worker agent per
-//! partition through a `Werk`, aggregates the partial sums, and verifies the
-//! result against the closed-form identity `N(N+1)(2N+1)/6`.
+//! Partitions `[1, N]` into K subranges, registers C worker agents on a
+//! shared `TicketSystem`, and enqueues K tickets. Workers pick tickets
+//! from the shared queue (Path B label routing), compute their partial
+//! sum via the `python` tool, and settle the ticket via
+//! `manage_tickets_tool` with a JSON result `{"idx", "partial_sum"}`
+//! validated against the ticket's schema. The driver aggregates after
+//! `run_dry().await` returns.
 //!
 //! Usage: divide-and-conquer [OPTIONS] [N]
 //!
 //! Example:
-//!   divide-and-conquer 10000                # default: 16 partitions, concurrency 8
+//!   divide-and-conquer 10000                # default: 16 partitions, 8 workers
 //!   divide-and-conquer -p 32 -c 16 100000
 
 use std::io::IsTerminal;
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use agentwerk::event::EventKind;
-use agentwerk::tools::{Tool, ToolResult};
-use agentwerk::{Agent, Event, Output, Werk};
+use agentwerk::providers::{from_env, model_from_env};
+use agentwerk::tools::ManageTicketsTool;
+use agentwerk::{
+    Agent, Event, EventKind, Runnable, Schema, Status, TicketSystem, Tool, ToolResult,
+};
 use serde_json::{json, Value};
 
-const ROLE_FILE: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/src/divide_and_conquer/prompts/worker.role.md",
-);
-const BEHAVIOR_FILE: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/src/divide_and_conquer/prompts/worker.behavior.md",
-);
+const ROLE: &str = include_str!("prompts/worker.role.md");
+const BEHAVIOR: &str = include_str!("prompts/worker.behavior.md");
 
 #[tokio::main]
 async fn main() {
     let args = parse_args();
-    let provider = agentwerk::provider::from_env().expect("LLM provider required");
-    let model = agentwerk::provider::model_from_env().expect("model name required");
+    let provider = from_env().expect("LLM provider required");
+    let model = model_from_env().expect("model name required");
     let style = Style::detect();
     let cancel = install_interrupt_signal();
 
     let partitions = partition(args.n, args.partitions);
-    let total_chunks = partitions.len();
-    let width = digit_width(total_chunks);
+    let total = partitions.len();
+    let width = digit_width(total);
 
-    print_intro(&args, total_chunks, &style);
+    print_intro(&args, total, &style);
 
-    let ranges: Arc<std::collections::HashMap<String, (u64, u64)>> = Arc::new(
-        partitions
-            .iter()
-            .enumerate()
-            .map(|(i, &(lo, hi))| (format!("chunk_{i}"), (lo, hi)))
-            .collect(),
-    );
+    let role = format!("{}\n\n{}", ROLE.trim(), BEHAVIOR.trim());
 
-    let log_style = style.clone();
-    let log_ranges = ranges.clone();
-    let log = Arc::new(move |event: Event| {
-        log_worker_event(&event, args.verbose, &log_style, &log_ranges)
-    });
-    let agents = partitions.iter().enumerate().map(|(i, (lo, hi))| {
-        build_worker(
-            i,
-            *lo,
-            *hi,
-            provider.clone(),
-            &model,
-            args.max_steps,
-            log.clone(),
-        )
-    });
+    let schema = Schema::parse(json!({
+        "type": "object",
+        "properties": {
+            "idx": {
+                "type": "integer",
+                "description": "Partition index, copied verbatim from the task"
+            },
+            "partial_sum": {
+                "type": "integer",
+                "description": "Exact integer value of the partial sum"
+            }
+        },
+        "required": ["idx", "partial_sum"],
+        "additionalProperties": false
+    }))
+    .expect("partial-sum schema is well-formed");
 
     let started = Instant::now();
-    let (producing, mut stream) = Werk::new()
-        .lines(args.concurrency)
-        .interrupt_signal(cancel)
-        .keep_working(std::iter::empty::<Agent>());
-    producing.staff_more(agents);
-    drop(producing);
+    let done = Arc::new(AtomicUsize::new(0));
 
-    let mut partial_sums: Vec<Option<i128>> = vec![None; total_chunks];
+    let log_style = style.clone();
+    let log_done = Arc::clone(&done);
+    let event_handler: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(move |e: Event| {
+        log_worker_event(&e, args.verbose, &log_style, total, width, &log_done)
+    });
+
+    let tickets = TicketSystem::new()
+        .interrupt_signal(Arc::clone(&cancel))
+        .max_steps(args.max_steps);
+
+    for (idx, (lo, hi)) in partitions.iter().enumerate() {
+        let body = format!(
+            "Compute the partial sum S = sum_{{k={lo}}}^{{{hi}}} k^2.\n\
+             lo={lo}\nhi={hi}\nidx={idx}",
+        );
+        tickets.task_schema_assigned(body, schema.clone(), "worker");
+    }
+
+    for w in 0..args.concurrency.min(total) {
+        let agent = Agent::new()
+            .name(format!("worker_{w}"))
+            .provider(Arc::clone(&provider))
+            .model(&model)
+            .role(&role)
+            .label("worker")
+            .tool(python_tool())
+            .tool(ManageTicketsTool)
+            .event_handler(Arc::clone(&event_handler));
+        tickets.add(agent);
+    }
+
+    tickets.run_dry().await;
+
+    let mut partials: Vec<Option<i128>> = vec![None; total];
     let mut failures = 0usize;
-    let mut done = 0usize;
+    for ticket in tickets.tickets() {
+        let idx_from_body = parse_idx_from_body(&ticket.task);
+        let parsed = ticket
+            .result()
+            .and_then(|r| serde_json::from_str::<Value>(r).ok())
+            .and_then(|v| {
+                let idx = v.get("idx").and_then(|x| x.as_u64()).map(|n| n as usize)?;
+                let sum = v.get("partial_sum").and_then(|x| x.as_i64()).map(i128::from)?;
+                Some((idx, sum))
+            });
 
-    while let Some((name, result)) = stream.next().await {
-        done += 1;
-        let progress = format!("{done:>width$}/{total_chunks}");
-        let i: usize = name
-            .strip_prefix("chunk_")
-            .and_then(|s| s.parse().ok())
-            .expect("worker name should be 'chunk_<i>'");
-        let (lo, hi) = partitions[i];
-        let range = format!("{lo:>9}‥{hi:<9}");
-
-        let output = match result {
-            Ok(output) => output,
-            Err(e) => {
-                failures += 1;
+        match (ticket.status(), parsed) {
+            (Status::Done, Some((idx, sum))) if Some(idx) == idx_from_body && idx < total => {
+                let (lo, hi) = partitions[idx];
+                let range = format!("{lo:>9}‥{hi:<9}");
                 eprintln!(
-                    "{red}│ {progress}  ✗ {name:<9}  {range}  werk error: {e}{reset}",
+                    "{dim}│{reset} chunk_{idx:<3}  {range}  {green}={reset} {sum:>20}",
+                    dim = style.dim,
+                    green = style.green,
+                    reset = style.reset,
+                );
+                partials[idx] = Some(sum);
+            }
+            _ => {
+                failures += 1;
+                let detail = match (ticket.status(), parsed) {
+                    (Status::Done, Some((idx, _))) => {
+                        format!("{:?}, idx mismatch: body={idx_from_body:?}, result={idx}", Status::Done)
+                    }
+                    (status, None) => format!(
+                        "{status:?}; result not parseable as {{idx, partial_sum}}"
+                    ),
+                    (status, Some(_)) => format!("{status:?}"),
+                };
+                let body_idx = idx_from_body
+                    .map(|i| format!("idx={i}"))
+                    .unwrap_or_else(|| "idx=?".into());
+                eprintln!(
+                    "{red}│{reset} {body_idx:<7}  ✗ {detail}",
                     red = style.red,
                     reset = style.reset,
                 );
-                continue;
             }
-        };
-
-        let Some(partial) = extract_partial_sum(&output.response) else {
-            failures += 1;
-            eprintln!(
-                "{red}│ {progress}  ✗ {name:<9}  {range}  {reason}{reset}",
-                reason = failure_reason(&output),
-                red = style.red,
-                reset = style.reset,
-            );
-            continue;
-        };
-
-        partial_sums[i] = Some(partial);
-        eprintln!(
-            "{dim}│{reset} {progress}  {green}✓{reset} {name:<9}  {range}  = {partial:>20}",
-            dim = style.dim,
-            green = style.green,
-            reset = style.reset,
-        );
+        }
     }
 
-    let total: i128 = partial_sums.iter().flatten().sum();
+    let total_sum: i128 = partials.iter().flatten().sum();
     let expected = closed_form(args.n);
     let elapsed = started.elapsed().as_secs_f64();
+    let stats = tickets.stats();
 
     eprintln!(
-        "{dim}└ aggregated in {elapsed:.1}s{reset}",
+        "{dim}└ aggregated in {elapsed:.1}s · {} done, {failures} failed · {} in / {} out tokens{reset}",
+        stats.tickets_done(),
+        stats.input_tokens(),
+        stats.output_tokens(),
         dim = style.dim,
         reset = style.reset,
     );
     println!();
-    println!("aggregated sum : {total}");
+    println!("aggregated sum : {total_sum}");
     println!("closed form    : {expected}");
 
     if failures > 0 {
@@ -145,10 +171,10 @@ async fn main() {
         );
         std::process::exit(1);
     }
-    if total != expected {
+    if total_sum != expected {
         println!(
             "{red}✗{reset} mismatch: off by {}",
-            total - expected,
+            total_sum - expected,
             red = style.red,
             reset = style.reset,
         );
@@ -164,18 +190,16 @@ async fn main() {
 fn print_intro(args: &CliArgs, total_chunks: usize, style: &Style) {
     let n = args.n;
     let k = total_chunks;
-    let c = args.concurrency;
+    let c = args.concurrency.min(total_chunks);
 
     eprintln!("divide-and-conquer   sum_{{k=1}}^{{{n}}} k^2   (verified via N(N+1)(2N+1)/6)\n",);
-    eprintln!("  Split [1, {n}] into {k} contiguous subranges and launch one LLM agent per");
+    eprintln!("  Split [1, {n}] into {k} contiguous subranges and enqueue one ticket per");
+    eprintln!("  subrange. {c} worker agent(s) share the queue, each calling a `python` tool");
+    eprintln!("  to compute its partial sum exactly. Workers settle their tickets via");
+    eprintln!("  `manage_tickets_tool` with `{{\"idx\", \"partial_sum\"}}`; the driver aggregates");
+    eprintln!("  after the queue settles and verifies against the closed-form total.\n");
     eprintln!(
-        "  subrange. Each worker calls a `python` tool with {{\"code\": \"...\"}} to compute"
-    );
-    eprintln!("  its partial sum exactly, then returns JSON {{\"partial_sum\": N}}. Up to {c}");
-    eprintln!("  agents run concurrently; results stream back in completion order and the");
-    eprintln!("  aggregate is checked against the closed-form total.\n");
-    eprintln!(
-        "{dim}┌ {k} partitions · up to {c} in flight{reset}",
+        "{dim}┌ {k} partitions · {c} worker(s) sharing the queue{reset}",
         dim = style.dim,
         reset = style.reset,
     );
@@ -191,39 +215,6 @@ fn install_interrupt_signal() -> Arc<AtomicBool> {
     cancel
 }
 
-fn build_worker(
-    i: usize,
-    lo: u64,
-    hi: u64,
-    provider: Arc<dyn agentwerk::Provider>,
-    model: &str,
-    max_steps: u32,
-    event_handler: Arc<dyn Fn(Event) + Send + Sync>,
-) -> Agent {
-    let schema = json!({
-        "type": "object",
-        "properties": {
-            "partial_sum": {
-                "type": "integer",
-                "description": "Exact integer value of the partial sum"
-            }
-        },
-        "required": ["partial_sum"]
-    });
-
-    Agent::new()
-        .name(format!("chunk_{i}"))
-        .provider(provider)
-        .model(model)
-        .role(Path::new(ROLE_FILE))
-        .behavior(Path::new(BEHAVIOR_FILE))
-        .work(format!("Compute S = sum_{{k={lo}}}^{{{hi}}} k^2."))
-        .tool(python_tool())
-        .contract(schema)
-        .max_steps(max_steps)
-        .event_handler(event_handler)
-}
-
 fn python_tool() -> Tool {
     Tool::new(
         "python",
@@ -231,7 +222,7 @@ fn python_tool() -> Tool {
          `python3 -c`. Return value is the snippet's stdout, trimmed. Use this \
          for exact integer arithmetic.",
     )
-    .contract(json!({
+    .schema(json!({
         "type": "object",
         "properties": {
             "code": {
@@ -277,26 +268,33 @@ fn python_tool() -> Tool {
     })
 }
 
-fn extract_partial_sum(response: &Option<Value>) -> Option<i128> {
-    response
-        .as_ref()?
-        .get("partial_sum")?
-        .as_i64()
-        .map(i128::from)
+fn parse_idx_from_body(task: &Value) -> Option<usize> {
+    task.as_str()
+        .and_then(|s| s.lines().find_map(|l| l.strip_prefix("idx=")))
+        .and_then(|n| n.trim().parse().ok())
 }
 
 fn log_worker_event(
     event: &Event,
     verbose: bool,
     style: &Style,
-    ranges: &std::collections::HashMap<String, (u64, u64)>,
+    total: usize,
+    width: usize,
+    done: &Arc<AtomicUsize>,
 ) {
     let agent = &event.agent_name;
     match &event.kind {
-        EventKind::AgentStarted { .. } => {
-            let range = format_range(ranges.get(agent));
+        EventKind::TicketClaimed { key } => {
             eprintln!(
-                "{dim}│       ▶ {agent:<9}  {range}  dispatched{reset}",
+                "{dim}│       ▶ {agent:<10} {key} dispatched{reset}",
+                dim = style.dim,
+                reset = style.reset,
+            );
+        }
+        EventKind::TicketFinished { key } => {
+            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+            eprintln!(
+                "{dim}│ {n:>width$}/{total} ▾ {agent:<10} {key} finished{reset}",
                 dim = style.dim,
                 reset = style.reset,
             );
@@ -329,25 +327,12 @@ fn log_worker_event(
             red = style.red,
             reset = style.reset,
         ),
+        EventKind::PolicyViolated { kind, limit } => eprintln!(
+            "{red}│    {agent} ✗ policy {kind:?} (limit {limit}){reset}",
+            red = style.red,
+            reset = style.reset,
+        ),
         _ => {}
-    }
-}
-
-fn format_range(range: Option<&(u64, u64)>) -> String {
-    match range {
-        Some(&(lo, hi)) => format!("{lo:>9}‥{hi:<9}"),
-        None => " ".repeat(19),
-    }
-}
-
-fn failure_reason(output: &Output) -> String {
-    let outcome = format!("{:?}", output.outcome);
-    let steps = output.statistics.steps;
-    let preview = truncate(output.response_raw.trim(), 100);
-    if preview.is_empty() {
-        format!("[{outcome}, {steps} steps, no final text]")
-    } else {
-        format!("[{outcome}, {steps} steps] final text: {preview}")
     }
 }
 
@@ -490,9 +475,9 @@ fn print_help() {
     eprintln!("Divide-and-conquer sum of squares.\n");
     eprintln!("Usage: divide-and-conquer [OPTIONS] [N]\n");
     eprintln!("Options:");
-    eprintln!("  -p, --partitions <K>   Number of worker agents (default: 16)");
-    eprintln!("  -c, --concurrency <N>  Max in-flight agents (default: 8)");
-    eprintln!("      --max-steps <N>    Per-agent step cap (default: 8)");
+    eprintln!("  -p, --partitions <K>   Number of ticket partitions (default: 16)");
+    eprintln!("  -c, --concurrency <N>  Number of worker agents sharing the queue (default: 8)");
+    eprintln!("      --max-steps <N>    Per-system step cap (default: 8)");
     eprintln!("  -v, --verbose          Stream per-worker tool calls");
     eprintln!("  -h, --help             Show this help\n");
     eprintln!("Examples:");

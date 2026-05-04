@@ -1,7 +1,7 @@
 //! Run-time stats. One [`Stats`] struct of atomic counters records every
 //! observable event and exposes inherent read accessors. Each domain
 //! interacts with its own write-only protocol — [`LoopStats`] for the
-//! agent loop, [`TicketStats`] for the ticket system — so a domain
+//! agent loop, `TicketStats` for the ticket system — so a domain
 //! cannot reach another domain's events. The wiring is internal: the
 //! caller never sees `Stats` at construction time, only afterwards
 //! through `TicketSystem::stats()`.

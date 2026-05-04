@@ -8,9 +8,9 @@ use std::time::SystemTime;
 
 use serde_json::Value;
 
-use crate::error::Result;
-use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
-use crate::tools::tool_file::ToolFile;
+use super::tool::{ToolContext, ToolLike, ToolResult};
+use super::tool_file::ToolFile;
+use crate::providers::ProviderResult as Result;
 
 /// Find files matching a glob pattern under the working directory. Read-only.
 /// Sorted by modification time (newest first); capped at 200 results.
@@ -113,19 +113,17 @@ fn collect_matches(
             .to_string();
         let rel_segments: Vec<&str> = rel_path.split('/').collect();
 
-        if glob_matches(pattern_segments, &rel_segments) {
-            if !is_dir {
-                let mtime = path
-                    .metadata()
-                    .and_then(|m| m.modified())
-                    .unwrap_or(SystemTime::UNIX_EPOCH);
-                results.push((path.clone(), mtime));
-            }
+        if glob_matches(pattern_segments, &rel_segments) && !is_dir {
+            let mtime = path
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            results.push((path.clone(), mtime));
         }
 
         // Recurse into directories if pattern contains ** or more segments remain
         if is_dir {
-            let has_doublestar = pattern_segments.iter().any(|s| *s == "**");
+            let has_doublestar = pattern_segments.contains(&"**");
             let could_match_deeper = pattern_segments.len() > 1 || has_doublestar;
             if could_match_deeper {
                 collect_matches(&path, base, pattern_segments, results);
@@ -216,7 +214,6 @@ fn seg_match_recursive(pat: &[u8], txt: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::tool::ToolContext;
     use std::fs;
 
     fn test_ctx(path: &std::path::Path) -> ToolContext {
@@ -239,7 +236,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 3);
         for line in &lines {
@@ -264,7 +261,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), MAX_RESULTS);
     }

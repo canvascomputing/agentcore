@@ -7,11 +7,6 @@ use serde_json::Value;
 /// strings — the renderer joins them with whatever separator the target
 /// format requires (newlines for cautions, blank lines for paragraphs,
 /// bullets for lists). Authors edit content; the framework owns formatting.
-///
-/// The shape is the public contract for `.tool.json` files: a tool can be
-/// authored as JSON and turned into a [`Tool`](crate::Tool) via
-/// [`Tool::from_tool_file`](crate::Tool::from_tool_file). The 12 built-in
-/// tools all ship as `{name}.tool.json` files alongside their Rust sources.
 #[derive(Debug, Deserialize)]
 pub struct ToolFile {
     pub name: String,
@@ -36,9 +31,9 @@ impl ToolFile {
         serde_json::from_str(json).expect("invalid tool definition JSON")
     }
 
-    /// Render the prose sections as markdown — what the LLM sees today.
-    /// Sections are emitted only when non-empty; empty sections do not
-    /// produce stray headings or trailing blank lines.
+    /// Render the prose sections as markdown. Sections are emitted only when
+    /// non-empty; empty sections do not produce stray headings or trailing
+    /// blank lines.
     pub fn render_markdown(&self) -> String {
         let mut sections: Vec<String> = Vec::new();
 

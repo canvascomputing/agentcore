@@ -1,3 +1,0 @@
-- MUST call the `agent_tool` exactly once with `{"agent": "pricing_researcher", "description": "fetch pricing", "task": "Fetch current model pricing from all provider websites"}`.
-- MUST emit structured output listing every model returned, with fields `provider`, `model_id`, `input_per_million`, `output_per_million`.
-- NEVER add explanation around the structured output.

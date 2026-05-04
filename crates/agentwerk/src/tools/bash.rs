@@ -7,10 +7,10 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::error::Result;
-use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
-use crate::tools::tool_file::ToolFile;
-use crate::tools::util::{glob_match, run_shell_command};
+use super::tool::{ToolContext, ToolLike, ToolResult};
+use super::tool_file::ToolFile;
+use super::util::{glob_match, run_shell_command};
+use crate::providers::ProviderResult as Result;
 
 fn tool_file() -> &'static ToolFile {
     static FILE: OnceLock<ToolFile> = OnceLock::new();
@@ -35,7 +35,7 @@ fn description_base() -> &'static str {
 ///
 /// ```
 /// use agentwerk::tools::BashTool;
-/// use agentwerk::Agent;
+/// use agentwerk::agents::agent::Agent;
 ///
 /// Agent::new().tool(BashTool::new("git", "git *"));
 /// ```
@@ -44,7 +44,7 @@ fn description_base() -> &'static str {
 ///
 /// ```
 /// use agentwerk::tools::BashTool;
-/// use agentwerk::Agent;
+/// use agentwerk::agents::agent::Agent;
 ///
 /// Agent::new().tool(BashTool::unrestricted());
 /// ```
@@ -180,7 +180,10 @@ When issuing multiple commands:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::test_tool_context;
+
+    fn test_tool_context() -> ToolContext {
+        ToolContext::new(std::env::current_dir().unwrap())
+    }
 
     #[test]
     fn bash_tool_defaults() {
@@ -220,7 +223,7 @@ mod tests {
         let ctx = test_tool_context();
         let input = serde_json::json!({ "command": "echo hello" });
         let result = tool.call(input, &ctx).await.unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(content.contains("hello"));
         assert!(matches!(result, ToolResult::Success(_)));
     }
@@ -231,7 +234,7 @@ mod tests {
         let ctx = test_tool_context();
         let input = serde_json::json!({ "command": "sleep 10", "timeout_ms": 100 });
         let result = tool.call(input, &ctx).await.unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(matches!(result, ToolResult::Error(_)));
         assert!(content.contains("timed out"));
     }
@@ -251,7 +254,7 @@ mod tests {
         let ctx = test_tool_context();
         let input = serde_json::json!({ "command": "rm -rf /" });
         let result = tool.call(input, &ctx).await.unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(matches!(result, ToolResult::Error(_)));
         assert!(content.contains("does not match"));
     }
@@ -262,7 +265,7 @@ mod tests {
         let ctx = test_tool_context();
         let input = serde_json::json!({ "command": "echo hello" });
         let result = tool.call(input, &ctx).await.unwrap();
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(matches!(result, ToolResult::Success(_)));
         assert!(content.contains("hello"));
     }

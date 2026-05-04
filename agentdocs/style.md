@@ -6,7 +6,7 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 
 **Only headline types live at the crate root.**
 
-- The current root holds nine items: `Error`, `Result`, `Model`, `Provider`, `Tool`, `Agent`, `Werk`, `Event`, `Output`.
+- The current root re-exports cover the canonical caller surface: `Agent`, `Runnable`, `TicketSystem`, `Ticket`, `Status`, `Stats`; `Tool`, `ToolContext`, `ToolLike`, `ToolResult`; `Event`, `EventKind`, `PolicyKind`, `ToolFailureKind`, `default_logger`; `Schema`, `SchemaParseError`, `SchemaViolation`, `format_violations`.
 - A new item earns a root slot only when it opens a new dimension of the public API.
 - Name collisions at the root are forbidden; `ToolResult` next to `Result` is not acceptable.
 - Every other type lives under its domain module.
@@ -15,17 +15,17 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 
 **Types live next to the abstraction, owner, or protocol they belong to.**
 
-- Concrete implementations live with their abstraction: `AnthropicProvider` under `provider::`, `BashTool` under `tools::`.
-- Companion types and handles live with their owner: `AgentWorking` under `agent::`, `WerkProducing` under `werk::`.
-- Domain errors live with their domain: `ProviderError`, `ToolError`, `AgentError`.
-- Wire-protocol types live with the protocol: `ModelRequest`, `Message`, `TokenUsage` under `provider::`.
-- Free functions live in their module, never at the crate root: `now_millis()` in `util`, `run_loop()` in `agent::loop`.
+- Concrete implementations live with their abstraction: `AnthropicProvider` under `providers::`, `BashTool` under `tools::`.
+- Companion types and handles live with their owner: `Ticket`, `Status`, and `TicketError` under `agents::tickets`; `Stats` and `LoopStats` under `agents::stats`.
+- Domain errors live with their domain: `ProviderError`, `ToolError`.
+- Wire-protocol types live with the protocol: `ModelRequest`, `Message`, `TokenUsage` under `providers::`.
+- Free functions live in their module, never at the crate root: `from_env()` in `providers::environment`, helpers in `tools::util`.
 
 ## Name disambiguation
 
 **Names are disambiguated through content, not through redundant prefixes.**
 
-- Specific compound names stand alone: `LoopState`, `AgentSpec`, `OutputSchema`.
+- Specific compound names stand alone: `TicketSystem`, `LoopStats`, `PolicyKind`.
 - Vendor prefixes are used only to distinguish concrete providers or tools: `AnthropicProvider`, `OpenAiProvider`, `LiteLlmProvider`.
 - Acronyms follow Rust API guidelines: `OpenAi`, not `OpenAI`.
 - Two structs may not share a bare name within one module; both stay qualified.
@@ -87,16 +87,16 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 
 **Counters use a bare plural noun. No `_count` suffix on fields or on methods that return a count.**
 
-- `Statistics` sets the vocabulary: `requests`, `tool_calls`, `steps`, `input_tokens`, `output_tokens`.
-- Event payloads follow suit: `tokens` on `ContextCompacted`, not `token_count`.
-- Accessor methods mirror the field form: `MockProvider::requests()` returns the count of captured requests.
+- `Stats` sets the vocabulary: `requests`, `tool_calls`, `steps`, `input_tokens`, `output_tokens`.
+- Event payloads follow suit: `usage` on `TokensReported` carries token counts, not a `token_count`.
+- Accessor methods mirror the field form: `Stats::requests()` returns the count of recorded requests.
 - The `_count` suffix is reserved for the rare case where the plural would clash with a sibling collection field on the same type.
 
 ## Builders
 
 **Builder methods are bare nouns. No `with_` prefix.**
 
-- Examples: `.name()`, `.model()`, `.tool()`, `.hire()`, `.read_only()`.
+- Examples: `.name()`, `.model()`, `.tool()`, `.label()`, `.read_only()`.
 - The `with_` prefix is used only when a bare name clashes with a trait method, such as `with_description` on `BashTool`.
 
 ## Constructors
@@ -119,12 +119,11 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 
 Permitted:
 
-- **Ambient state** has no receiver: `now_millis()`, `format_current_date()`, `generate_agent_name()` in `util`.
+- **Ambient state** has no receiver: timestamp helpers and similar utilities in `tools::util` or a sibling helper module.
 - **Foreign-type constructors** cannot use an inherent `impl`: `build_client()` returns a `reqwest::Client`.
-- **Module entry points** drive multiple types: `run_loop()` in `agent::loop`, `from_env()` in `provider::environment`.
+- **Module entry points** drive multiple types: `run_main_loop()` in `agents::r#loop`, `from_env()` in `providers::environment`.
 - **Higher-order utilities** take a closure and wrap it: `with_file_lock(path, || ...)`.
-- **Shared algorithm helpers** are called by two or more sibling types in the same module: `glob_match()` used by `BashTool` and `GrepTool`; `env_or()` shared by every provider.
-- **Test fixtures** live in `testutil`: `text_response()`, `tool_response()`, `test_tool_context()`.
+- **Shared algorithm helpers** are called by two or more sibling types in the same module: helpers in `tools::util` shared across filesystem tools; provider-side helpers shared across concrete providers.
 
 Forbidden:
 
@@ -133,7 +132,7 @@ Forbidden:
 - A free helper called from exactly one private method. Make it a private method or a nested `fn`.
 - An associated function that takes no `self` and does not return `Self` or `Result<Self>`. Move it to the module as a free function. Exception: a per-variant static lookup where the `Type::` prefix partitions otherwise-colliding names, such as `AnthropicProvider::lookup_context_window_size` vs `OpenAiProvider::lookup_context_window_size`.
 
-Naming: `snake_case`. Tool structs keep the `{Name}Tool` suffix: `ReadFileTool`, `BashTool`, `AgentTool`.
+Naming: `snake_case`. Tool structs keep the `{Name}Tool` suffix: `ReadFileTool`, `BashTool`, `ManageTicketsTool`.
 
 ## Doc comments (`///`)
 
@@ -188,24 +187,24 @@ Module `//!`:
 
 ```rust
 // GOOD: states what the file contributes
-//! The execution loop. Runs a compiled `Agent` step by step until it yields an `Output`.
+//! Multi-agent loop driver. Each agent runs in its own tokio task, reading the shared ticket store.
 
 // BAD: lists contents
-//! Agent execution loop.
-//! - `AgentSpec`: compiled agent definition.
-//! - `LoopRuntime`: externals.
+//! Agent loop.
+//! - `Runnable`: trait.
+//! - `run_main_loop`: entry point.
 ```
 
 Doc comment `///`:
 
 ```rust
 // GOOD: purpose and invariant
-/// The agent's compiled definition. `model: None` means inherit from parent.
-pub(crate) struct AgentSpec { ... }
+/// A ticket. Caller-settable fields: `task`, `labels`, `schema`, `assignee`. System-managed fields are stamped at insertion time.
+pub struct Ticket { ... }
 
 // BAD: restates the name
-/// The model field.
-pub model: Option<Model>,
+/// The task field.
+pub task: serde_json::Value,
 ```
 
 Function `///`:
@@ -257,9 +256,9 @@ counter += 1;
 
 ## README framing
 
-**The Werk/factory-worker analogy is allowed in the README only.**
+**The factory-worker analogy is allowed in the README only.**
 
-- Section openers and orchestration-tool descriptions may use the analogy.
+- Section openers and orchestration descriptions may use the analogy.
 - Method tables, policy descriptions, and built-in I/O tools stay direct.
 - Code, doc comments, and agentdocs do not use the analogy.
 

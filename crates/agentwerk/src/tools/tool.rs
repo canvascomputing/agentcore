@@ -1,47 +1,57 @@
-//! Core tool infrastructure: the `Tool` trait, the ad-hoc `Tool` struct, and the registry the loop consults before each provider call.
+//! Core tool infrastructure: the `ToolLike` trait, the ad-hoc `Tool` struct, and the registry the loop consults before each provider call.
 
 use std::collections::HashSet;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agent::{AgentSpec, LoopRuntime};
-use crate::error::{Error, Result};
-use crate::provider::types::ContentBlock;
-use crate::tools::error::ToolError;
+use crate::agents::tickets::TicketSystem;
+use crate::providers::types::ContentBlock;
+use crate::providers::{ProviderResult, ProviderToolDefinition};
 
-/// Context passed to tool execution. `runtime` and `caller_spec` are ambient
-/// internals: `AgentTool` and `ToolSearchTool` read them to reach the
-/// run's provider, handlers, and inbox, and to inherit the caller's resolved
-/// model. External tool authors do not use them.
+use super::error::ToolError;
+
+/// Context passed to tool execution. `tool_registry` and the ticket-side
+/// fields are ambient internals — only the built-in `ToolSearchTool` and
+/// the ticket tools (`Read`/`Write`/`Manage`) read them. External tool
+/// authors use `working_dir`, `interrupt_signal`, and
+/// `wait_for_cancel`.
 #[derive(Clone)]
 pub struct ToolContext {
     /// Working directory the tool runs in. Tools that touch the filesystem
     /// should resolve relative paths against this.
     pub working_dir: PathBuf,
+    pub interrupt_signal: Arc<AtomicBool>,
     pub(crate) tool_registry: Option<Arc<ToolRegistry>>,
-    pub(crate) runtime: Option<Arc<LoopRuntime>>,
-    pub(crate) caller_spec: Option<Arc<AgentSpec>>,
-    pub(crate) interrupt_signal: Arc<AtomicBool>,
+    pub(crate) ticket_system: Option<Arc<TicketSystem>>,
+    pub(crate) agent_name: Option<String>,
 }
 
 impl ToolContext {
-    /// A fresh context rooted at `working_dir`, with no runtime or
-    /// caller spec. Tools that call sub-agents or search the registry need a
-    /// context installed by the loop; bare contexts are for standalone use.
+    /// A fresh context rooted at `working_dir`, with no registry handle and
+    /// a fresh never-firing cancel signal. Tools that search the registry
+    /// need a context installed by the loop; bare contexts are for
+    /// standalone use and tests.
     pub fn new(working_dir: PathBuf) -> Self {
         Self {
             working_dir,
-            tool_registry: None,
-            runtime: None,
-            caller_spec: None,
             interrupt_signal: Arc::new(AtomicBool::new(false)),
+            tool_registry: None,
+            ticket_system: None,
+            agent_name: None,
         }
+    }
+
+    /// Override the cancel signal — typically the one shared by the loop's
+    /// `TicketSystem` so tools cooperate with run-level cancellation.
+    pub fn interrupt_signal(mut self, signal: Arc<AtomicBool>) -> Self {
+        self.interrupt_signal = signal;
+        self
     }
 
     pub(crate) fn registry(mut self, registry: Arc<ToolRegistry>) -> Self {
@@ -49,29 +59,42 @@ impl ToolContext {
         self
     }
 
-    pub(crate) fn runtime(mut self, runtime: Arc<LoopRuntime>) -> Self {
-        self.interrupt_signal = runtime.interrupt_signal.clone();
-        self.runtime = Some(runtime);
+    pub(crate) fn ticket_system(mut self, system: Arc<TicketSystem>) -> Self {
+        self.ticket_system = Some(system);
         self
     }
 
-    pub(crate) fn caller_spec(mut self, spec: Arc<AgentSpec>) -> Self {
-        self.caller_spec = Some(spec);
+    pub(crate) fn agent_name(mut self, name: String) -> Self {
+        self.agent_name = Some(name);
         self
+    }
+
+    pub(crate) fn ticket_system_handle(&self) -> Option<&Arc<TicketSystem>> {
+        self.ticket_system.as_ref()
+    }
+
+    pub(crate) fn agent_name_str(&self) -> Option<&str> {
+        self.agent_name.as_deref()
     }
 
     /// Future that resolves once the current run is cancelled. Pair with
-    /// `tokio::select!` to drop the losing branch on Ctrl-C; dropped futures
+    /// `tokio::select!` to drop the losing branch on cancel; dropped futures
     /// cascade to `reqwest` aborts and (with `kill_on_drop(true)`) subprocess
-    /// kills. When the context is not attached to a running loop, the future
-    /// stays pending forever and the `select!` degrades to a plain await.
+    /// kills. With a fresh context the future stays pending forever and the
+    /// `select!` degrades to a plain await.
     pub async fn wait_for_cancel(&self) {
-        crate::util::wait_for_cancel(&self.interrupt_signal).await;
+        const POLL: std::time::Duration = std::time::Duration::from_millis(50);
+        loop {
+            if self.interrupt_signal.load(Ordering::Relaxed) {
+                return;
+            }
+            tokio::time::sleep(POLL).await;
+        }
     }
 
     pub(crate) fn mark_tool_discovered(&self, name: &str) {
-        if let Some(runtime) = self.runtime.as_ref() {
-            runtime.tool_registry.mark_discovered(name);
+        if let Some(registry) = self.tool_registry.as_ref() {
+            registry.mark_discovered(name);
         }
     }
 }
@@ -80,23 +103,10 @@ impl std::fmt::Debug for ToolContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ToolContext")
             .field("working_dir", &self.working_dir)
-            .field("tool_registry", &self.tool_registry)
-            .field("has_runtime", &self.runtime.is_some())
-            .field("has_caller_spec", &self.caller_spec.is_some())
+            .field("has_registry", &self.tool_registry.is_some())
+            .field("has_ticket_system", &self.ticket_system.is_some())
             .finish()
     }
-}
-
-/// Tool definition sent to the provider as part of the `tools` parameter.
-/// Built from a [`Tool`]'s `name`, `description`, and `input_schema`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolDefinition {
-    /// Unique name the model uses when calling the tool.
-    pub name: String,
-    /// Human-readable description shown to the model.
-    pub description: String,
-    /// JSON Schema describing the tool's arguments.
-    pub input_schema: Value,
 }
 
 /// A tool call extracted from a provider response.
@@ -110,15 +120,22 @@ pub struct ToolCall {
     pub input: Value,
 }
 
-/// Outcome of a tool execution: a success payload or an error message. Both
-/// variants flow back to the model as ordinary content — [`ToolResult::Error`]
-/// lets the model correct its arguments and try again.
-#[derive(Debug, Clone)]
+/// Outcome of a tool execution: a success payload, a generic error
+/// message, or a schema-validation failure. All three flow back to
+/// the model as ordinary content blocks; the [`SchemaError`] variant
+/// is distinguished so the loop can apply
+/// `policies.max_schema_retries` to it specifically.
+///
+/// [`SchemaError`]: ToolResult::SchemaError
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolResult {
     /// Tool ran and produced this text payload.
     Success(String),
     /// Tool failed; the message is shown to the model so it can recover.
     Error(String),
+    /// Tool rejected the input because it failed schema validation.
+    /// The message lists the violations so the model can fix them.
+    SchemaError(String),
 }
 
 impl ToolResult {
@@ -131,13 +148,20 @@ impl ToolResult {
     pub fn error(content: impl Into<String>) -> Self {
         Self::Error(content.into())
     }
+
+    /// Build a schema-validation failure. Mapped into
+    /// [`ToolError::SchemaValidationFailed`] by the registry and
+    /// counted against `policies.max_schema_retries`.
+    pub fn schema_error(content: impl Into<String>) -> Self {
+        Self::SchemaError(content.into())
+    }
 }
 
 /// The core tool interface. Object-safe via boxed futures.
 ///
 /// Implement this on any type you want an agent to be able to invoke. For
 /// ad-hoc tools defined inline, use the [`Tool`] struct's builder
-/// (`Tool::new(name, description).contract(...).handler(...)`).
+/// (`Tool::new(name, description).schema(...).handler(...)`).
 pub trait ToolLike: Send + Sync {
     /// Unique name the model uses to call the tool.
     fn name(&self) -> &str;
@@ -155,8 +179,8 @@ pub trait ToolLike: Send + Sync {
     }
 
     /// Whether the tool's full definition is hidden until it is discovered
-    /// via [`ToolSearchTool`](crate::tools::ToolSearchTool). Deferred tools appear
-    /// to the model as name-only stubs. Default: `false`.
+    /// via `ToolSearchTool`. Deferred tools appear to the model as
+    /// name-only stubs. Default: `false`.
     fn should_defer(&self) -> bool {
         false
     }
@@ -168,12 +192,12 @@ pub trait ToolLike: Send + Sync {
         &'a self,
         input: Value,
         ctx: &'a ToolContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ToolResult>> + Send + 'a>>;
 }
 
 /// Registry of tools available to an agent. Also owns the set of deferred
-/// tools discovered during the run: cloning the registry (e.g. when the spec
-/// registry is cloned into a fresh `LoopRuntime`) starts with an empty set.
+/// tools discovered during the run: cloning the registry starts with an
+/// empty set.
 pub(crate) struct ToolRegistry {
     pub(crate) tools: Vec<Arc<dyn ToolLike>>,
     pub(crate) discovered: Mutex<HashSet<String>>,
@@ -188,14 +212,16 @@ impl std::fmt::Debug for ToolRegistry {
     }
 }
 
-impl ToolRegistry {
-    pub(crate) fn new() -> Self {
+impl Default for ToolRegistry {
+    fn default() -> Self {
         Self {
             tools: Vec::new(),
             discovered: Mutex::new(HashSet::new()),
         }
     }
+}
 
+impl ToolRegistry {
     pub(crate) fn register(&mut self, tool: impl ToolLike + 'static) {
         self.tools.push(Arc::new(tool));
     }
@@ -209,20 +235,21 @@ impl ToolRegistry {
     }
 
     /// Tool definitions sent to the provider. Deferred tools that haven't
-    /// been discovered yet get name-only stubs; all others get full definitions.
-    pub(crate) fn definitions(&self) -> Vec<ToolDefinition> {
+    /// been discovered yet get name-only stubs; all others get full
+    /// definitions.
+    pub(crate) fn definitions(&self) -> Vec<ProviderToolDefinition> {
         let discovered = self.discovered.lock().unwrap();
         self.tools
             .iter()
             .map(|t| {
                 if t.should_defer() && !discovered.contains(t.name()) {
-                    ToolDefinition {
+                    ProviderToolDefinition {
                         name: t.name().to_string(),
                         description: String::new(),
                         input_schema: serde_json::json!({}),
                     }
                 } else {
-                    ToolDefinition {
+                    ProviderToolDefinition {
                         name: t.name().to_string(),
                         description: t.description().to_string(),
                         input_schema: t.input_schema(),
@@ -232,11 +259,53 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Execute tool calls with concurrent read-only batching and serial write
-    /// execution.
+    /// Search tools by query string. Returns matches sorted by relevance
+    /// (highest first).
+    pub(crate) fn search(&self, query: &str) -> Vec<ProviderToolDefinition> {
+        let query_lower = query.to_lowercase();
+        let mut scored: Vec<(ProviderToolDefinition, u32)> = self
+            .tools
+            .iter()
+            .filter_map(|t| {
+                let mut score = 0u32;
+                let name = t.name().to_lowercase();
+                let desc = t.description().to_lowercase();
+
+                if name == query_lower {
+                    score += 100;
+                } else if name.contains(&query_lower) {
+                    score += 50;
+                }
+
+                if desc.contains(&query_lower) {
+                    score += 25;
+                }
+
+                if score > 0 {
+                    Some((
+                        ProviderToolDefinition {
+                            name: t.name().to_string(),
+                            description: t.description().to_string(),
+                            input_schema: t.input_schema(),
+                        },
+                        score,
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.into_iter().map(|(def, _)| def).collect()
+    }
+
+    /// Execute tool calls with concurrent read-only batching and serial
+    /// write execution.
     ///
-    /// Returns `(ContentBlock, Result<String, ToolError>)` pairs so the caller
-    /// can read both the model-visible result block and the typed verdict.
+    /// Returns `(ContentBlock, Result<String, ToolError>)` pairs so the
+    /// caller can read both the model-visible result block and the typed
+    /// verdict.
     pub(crate) async fn execute(
         &self,
         calls: &[ToolCall],
@@ -283,48 +352,6 @@ impl ToolRegistry {
 
         results
     }
-
-    /// Search tools by query string. Returns matches sorted by relevance (highest first).
-    pub(crate) fn search(&self, query: &str) -> Vec<ToolDefinition> {
-        let query_lower = query.to_lowercase();
-        let mut scored: Vec<(ToolDefinition, u32)> = self
-            .tools
-            .iter()
-            .filter_map(|t| {
-                let mut score = 0u32;
-                let name = t.name().to_lowercase();
-                let desc = t.description().to_lowercase();
-
-                // Exact name match
-                if name == query_lower {
-                    score += 100;
-                } else if name.contains(&query_lower) {
-                    score += 50;
-                }
-
-                // Description match
-                if desc.contains(&query_lower) {
-                    score += 25;
-                }
-
-                if score > 0 {
-                    Some((
-                        ToolDefinition {
-                            name: t.name().to_string(),
-                            description: t.description().to_string(),
-                            input_schema: t.input_schema(),
-                        },
-                        score,
-                    ))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
-        scored.into_iter().map(|(def, _)| def).collect()
-    }
 }
 
 impl Clone for ToolRegistry {
@@ -337,7 +364,10 @@ impl Clone for ToolRegistry {
 }
 
 type ToolHandler = Box<
-    dyn Fn(Value, &ToolContext) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + '_>>
+    dyn Fn(
+            Value,
+            &ToolContext,
+        ) -> Pin<Box<dyn Future<Output = ProviderResult<ToolResult>> + Send + '_>>
         + Send
         + Sync,
 >;
@@ -347,12 +377,10 @@ type ToolHandler = Box<
 /// Chain builder methods to configure, then hand the tool to an agent:
 /// ```ignore
 /// let greet = Tool::new("greet", "Say hello")
-///     .contract(serde_json::json!({"type": "object", "properties": {}}))
+///     .schema(serde_json::json!({"type": "object", "properties": {}}))
 ///     .handler(|_input, _ctx| Box::pin(async {
 ///         Ok(ToolResult::success("hi"))
 ///     }));
-///
-/// Agent::new().tool(greet);
 /// ```
 ///
 /// A handler is required — omitting [`Tool::handler`] causes the first
@@ -361,20 +389,20 @@ type ToolHandler = Box<
 pub struct Tool {
     name: String,
     description: String,
-    contract: Value,
+    schema: Value,
     read_only: bool,
     defer: bool,
     handler: Option<ToolHandler>,
 }
 
 impl Tool {
-    /// A new tool with an empty-object input contract and no handler. Set the
+    /// A new tool with an empty-object input schema and no handler. Set the
     /// handler with [`Tool::handler`] before handing the tool to an agent.
     pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             description: description.into(),
-            contract: serde_json::json!({"type": "object", "properties": {}}),
+            schema: serde_json::json!({"type": "object", "properties": {}}),
             read_only: false,
             defer: false,
             handler: None,
@@ -384,25 +412,18 @@ impl Tool {
     /// Construct a `Tool` from a `.tool.json` definition. The returned tool
     /// has its name, rendered description, input schema, and read-only flag
     /// populated from the JSON; attach a handler via [`Tool::handler`]
-    /// before registering it with an agent. Panics on malformed JSON — same
-    /// fail-fast posture as `include_str!()` of an embedded definition.
-    ///
-    /// ```ignore
-    /// let tool = Tool::from_tool_file(include_str!("my_tool.tool.json"))
-    ///     .handler(|input, _ctx| Box::pin(async move {
-    ///         Ok(ToolResult::success("done"))
-    ///     }));
-    /// ```
+    /// before registering it with an agent. Panics on malformed JSON.
     pub fn from_tool_file(json: &str) -> Self {
-        let tf = crate::tools::tool_file::ToolFile::parse(json);
+        let tf = super::tool_file::ToolFile::parse(json);
         Tool::new(tf.name.clone(), tf.render_markdown())
-            .contract(tf.input_schema.clone())
+            .schema(tf.input_schema.clone())
             .read_only(tf.read_only)
     }
 
-    /// Replace the input contract (JSON Schema). Defaults to an empty-object schema.
-    pub fn contract(mut self, contract: Value) -> Self {
-        self.contract = contract;
+    /// Replace the input schema (JSON Schema). Defaults to an empty-object
+    /// schema.
+    pub fn schema(mut self, schema: Value) -> Self {
+        self.schema = schema;
         self
     }
 
@@ -414,7 +435,7 @@ impl Tool {
     }
 
     /// Hide the tool's full definition until it is discovered via
-    /// [`ToolSearchTool`](crate::tools::ToolSearchTool).
+    /// `ToolSearchTool`.
     pub fn defer(mut self, defer: bool) -> Self {
         self.defer = defer;
         self
@@ -424,7 +445,10 @@ impl Tool {
     /// Required: omitting this causes the first invocation to panic.
     pub fn handler<F>(mut self, f: F) -> Self
     where
-        F: Fn(Value, &ToolContext) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + '_>>
+        F: Fn(
+                Value,
+                &ToolContext,
+            ) -> Pin<Box<dyn Future<Output = ProviderResult<ToolResult>> + Send + '_>>
             + Send
             + Sync
             + 'static,
@@ -444,7 +468,7 @@ impl ToolLike for Tool {
     }
 
     fn input_schema(&self) -> Value {
-        self.contract.clone()
+        self.schema.clone()
     }
 
     fn is_read_only(&self) -> bool {
@@ -459,7 +483,7 @@ impl ToolLike for Tool {
         &'a self,
         input: Value,
         ctx: &'a ToolContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ToolResult>> + Send + 'a>> {
         let handler = self
             .handler
             .as_ref()
@@ -485,7 +509,10 @@ async fn invoke(
             tool_name: name.into(),
             message: s,
         }),
-        Err(Error::Tool(e)) => Err(e),
+        Ok(ToolResult::SchemaError(s)) => Err(ToolError::SchemaValidationFailed {
+            tool_name: name.into(),
+            message: s,
+        }),
         Err(e) => Err(ToolError::ExecutionFailed {
             tool_name: name.into(),
             message: e.to_string(),
@@ -518,7 +545,7 @@ fn partition_tool_calls(calls: &[ToolCall], registry: &ToolRegistry) -> Vec<Tool
     let mut concurrent_batch: Vec<ToolCall> = Vec::new();
 
     for call in calls {
-        let is_read_only = registry.get(&call.name).map_or(false, |t| t.is_read_only());
+        let is_read_only = registry.get(&call.name).is_some_and(|t| t.is_read_only());
 
         if is_read_only {
             concurrent_batch.push(call.clone());
@@ -540,14 +567,87 @@ fn partition_tool_calls(calls: &[ToolCall], registry: &ToolRegistry) -> Vec<Tool
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::*;
+
+    /// Tiny mock used across registry tests.
+    struct MockTool {
+        name: String,
+        read_only: bool,
+        result: String,
+    }
+
+    impl MockTool {
+        fn new(name: &str, read_only: bool, result: &str) -> Self {
+            Self {
+                name: name.into(),
+                read_only,
+                result: result.into(),
+            }
+        }
+    }
+
+    impl ToolLike for MockTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn description(&self) -> &str {
+            "mock"
+        }
+        fn input_schema(&self) -> Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn is_read_only(&self) -> bool {
+            self.read_only
+        }
+        fn call<'a>(
+            &'a self,
+            _input: Value,
+            _ctx: &'a ToolContext,
+        ) -> Pin<Box<dyn Future<Output = ProviderResult<ToolResult>> + Send + 'a>> {
+            let result = self.result.clone();
+            Box::pin(async move { Ok(ToolResult::success(result)) })
+        }
+    }
+
+    struct DeferredMockTool {
+        name: String,
+    }
+
+    impl DeferredMockTool {
+        fn new(name: &str) -> Self {
+            Self { name: name.into() }
+        }
+    }
+
+    impl ToolLike for DeferredMockTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn description(&self) -> &str {
+            "deferred mock"
+        }
+        fn input_schema(&self) -> Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn should_defer(&self) -> bool {
+            true
+        }
+        fn call<'a>(
+            &'a self,
+            _input: Value,
+            _ctx: &'a ToolContext,
+        ) -> Pin<Box<dyn Future<Output = ProviderResult<ToolResult>> + Send + 'a>> {
+            Box::pin(async { Ok(ToolResult::success("ok")) })
+        }
+    }
+
+    fn test_ctx() -> ToolContext {
+        ToolContext::new(std::env::current_dir().unwrap())
+    }
 
     #[test]
     fn registry_register_and_get() {
-        let mut registry = ToolRegistry::new();
-        let tool = MockTool::new("read_file", true, "file contents");
-        registry.register(tool);
-
+        let mut registry = ToolRegistry::default();
+        registry.register(MockTool::new("read_file", true, "file contents"));
         assert!(registry.get("read_file").is_some());
         assert!(registry.get("nonexistent").is_none());
     }
@@ -577,7 +677,7 @@ mod tests {
 
     #[test]
     fn registry_definitions() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::default();
         registry.register(MockTool::new("read", true, "ok"));
         registry.register(MockTool::new("write", false, "ok"));
 
@@ -589,18 +689,16 @@ mod tests {
 
     #[test]
     fn registry_definitions_deferred() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::default();
         registry.register(MockTool::new("always_visible", true, "ok"));
         registry.register(DeferredMockTool::new("deferred_tool"));
 
-        // Without discovery: deferred tool has empty definition
         let defs = registry.definitions();
         assert_eq!(defs.len(), 2);
         let deferred = defs.iter().find(|d| d.name == "deferred_tool").unwrap();
         assert!(deferred.description.is_empty());
         assert_eq!(deferred.input_schema, serde_json::json!({}));
 
-        // With discovery: deferred tool has full definition
         registry.mark_discovered("deferred_tool");
         let defs = registry.definitions();
         let deferred = defs.iter().find(|d| d.name == "deferred_tool").unwrap();
@@ -609,7 +707,7 @@ mod tests {
 
     #[test]
     fn registry_search_by_name() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::default();
         registry.register(MockTool::new("read_file", true, "ok"));
         registry.register(MockTool::new("write_file", false, "ok"));
 
@@ -620,7 +718,7 @@ mod tests {
 
     #[test]
     fn registry_clone() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::default();
         registry.register(MockTool::new("t", true, "ok"));
         let cloned = registry.clone();
         assert_eq!(cloned.definitions().len(), 1);
@@ -628,8 +726,8 @@ mod tests {
 
     #[tokio::test]
     async fn execute_unknown_tool_returns_error() {
-        let registry = ToolRegistry::new();
-        let ctx = test_tool_context();
+        let registry = ToolRegistry::default();
+        let ctx = test_ctx();
         let calls = vec![ToolCall {
             id: "c1".into(),
             name: "nonexistent".into(),
@@ -651,10 +749,10 @@ mod tests {
 
     #[tokio::test]
     async fn execute_read_only_tools_concurrently() {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::default();
         registry.register(MockTool::new("read1", true, "result1"));
         registry.register(MockTool::new("read2", true, "result2"));
-        let ctx = test_tool_context();
+        let ctx = test_ctx();
 
         let calls = vec![
             ToolCall {
@@ -675,10 +773,9 @@ mod tests {
 
     #[tokio::test]
     async fn execute_serial_tool() {
-        let mut registry = ToolRegistry::new();
-        let tool = MockTool::new("write_file", false, "written");
-        registry.register(tool);
-        let ctx = test_tool_context();
+        let mut registry = ToolRegistry::default();
+        registry.register(MockTool::new("write_file", false, "written"));
+        let ctx = test_ctx();
 
         let calls = vec![ToolCall {
             id: "c1".into(),
@@ -702,7 +799,7 @@ mod tests {
     #[test]
     fn tool_basic() {
         let tool = Tool::new("echo", "Echoes input")
-            .contract(
+            .schema(
                 serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}}),
             )
             .read_only(true)
@@ -730,7 +827,7 @@ mod tests {
     #[should_panic(expected = "requires a handler")]
     async fn tool_panics_without_handler() {
         let tool = Tool::new("no_handler", "missing");
-        let ctx = test_tool_context();
+        let ctx = test_ctx();
         let _ = tool.call(serde_json::json!({}), &ctx).await;
     }
 }

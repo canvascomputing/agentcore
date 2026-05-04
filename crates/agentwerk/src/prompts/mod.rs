@@ -1,30 +1,22 @@
-//! Default behavior, runtime context block, structured-output directive, and the typed `Section` + `PromptBuilder` that compose them into a prompt envelope per the canonical Context → Role → Behavior → Tools → Task order.
+//! Default context block, and the `Section` / `PromptBuilder` that
+//! composes the role prompt and (caller-supplied) directives.
 
 mod builder;
 mod section;
 
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-#[allow(unused_imports)] // Prompt is part of the builder's surface; not yet read internally
-pub(crate) use builder::{Prompt, PromptBuilder};
+pub use builder::{Prompt, PromptBuilder};
 pub(crate) use section::Section;
-
-use crate::util::format_current_date;
-
-/// Default behavioral directives appended to the system prompt after the
-/// role prompt. Override with `Agent::behavior()`.
-pub const DEFAULT_BEHAVIOR: &str = include_str!("default.behavior.md");
 
 const DEFAULT_CONTEXT_TEMPLATE: &str = include_str!("default.context.md");
 
-/// Build the default context prompt: a `## Context` markdown block with the
-/// working directory, platform, OS version, and date. Sent as the first user
-/// message when `.context(...)` is not set. Override with `Agent::context()`;
-/// inspect with `Agent::default_context()`.
-///
-/// The `## Context` heading is added by the `Section` view-model — the
-/// template file holds only the bullet body.
-pub(crate) fn default_context(working_dir: &Path) -> String {
+/// Build the default context body: a `## Context` markdown block with the
+/// working directory, platform, OS version, and date. Pass the result to
+/// `Agent::context(...)` if you want this block as the agent's first user
+/// message.
+pub fn default_context(working_dir: &Path) -> String {
     let working_dir = working_dir.display().to_string();
     let platform = std::env::consts::OS;
     let os_version = std::process::Command::new("uname")
@@ -41,18 +33,26 @@ pub(crate) fn default_context(working_dir: &Path) -> String {
     Section::context(body).render()
 }
 
-pub(crate) const MAX_TOKENS_CONTINUATION: &str =
-    include_str!("max-tokens-continuation.directive.md");
+/// Today's date as `YYYY-MM-DD`, via the civil-from-days algorithm.
+fn format_current_date() -> String {
+    let epoch_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
 
-pub(crate) const STRUCTURED_OUTPUT_INSTRUCTION: &str =
-    include_str!("structured-output.directive.md");
+    let days = epoch_secs / 86400;
+    let z = days + 719468;
+    let era = z / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year + 1 } else { year };
 
-const CONTRACT_RETRY_TEMPLATE: &str = include_str!("contract-retry.directive.md");
-
-/// Render the corrective user message sent after a contract violation.
-/// `{detail}` placeholder is filled with the validator's specific complaint.
-pub(crate) fn contract_retry(detail: &str) -> String {
-    CONTRACT_RETRY_TEMPLATE.replace("{detail}", detail)
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 #[cfg(test)]

@@ -1,62 +1,38 @@
-//! Structured events the loop emits so callers can observe a run (steps, tool calls, compactions, completion) without wrapping the loop itself.
+//! Structured events the loop emits so callers can observe a run
+//! without wrapping the loop itself.
 
 use std::sync::Arc;
 
-use crate::output::Outcome;
-use crate::provider::{RequestErrorKind, TokenUsage};
-
-/// Why context compaction fired.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompactReason {
-    /// Estimated next-request tokens crossed the model's compact threshold
-    /// before sending; compaction ran ahead of any failure.
-    Proactive,
-    /// A request failed mid-run with a context-overflow error from the
-    /// provider; compaction ran in response.
-    Reactive,
-}
+use crate::providers::{RequestErrorKind, TokenUsage};
 
 /// Which configured policy a [`EventKind::PolicyViolated`] refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyKind {
-    /// `max_steps` — the agentic loop iteration cap.
+    /// `max_steps` — the step cap across all agents.
     Steps,
     /// `max_input_tokens` — cumulative request-side token cap.
     InputTokens,
     /// `max_output_tokens` — cumulative reply-side token cap.
     OutputTokens,
-    /// `max_contract_retries` — structured-output validation retry cap.
-    ContractMisses,
+    /// `max_schema_retries` — consecutive schema-validation failures
+    /// while processing one ticket. Resets after every successful
+    /// schema-checked tool call.
+    MaxSchemaRetries,
 }
 
-/// Categorical discriminant for [`EventKind::ToolCallFailed`]. One variant
-/// per [`ToolError`](crate::tools::ToolError) case, payloads stripped.
+/// Categorical discriminant for [`EventKind::ToolCallFailed`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolFailureKind {
     /// The registry had no tool with that name.
     ToolNotFound,
     /// The tool was invoked but its execution raised an error.
     ExecutionFailed,
+    /// A schema-checked tool rejected its input. Counted against
+    /// `policies.max_schema_retries` by the loop.
+    SchemaValidationFailed,
 }
 
 /// Observation emitted during an agent run.
-///
-/// Events are an out-of-band observation channel, distinct from the
-/// [`Output`](crate::Output) returned by `.task(...).await`. Observers
-/// (loggers, UIs, tracers) receive the event stream; the caller of
-/// `.task(...).await` receives the final result.
-///
-/// Terminal-path invariants (verified in the loop):
-/// - `AgentFinished` fires on every normal termination path — `Ok(Output)`
-///   with `Outcome::Completed`, `Cancelled`, or `Failed`. Its `outcome` field
-///   matches `output.outcome`. This holds even after `RequestFailed`: the loop
-///   folds the failure into `Outcome::Failed` and emits `AgentFinished` last.
-/// - `.task(...).await` returns `Err(...)` only for pre-flight failures
-///   (missing provider, unreadable prompt file, model not set); those never
-///   emit `AgentFinished` because the loop never started.
-/// - `ToolCallFailed` is never terminal for the run: more events follow as
-///   the agent continues. The tool's error string goes back to the model as
-///   a tool-result message.
 #[derive(Debug, Clone)]
 pub struct Event {
     /// Name of the agent that produced this event.
@@ -67,172 +43,69 @@ pub struct Event {
 
 impl Event {
     pub(crate) fn new(agent_name: impl Into<String>, kind: EventKind) -> Self {
-        Self {
-            agent_name: agent_name.into(),
-            kind,
-        }
+        Self { agent_name: agent_name.into(), kind }
     }
 }
 
-/// Default event handler: logs lifecycle and tool activity to stderr.
-///
-/// Installed automatically when [`Agent`] is built without `.event_handler(...)`.
-/// Prints one line per notable event; chatty events (streamed text, token usage,
-/// step/request boundaries, paused/resumed) are skipped. Call `.silent()` on the
-/// agent to opt out, or pass a custom handler for richer formatting.
-///
-/// [`Agent`]: crate::agent::Agent
+/// Categorical discriminant of [`Event`].
+#[derive(Debug, Clone)]
+pub enum EventKind {
+    /// Agent claimed a ticket and began working on it.
+    TicketClaimed { key: String },
+    /// Agent finished processing a ticket. Status transition is the agent's
+    /// responsibility via ticket tools; this fires regardless of outcome.
+    TicketFinished { key: String },
+    /// Provider request began.
+    RequestStarted { model: String },
+    /// Provider request finished successfully.
+    RequestFinished { model: String },
+    /// Provider request failed. The run is about to stop for this ticket.
+    RequestFailed { kind: RequestErrorKind, message: String },
+    /// Provider reported token counts for the last request.
+    TokensReported { model: String, usage: TokenUsage },
+    /// A streamed text chunk arrived from the provider.
+    TextChunkReceived { content: String },
+    /// Tool invocation began.
+    ToolCallStarted { tool_name: String, call_id: String, input: serde_json::Value },
+    /// Tool invocation succeeded.
+    ToolCallFinished { tool_name: String, call_id: String, output: String },
+    /// Tool invocation failed. The error is sent back to the model as a
+    /// tool-result message; the run continues.
+    ToolCallFailed { tool_name: String, call_id: String, message: String, kind: ToolFailureKind },
+    /// A configured policy was exceeded; the run is about to stop.
+    PolicyViolated { kind: PolicyKind, limit: u64 },
+}
+
+/// Default observer. Prints ticket lifecycle, tool activity, policy
+/// violations, and request failures to stderr. Quiet variants
+/// (token counts, streaming chunks, request start/finish) are dropped.
 pub fn default_logger() -> Arc<dyn Fn(Event) + Send + Sync> {
     Arc::new(|event: Event| {
         let agent = &event.agent_name;
         match &event.kind {
-            EventKind::AgentStarted => {
-                eprintln!("[{agent}] start");
+            EventKind::TicketClaimed { key } => {
+                eprintln!("[{agent}] claimed {key}");
             }
-            EventKind::AgentFinished { steps, outcome } => {
-                eprintln!("[{agent}] done ({steps} steps, {outcome:?})");
+            EventKind::TicketFinished { key } => {
+                eprintln!("[{agent}] finished {key}");
             }
-            EventKind::ToolCallStarted {
-                tool_name, input, ..
-            } => {
-                eprintln!("[{agent}] → {tool_name}({})", compact_input(input));
+            EventKind::ToolCallStarted { tool_name, input, .. } => {
+                eprintln!("[{agent}] {tool_name}({})", compact_input(input));
             }
-            EventKind::ToolCallFailed {
-                tool_name,
-                message,
-                kind,
-                ..
-            } => {
-                eprintln!("[{agent}] ✗ {tool_name} ({kind:?}): {message}");
+            EventKind::ToolCallFailed { tool_name, message, kind, .. } => {
+                eprintln!("[{agent}] {tool_name} failed ({kind:?}): {message}");
             }
-            EventKind::ContextCompacted {
-                step,
-                tokens,
-                threshold,
-                reason,
-            } => {
-                eprintln!("[{agent}] compact step={step} {tokens}/{threshold} ({reason:?})");
-            }
-            EventKind::OutputTruncated { step } => {
-                eprintln!("[{agent}] truncated step={step}");
+            EventKind::RequestFailed { message, .. } => {
+                eprintln!("[{agent}] request failed: {message}");
             }
             EventKind::PolicyViolated { kind, limit } => {
                 eprintln!("[{agent}] policy violated: {kind:?} limit={limit}");
-            }
-            EventKind::ContractMissed {
-                attempt,
-                max_attempts,
-                path,
-                message,
-            } => {
-                eprintln!(
-                    "[{agent}] ↻ contract miss {attempt}/{max_attempts} at {path}: {message}"
-                );
-            }
-            EventKind::RequestRetried {
-                attempt,
-                max_attempts,
-                message,
-                ..
-            } => {
-                eprintln!("[{agent}] ↻ retry {attempt}/{max_attempts} ({message})");
-            }
-            EventKind::RequestFailed { message, .. } => {
-                eprintln!("[{agent}] ✗ request failed: {message}");
             }
             _ => {}
         }
     })
 }
 
-/// What an [`Event`] reports. Variants are grouped by lifecycle (`Agent*`),
-/// step (`Step*`, `Request*`), tool (`ToolCall*`), context (`OutputTruncated`,
-/// `ContextCompacted`, `*PolicyViolated`), and pause/resume.
-#[derive(Debug, Clone)]
-pub enum EventKind {
-    /// Agent run began.
-    AgentStarted,
-    /// Agent run finished on an `Ok` path. `steps` is the loop iteration
-    /// count; `outcome` is the exit reason.
-    AgentFinished { steps: u32, outcome: Outcome },
-    /// Agentic loop step began.
-    StepStarted { step: u32 },
-    /// Agentic loop step finished.
-    StepFinished { step: u32 },
-    /// Tool invocation began.
-    ToolCallStarted {
-        tool_name: String,
-        call_id: String,
-        input: serde_json::Value,
-    },
-    /// Tool invocation succeeded.
-    ToolCallFinished {
-        tool_name: String,
-        call_id: String,
-        output: String,
-    },
-    /// Tool invocation failed. The error is sent back to the model as a
-    /// tool-result message; the run continues. `kind` distinguishes in-band
-    /// failures (model-fixable) from infrastructure failures (harness-level).
-    ToolCallFailed {
-        tool_name: String,
-        call_id: String,
-        message: String,
-        kind: ToolFailureKind,
-    },
-    /// Provider reported token counts for the last request.
-    TokensReported { model: String, usage: TokenUsage },
-    /// A streamed text chunk arrived from the provider.
-    TextChunkReceived { content: String },
-    /// Provider request began.
-    RequestStarted { model: String },
-    /// Provider request finished.
-    RequestFinished { model: String },
-    /// A transient provider error triggered a retry. `attempt` is the upcoming
-    /// attempt number out of `max_attempts`; `kind` classifies the failure.
-    RequestRetried {
-        attempt: u32,
-        max_attempts: u32,
-        kind: RequestErrorKind,
-        message: String,
-    },
-    /// Provider request failed after exhausting retries. The run returns
-    /// `Err(...)`; no `AgentFinished` follows.
-    RequestFailed {
-        kind: RequestErrorKind,
-        message: String,
-    },
-    /// The model's response was cut off at the configured length cap.
-    OutputTruncated { step: u32 },
-    /// Conversation history was compacted to stay within the model's window.
-    ContextCompacted {
-        step: u32,
-        tokens: u64,
-        threshold: u64,
-        reason: CompactReason,
-    },
-    /// A configured policy (`max_steps`, `max_input_tokens`, `max_output_tokens`,
-    /// `max_contract_retries`) was exceeded; the run is about to terminate with
-    /// `Outcome::Failed`.
-    PolicyViolated { kind: PolicyKind, limit: u64 },
-    /// The model's terminal reply failed output-schema validation and the loop
-    /// is sending a corrective message. `attempt` is the upcoming attempt
-    /// number out of `max_attempts`; `path` and `message` come from the
-    /// validator.
-    ContractMissed {
-        attempt: u32,
-        max_attempts: u32,
-        path: String,
-        message: String,
-    },
-    /// A keep-alive agent finished its current instruction and is parked
-    /// waiting for the next message.
-    AgentPaused,
-    /// A keep-alive agent received a new instruction and resumed.
-    AgentResumed,
-}
-
-/// Render a tool input as a single line, truncated to ~80 chars.
 fn compact_input(input: &serde_json::Value) -> String {
     let one_line = input.to_string().replace('\n', " ");
     const MAX: usize = 80;
@@ -247,124 +120,61 @@ fn compact_input(input: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::TokenUsage;
 
-    /// Every variant must survive the default logger without panicking.
-    /// Exhaustive match keeps this test honest when a new variant is added.
-    #[test]
-    fn default_logger_handles_every_variant() {
-        let logger = default_logger();
-        let every: Vec<EventKind> = vec![
-            EventKind::AgentStarted,
-            EventKind::AgentFinished {
-                steps: 3,
-                outcome: Outcome::Completed,
-            },
-            EventKind::StepStarted { step: 1 },
-            EventKind::StepFinished { step: 1 },
-            EventKind::ToolCallStarted {
-                tool_name: "glob".into(),
-                call_id: "c1".into(),
-                input: serde_json::json!({"pattern": "**/*.rs"}),
-            },
-            EventKind::ToolCallFinished {
-                tool_name: "glob".into(),
-                call_id: "c1".into(),
-                output: "ok".into(),
-            },
-            EventKind::ToolCallFailed {
-                tool_name: "glob".into(),
-                call_id: "c1".into(),
-                message: "Unknown tool: glob".into(),
-                kind: ToolFailureKind::ToolNotFound,
-            },
-            EventKind::ToolCallFailed {
-                tool_name: "glob".into(),
-                call_id: "c2".into(),
-                message: "panic".into(),
-                kind: ToolFailureKind::ExecutionFailed,
+    fn all_variants() -> Vec<EventKind> {
+        vec![
+            EventKind::TicketClaimed { key: "T-1".into() },
+            EventKind::TicketFinished { key: "T-1".into() },
+            EventKind::RequestStarted { model: "m".into() },
+            EventKind::RequestFinished { model: "m".into() },
+            EventKind::RequestFailed {
+                kind: RequestErrorKind::ConnectionFailed,
+                message: "timeout".into(),
             },
             EventKind::TokensReported {
                 model: "m".into(),
                 usage: TokenUsage::default(),
             },
-            EventKind::TextChunkReceived {
-                content: "hi".into(),
+            EventKind::TextChunkReceived { content: "hello".into() },
+            EventKind::ToolCallStarted {
+                tool_name: "bash".into(),
+                call_id: "c1".into(),
+                input: serde_json::json!({"cmd": "ls"}),
             },
-            EventKind::RequestStarted { model: "m".into() },
-            EventKind::RequestFinished { model: "m".into() },
-            EventKind::RequestRetried {
-                attempt: 1,
-                max_attempts: 5,
-                kind: RequestErrorKind::RateLimited,
-                message: "rate limited".into(),
+            EventKind::ToolCallFinished {
+                tool_name: "bash".into(),
+                call_id: "c1".into(),
+                output: "file.txt".into(),
             },
-            EventKind::RequestFailed {
-                kind: RequestErrorKind::AuthenticationFailed,
-                message: "auth failed".into(),
+            EventKind::ToolCallFailed {
+                tool_name: "bash".into(),
+                call_id: "c1".into(),
+                message: "not found".into(),
+                kind: ToolFailureKind::ToolNotFound,
             },
-            EventKind::OutputTruncated { step: 2 },
-            EventKind::ContextCompacted {
-                step: 2,
-                tokens: 9_000,
-                threshold: 10_000,
-                reason: CompactReason::Proactive,
+            EventKind::ToolCallFailed {
+                tool_name: "manage_tickets_tool".into(),
+                call_id: "c2".into(),
+                message: "Schema validation failed".into(),
+                kind: ToolFailureKind::SchemaValidationFailed,
             },
             EventKind::PolicyViolated {
                 kind: PolicyKind::Steps,
-                limit: 5,
+                limit: 10,
             },
-            EventKind::ContractMissed {
-                attempt: 1,
-                max_attempts: 3,
-                path: "root.answer".into(),
-                message: "expected integer".into(),
+            EventKind::PolicyViolated {
+                kind: PolicyKind::MaxSchemaRetries,
+                limit: 10,
             },
-            EventKind::AgentPaused,
-            EventKind::AgentResumed,
-        ];
-
-        // If a new variant is added to EventKind, this match fails to
-        // compile and the test list above must be extended.
-        for kind in &every {
-            match kind {
-                EventKind::AgentStarted
-                | EventKind::AgentFinished { .. }
-                | EventKind::StepStarted { .. }
-                | EventKind::StepFinished { .. }
-                | EventKind::ToolCallStarted { .. }
-                | EventKind::ToolCallFinished { .. }
-                | EventKind::ToolCallFailed { .. }
-                | EventKind::TokensReported { .. }
-                | EventKind::TextChunkReceived { .. }
-                | EventKind::RequestStarted { .. }
-                | EventKind::RequestFinished { .. }
-                | EventKind::RequestRetried { .. }
-                | EventKind::RequestFailed { .. }
-                | EventKind::OutputTruncated { .. }
-                | EventKind::ContextCompacted { .. }
-                | EventKind::PolicyViolated { .. }
-                | EventKind::ContractMissed { .. }
-                | EventKind::AgentPaused
-                | EventKind::AgentResumed => {}
-            }
-        }
-
-        for kind in every {
-            logger(Event::new("test", kind));
-        }
+        ]
     }
 
     #[test]
-    fn compact_input_truncates_long_json() {
-        let long = serde_json::json!({ "text": "a".repeat(200) });
-        let s = compact_input(&long);
-        assert!(s.chars().count() <= 81); // 80 + ellipsis
-        assert!(s.ends_with('…'));
-    }
-
-    #[test]
-    fn compact_input_keeps_short_json_unchanged() {
-        let short = serde_json::json!({ "p": "x" });
-        assert_eq!(compact_input(&short), "{\"p\":\"x\"}");
+    fn default_logger_handles_every_variant() {
+        let logger = default_logger();
+        for kind in all_variants() {
+            logger(Event::new("agent", kind));
+        }
     }
 }

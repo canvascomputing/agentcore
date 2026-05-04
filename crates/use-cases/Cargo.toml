@@ -6,26 +6,13 @@ license = "MIT"
 
 [dependencies]
 agentwerk = { path = "../agentwerk" }
-agentwerk2 = { path = "../agentwerk2" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json"] }
 
 [[bin]]
-name = "project-scanner"
-path = "src/project_scanner/main.rs"
-
-[[bin]]
-name = "deep-research"
-path = "src/deep_research/main.rs"
-
-[[bin]]
 name = "deep-research-v2"
 path = "src/deep_research_v2/main.rs"
-
-[[bin]]
-name = "model-pricing-tracker"
-path = "src/model_pricing_tracker/main.rs"
 
 [[bin]]
 name = "terminal-repl"

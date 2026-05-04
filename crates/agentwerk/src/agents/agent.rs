@@ -17,6 +17,7 @@ use crate::prompts::{PromptBuilder, Section};
 use crate::providers::{Provider, ProviderToolDefinition};
 use crate::tools::{ToolLike, ToolRegistry};
 
+use super::r#loop::Runnable;
 use super::tickets::{insert_ticket, Ticket, TicketSystem};
 
 static AGENT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -275,6 +276,19 @@ impl Agent {
             .upgrade()
             .expect("Agent::task requires a bound TicketSystem");
         insert_ticket(&sys, ticket, self.name.clone());
+    }
+
+    /// Drive the agent's bound `TicketSystem` until the queue settles
+    /// (drain mode). Returns the most recent `Done` ticket's `result`,
+    /// or an empty string if no ticket reached `Done`. For runs where
+    /// tickets keep arriving over time, drop down to
+    /// `TicketSystem::run` directly.
+    pub async fn run(&self) -> String {
+        let sys = self
+            .ticket_system
+            .upgrade()
+            .expect("Agent::run requires a bound TicketSystem");
+        Runnable::run_dry(&*sys).await
     }
 }
 

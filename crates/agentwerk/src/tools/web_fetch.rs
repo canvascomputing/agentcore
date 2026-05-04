@@ -6,9 +6,9 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
-use crate::error::Result;
-use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
-use crate::tools::tool_file::ToolFile;
+use super::tool::{ToolContext, ToolLike, ToolResult};
+use super::tool_file::ToolFile;
+use crate::providers::ProviderResult as Result;
 
 const MAX_URL_LENGTH: usize = 2000;
 const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;

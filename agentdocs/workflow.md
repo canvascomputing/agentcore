@@ -15,8 +15,8 @@ Commands used to build, test, release, and run example agents.
 
 **Test layout and writing rules live in [testing.md](testing.md).**
 
-- `make test` runs unit tests bundled by `tests/unit.rs`.
-- `make test_integration` runs integration tests bundled by `tests/integration.rs`.
+- `make test` runs `cargo test --workspace --lib` (every crate's inline `#[cfg(test)] mod tests`).
+- `make test_integration` runs the live-provider tests bundled by `tests/integration.rs`.
 
 ## Release
 
@@ -33,5 +33,6 @@ Commands used to build, test, release, and run example agents.
 
 - Source is in `crates/use-cases/src/`.
 - Run an example with `make use_case name=<name>`.
-- `project_scanner` scans a project directory.
-- `deep_research` runs multi-agent research with web search.
+- `terminal-repl` is a per-turn interactive chat with streaming output.
+- `divide-and-conquer` partitions an arithmetic problem across worker agents sharing one ticket queue.
+- `deep-research-v2` is a two-phase research pipeline with web search (requires `BRAVE_API_KEY`).

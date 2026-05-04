@@ -6,9 +6,10 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
-use crate::error::Result;
-use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
-use crate::tools::tool_file::ToolFile;
+use crate::providers::ProviderResult;
+
+use super::tool::{ToolContext, ToolLike, ToolResult};
+use super::tool_file::ToolFile;
 
 /// Read a file with optional line offset and limit. Returns line-numbered
 /// text so the model can reference specific lines in subsequent edits.
@@ -46,7 +47,7 @@ impl ToolLike for ReadFileTool {
         &'a self,
         input: Value,
         ctx: &'a ToolContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<ToolResult>> + Send + 'a>> {
         Box::pin(async move {
             let path = match input["path"].as_str() {
                 Some(p) => p,
@@ -72,7 +73,7 @@ impl ToolLike for ReadFileTool {
                 .map(|l| l as usize)
                 .unwrap_or(lines.len().saturating_sub(offset - 1));
 
-            let start = offset - 1; // convert to 0-based
+            let start = offset - 1;
             let end = (start + limit).min(lines.len());
 
             let mut result = String::new();
@@ -138,7 +139,7 @@ mod tests {
         for case in cases {
             let result = tool.call(case.input, &ctx).await.unwrap();
             let is_error = matches!(result, ToolResult::Error(_));
-            let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+            let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
             assert_eq!(
                 is_error, case.expect_error,
                 "case '{}': expected is_error={}, got is_error={}",

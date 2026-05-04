@@ -6,9 +6,9 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
-use crate::error::Result;
-use crate::tools::tool::{ToolContext, ToolLike, ToolResult};
-use crate::tools::tool_file::ToolFile;
+use super::tool::{ToolContext, ToolLike, ToolResult};
+use super::tool_file::ToolFile;
+use crate::providers::ProviderResult as Result;
 
 /// Create or overwrite a file. Destructive: existing content is replaced.
 /// Not read-only, so the loop runs it serially.
@@ -102,7 +102,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (ToolResult::Success(content) | ToolResult::Error(content)) = &result;
+        let (ToolResult::Success(content) | ToolResult::Error(content) | ToolResult::SchemaError(content)) = &result;
         assert!(content.contains("File written: new.txt"));
 
         let written = std::fs::read_to_string(dir.path().join("new.txt")).unwrap();

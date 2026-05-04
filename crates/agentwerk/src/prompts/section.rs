@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 /// One section of an assembled prompt. Knows whether it should render under a
-/// `## Heading` (Context) or as bare body (Role, Behavior, Directive). Keeping
+/// `## Heading` (Context) or as bare body (Role, Directive). Keeping
 /// this concern here means the source `.md` files contain only body content —
 /// the structural markdown is added by the builder.
 #[derive(Debug, Clone)]
@@ -20,13 +20,6 @@ impl Section {
         }
     }
 
-    pub fn behavior(body: impl Into<Cow<'static, str>>) -> Self {
-        Self {
-            heading: None,
-            body: body.into(),
-        }
-    }
-
     pub fn context(body: impl Into<Cow<'static, str>>) -> Self {
         Self {
             heading: Some("Context"),
@@ -34,7 +27,7 @@ impl Section {
         }
     }
 
-    #[allow(dead_code)] // referenced from PromptBuilder::work; only test code exercises it today
+    #[allow(dead_code)]
     pub fn work(body: impl Into<Cow<'static, str>>) -> Self {
         Self {
             heading: None,
@@ -42,6 +35,7 @@ impl Section {
         }
     }
 
+    #[allow(dead_code)]
     pub fn directive(body: impl Into<Cow<'static, str>>) -> Self {
         Self {
             heading: None,
@@ -79,7 +73,7 @@ mod tests {
 
     #[test]
     fn surrounding_newlines_in_body_are_trimmed() {
-        let s = Section::behavior("\n\n- MUST do the thing.\n\n");
+        let s = Section::role("\n\n- MUST do the thing.\n\n");
         assert_eq!(s.render(), "- MUST do the thing.");
     }
 }

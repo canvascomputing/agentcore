@@ -2,130 +2,88 @@
 
 The invariants that shape how code fits together. Layout says where code lives; this file says why the seams are where they are.
 
-## Builder, spec, loop
+## Builder, system, loop
 
-**A run has three stages: build the `Agent`, compile an `AgentSpec`, drive it with `run_loop`.**
+**A run has three stages: build the `Agent`, bind it to a `TicketSystem`, drive the system with `run` (long-lived) or `run_dry` (drain the fixed batch).**
 
-- The builder carries per-run fields (provider, instruction, cancel signal) and a copy-on-write `Arc<AgentSpec>`.
-- `Agent::compile` resolves the model, fills externals, and hands the loop a frozen `(Arc<AgentSpec>, LoopRuntime)` pair.
-- `run_loop` owns the step-by-step state machine and is the only code that mutates `LoopState`.
-- The loop never sees the builder; the builder never sees the loop's state.
+- The `Agent` builder carries identity, prompt parts, provider/model, tools, working dir, event handler, and a `Weak<TicketSystem>` (dangling by default).
+- `TicketSystem::add(agent)` (or `agent.ticket_system(&shared)`) stamps the system's `Weak<Self>` onto the agent, drains any tickets the agent had queued in its private default system into the shared one, and pushes a clone of the agent onto the system's agents list.
+- `TicketSystem::run` / `run_dry` spawn one tokio task per registered agent; each task upgrades its `Weak` once at the start and reads the shared store, policies, stats, and interrupt signal from the resulting `Arc<TicketSystem>`.
 
-## Runtime versus state
+## Shared system, per-agent task
 
-**Each run has two buckets: externals in `LoopRuntime`, mutation in `LoopState`.**
+**Agents read shared state through one `Arc<TicketSystem>`. Locks are held only around queue and metric operations, never across `provider.respond().await`.**
 
-- `LoopRuntime` holds the provider, event handler, cancel signal, work inbox, session store, tool registry, and working directory.
-- `LoopState` holds messages, token counters, step number, schema retries, and collected errors.
-- `LoopRuntime` is shared behind an `Arc`; `LoopState` is owned by the loop and threaded through by `&mut`.
-- Sub-agents reuse the parent's runtime; they never share a state.
+- The ticket store, policies, stats, interrupt signal, and registered-agent list live on `TicketSystem`.
+- The per-agent loop in `agents/loop.rs` claims one ticket, drives it through one or more provider/tool steps, and releases locks before each await.
+- Multiple agents share one queue; a ticket is claimed exactly once.
+- Sub-systems are not nested: a single `TicketSystem` is the unit of orchestration.
 
-## Copy-on-write configuration
+## Path A and Path B routing
 
-**`AgentSpec` is shared across clones. Builder methods mutate through `Arc::make_mut`.**
+**Tickets reach agents either by direct assignment (Path A) or by label scope (Path B).**
 
-- Cloning an `Agent` clones a handful of small per-run fields and bumps one `Arc` refcount.
-- A builder method mutating the spec forks the `Arc` only if other clones exist; otherwise it mutates in place.
-- The template (tools, sub-agents, prompts, limits) is shared; the per-run fields (instruction, template variables, handlers) are not.
-- `AgentSpec` is `pub(crate)`; callers never touch it directly.
+- A ticket built with `Ticket::new(...).assign_to(name)` is born `Status::InProgress` and pinned to the named agent; only that agent can pick it up.
+- A ticket built with `.label(...)` (or via `task_assigned(value, label)`) is `Status::Todo` and picked up by any agent whose `label` scope intersects.
+- An agent with empty labels handles only tickets with no labels; that is the "default scope".
+- The system never auto-resolves a name against the registered-agent set: callers know which routing path they want.
 
-## Sub-agent inheritance
+## Settlement is a tool call
 
-**A sub-agent is an `Agent` compiled against a parent's runtime. Inheritance is per-field.**
+**Agents settle tickets by calling `manage_tickets_tool` with `action: "done"` or `action: "failed"` and a `result`. The framework owns the lifecycle stamps.**
 
-- A parent declares its sub-agents with `.staff(...)` / `.staff_more(...)`; the resulting `AgentSpec.staff` is a `Vec<Agent>`.
-- `Agent::compile(Some(parent))` fills the child's `model: None` with the parent's resolved model and reuses the parent's externals.
-- Child per-run fields (cancel signal, event handler, working directory) override the inherited values when set.
-- Tools and `staff` are not inherited: each `AgentSpec` declares its own registry and worker list.
-- `AgentTool` is the only path that calls `Agent::execute_child`; the public API never exposes the parent slot.
+- `Status` transitions go through tickets-side helpers; the agent never writes status directly.
+- `task_schema*` attaches a `Schema` to the ticket; on `done` the loop validates the result and applies `max_schema_retries` on mismatch.
+- A `done` result is the ticket's final payload, surfaced through `Ticket::result()` and (for the most recent `Done` ticket) through `run_dry`'s return value.
 
-## AgentTool registration
+## One observer, one error path
 
-**`AgentTool` is registered exactly when the spec carries `staff`. The slot is `"agent"`.**
+**`Event` reports state. `ProviderError` and `ToolError` report failed contracts. The two channels carry independent information.**
 
-- `build_tools(spec)` clones `spec.tool_registry`; if `spec.staff` is non-empty and no tool already occupies `"agent"`, it appends `AgentTool`.
-- A caller that registers a custom tool under `"agent"` keeps theirs: explicit registration wins.
-- An agent with no staff never sees `AgentTool` in its registry, even after a child is added later, because each compile rebuilds the registry.
-- The sub-agent registry is rebuilt on every compile, so per-run mutation of `staff` is observed by the next call to `execute`.
-
-## One error at the crate boundary
-
-**`Result<T, Error>` is the one fallible surface. Domain sub-enums live with their domain.**
-
-- `Error::Provider`, `Error::Agent`, `Error::Tool` each wrap a domain-specific enum defined in that module.
-- `Error::is_retryable` and `Error::retry_delay` delegate to the provider variant; all other categories are terminal.
-- Tool failures flow two ways: `Err` bubbles as `Error::Tool`, `Ok(ToolResult::Error(...))` goes back to the model as text.
-- IMPORTANT: no blanket `From<io::Error>` or `From<serde_json::Error>`. Each mapping MUST be explicit.
-
-## Events observe state, errors return failures
-
-**`Event` reports state. `Error` reports a failed contract. The two channels carry independent information.**
-
-- State transitions exist only as `Event` (`AgentStarted`, `StepStarted`, `ContextCompacted`); failures exist as `Error` first (`ProviderError`, `AgentError`, `ToolError`).
-- An observable failure fires both: the `Error` is the machine-readable truth, the matching `Event` mirrors its kind and message (`RequestFailed`, `ToolCallFailed`, `PolicyViolated`).
-- `Output.errors` is emission-ordered; on `Outcome::Failed` the last entry is the terminal cause, earlier entries are retried transients. Tool failures never land there: they go to the model and fire `ToolCallFailed`.
-- IMPORTANT: pre-flight failures (missing provider, unreadable prompt, unset model) return `Err(...)` without starting the loop. No `AgentStarted` or `AgentFinished` fires.
+- State transitions exist only as `Event` (`TicketClaimed`, `TicketFinished`, `RequestStarted`, `RequestFinished`, `TextChunkReceived`, `TokensReported`).
+- An observable failure fires both the typed error (`ProviderError`, `ToolError`) and a matching `Event` (`RequestFailed`, `ToolCallFailed`, `PolicyViolated`).
+- A model-fixable failure (wrong arguments, schema mismatch, missing file) goes back to the model as a `ToolResult::Error` content block; it still fires `ToolCallFailed` but does not stop the run.
 - Handlers MUST be cheap, non-blocking closures; the loop does not await them.
 
 ## New observables pick a channel
 
-**Each new signal lands on `Event`, `Error`, or both. Pick by what the signal describes.**
+**Each new signal lands on `Event`, on a typed error, or on both. Pick by what the signal describes.**
 
 - Reached a state: `Event` only.
-- Could not fulfil a contract: `Error` in the matching domain sub-enum.
-- Both at once (retry, terminal request failure, policy trip): define both. Share the payload type when observer-friendly (`PolicyKind`); introduce a stripped `Kind` enum when the `Error` carries observer-hostile detail (`RequestErrorKind` for `ProviderError`, `ToolFailureKind` for `ToolError`).
-- Model-fixable failure (wrong args, non-zero exit, file missing): use `ToolResult::Error(String)`; it still fires `ToolCallFailed` but stays out of `Output.errors`.
+- Could not fulfil a contract: typed error in the matching domain.
+- Both at once (terminal request failure, policy trip): define both. Share the payload type when observer-friendly (`PolicyKind`); introduce a stripped `Kind` enum when the error carries observer-hostile detail (`RequestErrorKind`, `ToolFailureKind`).
+- Model-fixable failure: `ToolResult::Error(String)`; still fires `ToolCallFailed` but is recoverable.
 
 ## Providers own their client
 
 **Each concrete provider owns a `reqwest::Client` directly. There is no transport abstraction.**
 
-- The `Provider` trait has two methods: `respond` (drive one step) and `prewarm` (warm TCP+TLS).
-- `ModelRequest` and `ModelResponse` are the wire-shaped types every provider converts to and from.
-- HTTP error mapping is shared through `map_http_errors` + a provider-specific `classify` closure.
-- Retry and compaction are shared seams (`util::Retry`, `agent::compact`); vendor code does not retry.
+- The `Provider` trait fulfils one contract: `respond` (drive one step) plus per-vendor metadata.
+- `ModelRequest`, `Message`, `ContentBlock`, and `TokenUsage` are the wire-shaped types every provider converts to and from.
+- HTTP error mapping is shared through `providers::map_http_errors` plus a provider-specific `classify` closure; SSE parsing lives in `providers::stream`.
+- Retry happens at the request level using `Policies::max_request_retries` and `request_retry_delay`; vendor code does not retry.
 
 ## Cancellation is cooperative
 
 **A run is cancelled by setting one shared `Arc<AtomicBool>`. Every waiter polls it.**
 
-- `check_guards` reads the flag at every step boundary; tools read it via `ToolContext::wait_for_cancel`.
-- `tokio::select!` pairs provider calls and tool futures with `wait_for_cancel` so a cancel drops the losing branch promptly.
-- `AgentWorking::interrupt` sets the flag explicitly; dropping the last handle sets it via `CancelGuard::drop`.
-- `Werk` installs its own signal on every dispatched agent so `Werking::interrupt` reaches in-flight runs.
+- The signal lives behind `TicketSystem::interrupt_signal`; each agent's loop reads it via the upgraded `Arc<TicketSystem>`.
+- Tools observe it through `ToolContext::interrupt_signal` and `wait_for_cancel`; pair with `tokio::select!` so cancel drops the losing branch promptly.
+- Dropping the `TicketSystem` while agents still reference it via `Weak` is the public way to abort: the upgrade fails and each task panics out cleanly.
 
-## keep_working hands the loop a background task
+## Stats are per-system, write-only-by-domain
 
-**`Agent::keep_working` spawns the loop on tokio and returns `(AgentWorking, OutputFuture)`. The loop idles between instructions while any handle is alive.**
+**`Stats` is one struct of atomic counters; each domain interacts through its own write-only protocol.**
 
-- `keep_working` flips `keep_alive: true` on the spec and installs a fresh `Work` inbox plus `interrupt_signal` before calling `execute` on a `tokio::spawn`.
-- `AgentWorking::work(s)` posts a follow-up task; the loop picks it up at its next idle poll or step boundary. `work_more(...)` queues several at once.
-- `OutputFuture` resolves once the loop exits; awaiting it does not keep the loop alive: only `AgentWorking` clones do.
-- `CancelGuard` flips the cancel flag when the last `AgentWorking` clone drops, so an abandoned handle still unblocks the loop.
+- `LoopStats` is what the per-agent loop sees: `record_step`, `record_request`, `record_tool_call`, `record_error`.
+- `TicketStats` is what the ticket lifecycle sees: `record_created`, `record_started`, `record_done`, `record_failed`.
+- Reads happen on `Stats` directly through inherent accessors (`steps()`, `tickets_done()`, `run_duration()`, `success_rate()`, ...), never through the recorder traits.
+- Lock-free for increments; readers do one atomic load per call.
 
-## Werk runs a workshop
+## Policies are per-system, checked at step boundaries
 
-**`Werk` runs many `Agent`s under a fixed line cap. `work` waits for a fixed cohort; `keep_working` returns a handle and a stream that accept new staff.**
+**A run stops cleanly when any limit on `Policies` trips. The check fires `EventKind::PolicyViolated` and exits the per-agent task.**
 
-- The dispatcher is a single `tokio::spawn` task that owns a `FuturesUnordered` of in-flight agent tasks bounded by `lines`.
-- Each agent's name is captured at submission time and travels with it through the dispatcher, so results pair `(String, Result<Output>)`. `Werk::work` collects those into a `HashMap<String, Result<Output>>` keyed by name.
-- `Werking` is `Clone`: the workshop accepts new staff while any clone is alive; dropping the last one closes it gracefully.
-- `Werk::interrupt_signal` lets the caller share an external signal; otherwise the workshop owns one and overrides any per-agent signal.
-
-## Incoming work carries dynamic tasks
-
-**`Work` is a per-run inbox of `Task`s. The loop drains it between steps; `AgentWorking` and orchestration tools post into it.**
-
-- The inbox lives on `LoopRuntime` and is shared by the parent and every sub-agent in the run-tree.
-- `AgentWorking::work` posts with `WorkPriority::Next` so the next step picks it up before any backlog.
-- Background sub-agents use the inbox to post notifications back to the parent; routing by `agent_name` keeps the inbox per-agent.
-- The inbox is `pub(crate)` only: the public API exposes it through `AgentWorking` and the orchestration tools, never directly.
-
-## Persistence stays internal
-
-**`persistence/` MUST stay `pub(crate)`. Sessions and todo lists are opt-in behaviors, never part of the public type surface.**
-
-- `SessionStore` appends JSONL transcripts when `.session_dir(...)` is set; otherwise the loop writes nothing.
-- `TodoList` is reached through `TodoListTool`; agents coordinate through it without importing it.
-- No persistence type appears in `Output`, `Event`, or any public signature.
-- Swapping the backend is a crate-internal change; callers do not break.
+- The loop calls `policy_violated_kind` at each iteration; a non-`None` return walks the agent off the queue.
+- Token budgets read from `Stats`; the timeout reads from `TicketSystem::timeout`.
+- Schema-retry budget is applied per-ticket inside the settlement path, not at the top of the loop.

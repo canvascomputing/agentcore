@@ -7,62 +7,60 @@ Where code lives and the rules that govern placement.
 **Two crates: one library, one example set.**
 
 - `crates/agentwerk/` is the library.
-- `crates/use-cases/` holds runnable example agents that depend on the library.
+- `crates/use-cases/` holds runnable example binaries that depend on the library.
 - Nothing in `use-cases` is re-exported by the library.
 
 ## Top-level files
 
 **Each top-level source file is one concern the caller observes directly.**
 
-- `lib.rs` holds public re-exports only.
-- `error.rs` defines the categorical `Error` and the `Result` alias.
-- `event.rs` and `output.rs` hold the observation and result types the loop emits.
-- `werk.rs` holds `Werk`, `WerkProducing`, and `WerkOutputStream`: the parallel-execution surface.
-- `util.rs` and `testutil.rs` hold shared helpers and the mock provider plus test harness.
+- `lib.rs` holds public re-exports only. The canonical caller surface (`Agent`, `Runnable`, `TicketSystem`, `Ticket`, `Status`, `Stats`, `Tool`, `ToolContext`, `ToolLike`, `ToolResult`, `Event` family, `Schema` family) lands at the crate root so callers do not reach into leaf modules.
+- `event.rs` defines `Event`, `EventKind`, `PolicyKind`, `ToolFailureKind`, and `default_logger`.
+- The `agents/`, `prompts/`, `providers/`, `schemas/`, and `tools/` modules each own their domain. The `agents/` and `tools/` modules also re-export their headline types so `use agentwerk::agents::{Agent, Runnable, TicketSystem}` and `use agentwerk::tools::BashTool` work without descending into leaf files.
 
-## The `agent/` module
+## The `agents/` module
 
-**Contains the builder, the compiled form, and the execution loop.**
+**Holds the per-agent builder, the ticket system, and the multi-agent loop.**
 
-- `agent.rs` holds the `Agent` builder, including `.hire(...)`, `.work()`, and the `compile` step.
-- `spec.rs` holds the compiled `AgentSpec`, including the `hires: Vec<Agent>` field.
-- `loop.rs` holds `run_loop`, `LoopRuntime`, and `LoopState`.
-- `retain.rs` holds `AgentWorking`, `OutputFuture`, and the `Agent::retain` entry point.
-- `prompts.rs`, `compact.rs`, and `work.rs` hold prompt constants, the compaction hook, and the `Work` inbox.
+- `agent.rs` holds the `Agent` builder and ticket-dispatch helpers; an `Agent` carries a `Weak<TicketSystem>` stamped at `bind_agent` time.
+- `tickets.rs` holds `Ticket`, `Status`, `TicketError`, and `TicketSystem`: the orchestrator that owns the shared queue, registered agents, policies, timeout, interrupt signal, and stats.
+- `loop.rs` holds the `Runnable` trait (implemented by `TicketSystem`) and the per-agent loop driver.
+- `policy.rs` holds `Policies` and the limit checks the loop applies on each step.
+- `stats.rs` holds `Stats`, `LoopStats`, and the run-wide counters and timings.
 
-## The `provider/` module
+## The `providers/` module
 
-**Contains every LLM provider plus the shared transport code.**
+**Holds every concrete provider plus the shared transport types.**
 
-- `trait.rs` defines `Provider`, `ModelRequest`, and `ToolChoice`.
-- `types.rs` defines `Message`, `ContentBlock`, `TokenUsage`, `ModelResponse`, and `StreamEvent`.
-- `anthropic.rs`, `openai.rs`, `litellm.rs`, and `mistral.rs` are concrete providers.
-- `environment.rs` implements `Provider::from_env()`.
-- `stream.rs` holds the SSE parser; the shared retry strategy lives in `util::Retry`.
+- `provider.rs` defines `Provider`, `ModelRequest`, `ProviderToolDefinition`, and `ToolChoice`.
+- `types.rs` defines `Message`, `ContentBlock`, `TokenUsage`, `AsUserMessage`, `ResponseStatus`, and `StreamEvent`.
+- `anthropic.rs`, `openai.rs`, `mistral.rs`, and `litellm.rs` are concrete providers.
+- `environment.rs` implements `from_env()` and `model_from_env()`.
+- `stream.rs` holds the SSE parser; `error.rs` holds `ProviderError`, `ProviderResult`, and `RequestErrorKind`.
 
 ## The `tools/` module
 
-**`tool.rs` holds the trait and registry; every other file is one built-in tool.**
+**`tool.rs` holds the trait and registry; every other file is one built-in tool or a helper.**
 
-- `tool.rs` defines `ToolLike`, `Tool`, `ToolRegistry`, and `ToolContext`.
+- `tool.rs` defines `ToolLike`, `Tool`, `ToolRegistry`, `ToolContext`, and `ToolCall`.
 - `read_file.rs`, `write_file.rs`, `edit_file.rs`, `glob.rs`, `grep.rs`, and `list_directory.rs` are filesystem tools.
 - `bash.rs` is the shell tool (restricted via `new()`, unrestricted via `unrestricted()`).
-- `agent.rs`, `send_message.rs`, `todo_list.rs`, and `tool_search.rs` are orchestration tools.
+- `tickets/` holds `ManageTicketsTool`, `ReadTicketsTool`, and `WriteTicketsTool`.
+- `tool_search.rs` is the discovery surface for deferred tools.
 - `web_fetch.rs` is the web fetch tool.
+- `tool_file.rs` and `util.rs` are shared helpers; `error.rs` holds `ToolError`.
 
-## Internal modules
+## The `prompts/` and `schemas/` modules
 
-**`persistence/` MUST stay `pub(crate)` and never be exposed to callers.**
+**Composable prompt assembly and JSON-Schema validation.**
 
-- `session.rs` holds `SessionStore`, which appends JSONL transcripts.
-- `todo.rs` holds `TodoList`, which stores file-locked items.
-- `error.rs` holds `PersistenceError`.
+- `prompts/builder.rs` and `prompts/section.rs` hold `PromptBuilder` and `Section`, which assemble role/context blocks.
+- `schemas/mod.rs` holds `Schema`, `SchemaParseError`, `SchemaViolation`, and `format_violations`.
 
 ## Tests
 
-**Unit tests, integration tests, and inline tests live in three separate locations.**
+**Integration tests live in their own directory; everything else is inline.**
 
-- `crates/agentwerk/tests/unit/` holds mock-provider tests, bundled by `tests/unit.rs`.
 - `crates/agentwerk/tests/integration/` holds real-provider tests, bundled by `tests/integration.rs`.
 - `tests/integration/common.rs` holds shared integration helpers.
-- Every module also carries its own `#[cfg(test)] mod tests`.
+- Every module also carries its own `#[cfg(test)] mod tests` for mock-free unit coverage.

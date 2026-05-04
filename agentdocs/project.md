@@ -15,19 +15,18 @@ agentwerk is a Rust crate for building LLM agents. An agent reads input, calls a
 
 **Each abstraction must remove more complexity than it adds.**
 
-- Dependencies are limited to tokio, serde, serde_json, libc, reqwest, and futures-util.
+- Dependencies are limited to tokio, serde, serde_json, reqwest, and futures-util.
 - No transport abstractions, no plugin registries.
 - Providers own a `reqwest::Client` directly.
 - Indirection without a concrete benefit is not added.
 
 ## Composable
 
-**Agents are cloned and modified, not registered.**
+**Agents are cloned and modified, then bound to a `TicketSystem`.**
 
-- No registration step, no global state.
-- Child agents inherit configuration from the parent by default.
-- `Werk` runs many clones of one template against different inputs.
-- `AgentTool` lets a running agent launch another.
+- No global registration step, no implicit state.
+- Multiple agents share one `TicketSystem` and pick up tickets via label scope (Path B) or direct assignment (Path A).
+- A ticket carries a `Schema`; the framework validates the agent's `done` result against it.
 
 ## Provider-agnostic
 
@@ -36,7 +35,7 @@ agentwerk is a Rust crate for building LLM agents. An agent reads input, calls a
 - Anthropic, OpenAI, Mistral, and LiteLLM are supported.
 - Switching providers changes only the `.model(...)` call.
 - All providers share one retry policy.
-- `Provider::from_env()` selects a provider from environment variables.
+- `from_env()` and `model_from_env()` (in `providers::environment`) select a provider and model from environment variables.
 
 ## Observe, do not prescribe
 

@@ -5,11 +5,9 @@ use super::{AnthropicProvider, MistralProvider, OpenAiProvider};
 /// Model metadata: the name plus anything we know about its capabilities.
 ///
 /// Built by [`Model::from_name`] (registry-backed) or
-/// [`Model::context_window_size`] (explicit override). `Model` is what
-/// `AgentSpec.model` holds at runtime and what the compaction seams read to
-/// decide when to fire. Agents express "inherit from parent" via
-/// `AgentSpec.model: Option<Model>` (`None` = inherit) — there's no separate
-/// spec enum.
+/// [`Model::context_window_size`] (explicit override). The agent loop reads
+/// `Model::context_window_size` to decide when a conversation needs to be
+/// shrunk before the next request.
 #[derive(Debug, Clone)]
 pub struct Model {
     pub name: String,
