@@ -45,7 +45,7 @@
       },
       "assignee": {
         "type": "string",
-        "description": "For `list`: filter by assignee (excludes unassigned tickets)."
+        "description": "For `list`: filter by assignee (excludes unassigned tickets). For `create` (optional): a single label OR an agent name. If it matches a registered agent, the ticket is born `InProgress` with that assignee (Path A). Otherwise it is appended to `labels` (Path B)."
       },
       "query": {
         "type": "string",
@@ -58,10 +58,6 @@
         "type": "array",
         "items": { "type": "string" },
         "description": "For `create` or `edit` (optional): label scope. Determines which agents can pick up the ticket via Path B (label intersection)."
-      },
-      "assign": {
-        "type": "string",
-        "description": "For `create` (optional): a single label OR an agent name. If it matches a registered agent, the ticket is born `InProgress` with that assignee (Path A). Otherwise it is appended to `labels` (Path B)."
       },
       "schema": {
         "type": "object",
