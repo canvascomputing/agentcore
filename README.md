@@ -16,7 +16,7 @@
   <a href="#development">Development</a>
 </p>
 
-<p align="center">A ticket-based execution loop, multi-agent orchestration, multi-provider support, schema-validated structured output, and a small set of built-in tools.</p>
+<p align="center">This crate provides a core implementation for agentic applications: execution loop based on ticketing system, built-in tools, agent orchestration, multi-provider support, schema-based output, and retry mechanisms.</p>
 
 <p align="center"><em>agentwerk pairs "agent" with the German "Werk," a word that means both factory and artwork; machinery for building agentic systems, engineered like a craft.</em></p>
 
@@ -55,9 +55,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Example applications living under `crates/use-cases/`:
 
-- [Terminal REPL](crates/use-cases/src/terminal_repl/): per-turn interactive chat with streaming output.
-- [Divide and Conquer](crates/use-cases/src/divide_and_conquer/): partitions an arithmetic problem across worker agents sharing one ticket queue.
-- [Deep Research](crates/use-cases/src/deep_research_v2/): two-phase research, three parallel researchers feeding a synthesis writer (requires `BRAVE_API_KEY`).
+- [Terminal REPL](crates/use-cases/src/terminal_repl/): minimal interactive chat
+- [Divide and Conquer](crates/use-cases/src/divide_and_conquer/): arithmetic problem shared across agents
+- [Deep Research](crates/use-cases/src/deep_research_v2/): agentic web research pipeline (requires `BRAVE_API_KEY`).
 
 Run one with:
 
@@ -70,13 +70,13 @@ make use_case name=<name>    # run one
 
 ## API
 
-- [Providers](#providers): the LLM service the crate talks to.
-- [Agents](#agents): the workers that pick up tickets and produce results.
-- [Ticket Systems](#ticket-systems): the shared queue, registered agents, and run policies.
-- [Tools](#tools): the functions an agent can call.
-- [Schemas](#schemas): JSON-Schema-validated structured output.
-- [Events](#events): the stream of activity emitted during a run.
-- [Stats](#stats): run-time counters and timings.
+- [Providers](#providers): LLM providers agents can use
+- [Agents](#agents): the workers that pick up tickets and produce results
+- [Ticket Systems](#ticket-systems): queue for organizing work
+- [Tools](#tools): tools agents can use to finish a task
+- [Schemas](#schemas): schemas used for result validation
+- [Events](#events): lifecycle events of agentic work
+- [Stats](#stats): insight into the work of agents
 
 ### Providers
 
@@ -110,7 +110,7 @@ let model = model_from_env()?;
 
 ### Agents
 
-An `Agent` is a single worker. It owns a private ticket system by default, so a freshly built agent can enqueue work and run on its own. Sharing a `TicketSystem` (see below) is for multi-agent orchestration.
+An `Agent` is a single worker.
 
 ```rust
 use agentwerk::Agent;
@@ -122,7 +122,9 @@ let agent = Agent::new()
     .role("You are an arithmetic worker.")
     .label("worker")
     .tool(BashTool::new("ls", "ls *"));
+
 agent.task("Compute 2+2.");
+
 let answer = agent.run().await;
 ```
 

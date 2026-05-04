@@ -674,6 +674,15 @@ impl Runnable for TicketSystem {
         let watcher = tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_millis(20)).await;
+                // External cancel: if the signal flipped (test or
+                // Ctrl-C), exit even when tickets are still
+                // InProgress. Without this, `run_dry` hangs because
+                // `pending_count` only drops when the loop settles
+                // tickets, which a cancelled run won't do.
+                if watcher_signal.load(Ordering::Relaxed) {
+                    watcher_system.stats.mark_finished(now_millis());
+                    return;
+                }
                 if policy_violated(&watcher_policies, &watcher_system.stats) {
                     watcher_signal.store(true, Ordering::Relaxed);
                     watcher_system.stats.mark_finished(now_millis());

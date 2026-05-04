@@ -1,7 +1,7 @@
-//! Multi-agent loop driver. Each agent runs in its own tokio task,
-//! reading the shared ticket store, policies, stats, and interrupt
-//! signal off its own fields (stamped at `bind_agent` time). Also
-//! defines the `Runnable` trait that `TicketSystem` implements.
+//! Multi-agent loop driver. One tokio task per registered agent,
+//! reading the shared `TicketSystem` through the upgraded
+//! `Weak<TicketSystem>` stamped at `bind_agent`. Also defines the
+//! `Runnable` trait that `TicketSystem` implements.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,48 +14,40 @@ use crate::providers::{AsUserMessage, ContentBlock, Message, ModelRequest};
 use crate::tools::{ToolCall, ToolContext, ToolError};
 
 use super::agent::Agent;
+use super::retry::ExponentialRetry;
 use super::stats::LoopStats;
 use super::tickets::{
     policy_violated_kind, tickets_assign_to, tickets_find, tickets_force_status, tickets_get,
-    tickets_update_status, Status,
+    tickets_set_result, tickets_update_status, Status,
 };
+use crate::prompts::schema_retry;
 
-/// What it means to be a thing agents can be added to and run against.
-/// Implemented by `TicketSystem`.
+/// Surface for binding agents and running them. Implemented by `TicketSystem`.
 pub trait Runnable: Sized {
-    /// Bind `agent` to this system: drain any tickets the agent had
-    /// queued in its private default system into this one, then push a
-    /// clone of `agent` onto this system's agents list. Returns the
-    /// wired agent so the caller can keep using it (chain `.task(...)`
-    /// etc.).
+    /// Bind `agent`: drain any tickets it queued in its default system
+    /// into this one and push a clone onto this system's agents list.
+    /// Returns the wired agent for chaining (`.task(...)` etc.).
     fn add(&self, agent: Agent) -> Agent;
 
-    /// Bind `agent` and additionally pin it to a label scope. The second
-    /// slot mirrors the `_assigned` task-creation methods: a label, or
-    /// (by convention) an agent name when delegating.
+    /// `add` with a label-scope pin in one call.
     fn add_assigned(&self, agent: Agent, assign: impl Into<String>) -> Agent {
         self.add(agent.label(assign))
     }
 
-    /// Drive every staged agent until the implementor's interrupt
-    /// signal fires. Use this when tickets keep arriving over time and
-    /// the run is bounded by an external stop signal.
+    /// Run until the interrupt signal fires. For long-lived runs that
+    /// keep accepting work over time.
     fn run(&self) -> impl Future<Output = ()> + Send;
 
-    /// Drive every staged agent until the queue settles, a policy
-    /// trips, or `.timeout(...)` elapses. Returns the result of the
-    /// most recently created `Status::Done` ticket, or an empty string
-    /// when no ticket reached `Done`. Use this for fixed-batch runs
-    /// where every ticket is enqueued up front.
+    /// Run until the queue settles, a policy trips, or `.timeout(...)`
+    /// elapses. Returns the most recently created `Done` ticket's
+    /// `result`, or an empty string if none settled.
     fn run_dry(&self) -> impl Future<Output = String> + Send;
 }
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Drive many agents in parallel. Each agent runs in its own tokio
-/// task and reads the shared state through its own Arcs (`tickets`,
-/// `stats`, `interrupt_signal`); the loop never holds those across
-/// `provider.respond().await`.
+/// Spawn one task per agent and join. Tasks read shared state through
+/// their own Arcs and never hold locks across `provider.respond`.
 pub(super) async fn run_main_loop(agents: Vec<Agent>) {
     let mut handles = Vec::with_capacity(agents.len());
     for agent in agents {
@@ -66,11 +58,9 @@ pub(super) async fn run_main_loop(agents: Vec<Agent>) {
     }
 }
 
-/// Future that resolves once `signal` flips. Polls on the same cadence
-/// as `ToolContext::wait_for_cancel`. Pair with `tokio::select!` to
-/// drop the losing branch on cancel: dropping the
-/// `provider.respond(...)` future cascades to `reqwest`'s in-flight
-/// request being aborted.
+/// Resolves once `signal` flips. 50 ms poll cadence; same as
+/// `ToolContext::wait_for_cancel`. Pair with `tokio::select!` so
+/// dropping the losing branch aborts the in-flight work.
 pub(super) async fn wait_for_signal(signal: &Arc<AtomicBool>) {
     const POLL: Duration = Duration::from_millis(50);
     loop {
@@ -81,10 +71,63 @@ pub(super) async fn wait_for_signal(signal: &Arc<AtomicBool>) {
     }
 }
 
-/// Per-agent loop. Picks the next eligible ticket, hands it to
-/// `process_ticket`, repeats. When no eligible work is queued, idles on
-/// `IDLE_POLL_INTERVAL` until something arrives, the cancel signal fires,
-/// or a policy hits.
+/// Drive one provider request through the request-retry policy.
+/// `Some(r)` on success. `None` on cancellation (no events emitted)
+/// or terminal failure (helper has already emitted `RequestFailed` +
+/// `TicketFailed` and recorded the error stat). Caller bails on `None`.
+async fn respond_with_retry<F: Fn(EventKind)>(
+    provider: Arc<dyn crate::providers::Provider>,
+    request: ModelRequest,
+    on_stream: Arc<dyn Fn(crate::providers::types::StreamEvent) + Send + Sync>,
+    retry: &super::retry::ExponentialRetry,
+    interrupt_signal: &Arc<AtomicBool>,
+    stats: &super::stats::Stats,
+    key: &str,
+    emit: &F,
+) -> Option<crate::providers::types::ModelResponse> {
+    use super::retry::Retry;
+    let mut attempt: u32 = 0;
+    loop {
+        let outcome = tokio::select! {
+            biased;
+            _ = wait_for_signal(interrupt_signal) => return None,
+            r = provider.respond(request.clone(), Arc::clone(&on_stream)) => r,
+        };
+        match outcome {
+            Ok(r) => return Some(r),
+            Err(e) if e.is_retryable() && attempt < retry.max_attempts() => {
+                let delay = retry.delay(attempt, e.retry_delay());
+                attempt += 1;
+                emit(EventKind::RequestRetried {
+                    attempt,
+                    max_attempts: retry.max_attempts(),
+                    kind: e.kind(),
+                    message: e.to_string(),
+                });
+                tokio::select! {
+                    biased;
+                    _ = wait_for_signal(interrupt_signal) => return None,
+                    _ = tokio::time::sleep(delay) => {}
+                }
+            }
+            Err(e) => {
+                emit(EventKind::RequestFailed {
+                    kind: e.kind(),
+                    message: e.to_string(),
+                });
+                stats.record_error();
+                emit(EventKind::TicketFailed {
+                    key: key.to_string(),
+                });
+                return None;
+            }
+        }
+    }
+}
+
+/// Per-agent claim loop. Picks the next eligible ticket and runs it
+/// through `process_ticket`. Idles on `IDLE_POLL_INTERVAL` when no
+/// work is queued; exits on cancel or policy violation.
 pub(super) async fn handle_tickets(agent: Agent) {
     let ticket_system = agent
         .ticket_system
@@ -104,14 +147,12 @@ pub(super) async fn handle_tickets(agent: Agent) {
             ));
             return;
         }
-        // Path A: tickets already directed to this agent (already
-        // InProgress with assignee == self), regardless of labels.
+        // Path A: ticket already pinned to this agent.
         let path_a = tickets_find(&ticket_system, |t| {
             t.is_in_progress() && t.is_assigned_to(agent.get_name())
         })
         .map(|t| (t.key().to_string(), false));
-        // Path B: open Todos whose labels intersect the agent's
-        // declared label scope.
+        // Path B: open Todo whose labels match this agent's scope.
         let path_b = tickets_find(&ticket_system, |t| {
             t.is_todo() && t.assignee().is_none() && agent.handles(&t.labels)
         })
@@ -184,8 +225,6 @@ async fn process_ticket(
         if interrupt_signal.load(Ordering::Relaxed) {
             return;
         }
-        // Settled? Stop the inner loop. The agent's `done` tool action
-        // is the only way to reach Done from inside this loop.
         match tickets_get(ticket_system, key) {
             Some(t) if matches!(t.status(), Status::Done | Status::Failed) => {
                 emit(terminal_event(t.status(), key));
@@ -206,25 +245,25 @@ async fn process_ticket(
             max_request_tokens,
             tool_choice: None,
         };
-        let provider = agent.provider_handle();
-        let response = tokio::select! {
-            biased;
-            _ = wait_for_signal(interrupt_signal) => return,
-            r = provider.respond(request, Arc::clone(&on_stream)) => r,
+        let retry = ExponentialRetry {
+            base_delay: policies.request_retry_delay,
+            max_attempts: policies.max_request_retries,
         };
-        let response = match response {
-            Ok(r) => r,
-            Err(e) => {
-                emit(EventKind::RequestFailed {
-                    kind: e.kind(),
-                    message: e.to_string(),
-                });
-                ticket_system.stats.record_error();
-                emit(EventKind::TicketFailed {
-                    key: key.to_string(),
-                });
-                return;
-            }
+        // ---- request retry: transient transport errors → backoff + replay ----
+        let response = match respond_with_retry(
+            agent.provider_handle(),
+            request,
+            Arc::clone(&on_stream),
+            &retry,
+            interrupt_signal,
+            &ticket_system.stats,
+            key,
+            &emit,
+        )
+        .await
+        {
+            Some(r) => r,
+            None => return,
         };
 
         emit(EventKind::RequestFinished {
@@ -242,7 +281,6 @@ async fn process_ticket(
             content: response.content.clone(),
         });
 
-        // Walk the assistant content for tool calls.
         let calls: Vec<ToolCall> = response
             .content
             .iter()
@@ -256,13 +294,39 @@ async fn process_ticket(
             })
             .collect();
 
-        if response.status != ResponseStatus::ToolUse || calls.is_empty() {
-            // Inner loop terminates without a `done` call — the ticket
-            // stays InProgress and Path A may re-pick it. The agent must
-            // call the `done` tool to mark the ticket done.
-            emit(EventKind::TicketFailed {
-                key: key.to_string(),
-            });
+        // ---- terminal reply: no tool calls, or only `mark_ticket_done_tool` ----
+        // Both shapes finish the turn. Lift any `result` arg onto the
+        // ticket first so the (schema, result) inspection below matches
+        // the state the tool-execution path would have produced.
+        let terminal_call = match calls.as_slice() {
+            [c] if c.name == "mark_ticket_done_tool" => Some(c),
+            _ => None,
+        };
+        if response.status != ResponseStatus::ToolUse || calls.is_empty() || terminal_call.is_some()
+        {
+            if let Some(call) = terminal_call {
+                emit(EventKind::ToolCallStarted {
+                    tool_name: call.name.clone(),
+                    call_id: call.id.clone(),
+                    input: call.input.clone(),
+                });
+                if let Some(r) = call.input.get("result").and_then(|v| v.as_str()) {
+                    let _ = tickets_set_result(ticket_system, key, r.to_string());
+                }
+            }
+            let final_status = match tickets_get(ticket_system, key) {
+                None => return,
+                Some(ticket) => match (&ticket.schema, ticket.result()) {
+                    (Some(schema), Some(raw)) => match serde_json::from_str::<serde_json::Value>(raw) {
+                        Ok(parsed) if schema.validate(&parsed).is_ok() => Status::Done,
+                        _ => Status::Failed,
+                    },
+                    (Some(_), None) => Status::Failed,
+                    (None, _) => Status::Done,
+                },
+            };
+            let _ = tickets_force_status(ticket_system, key, final_status);
+            emit(terminal_event(final_status, key));
             return;
         }
 
@@ -281,6 +345,7 @@ async fn process_ticket(
             .agent_name(agent.get_name().to_string());
         let outcomes = agent.tool_registry().execute(&calls, &ctx).await;
 
+        let mut schema_failure_message: Option<String> = None;
         for (block, verdict) in &outcomes {
             if let ContentBlock::ToolResult { tool_use_id, .. } = block {
                 let call = calls.iter().find(|c| &c.id == tool_use_id);
@@ -302,6 +367,9 @@ async fn process_ticket(
                         if matches!(err, ToolError::SchemaValidationFailed { .. }) {
                             consecutive_schema_failures =
                                 consecutive_schema_failures.saturating_add(1);
+                            if schema_failure_message.is_none() {
+                                schema_failure_message = Some(err.message());
+                            }
                         }
                         emit(EventKind::ToolCallFailed {
                             tool_name,
@@ -322,7 +390,21 @@ async fn process_ticket(
             }
         }
 
-        let blocks: Vec<ContentBlock> = outcomes.into_iter().map(|(b, _)| b).collect();
+        // ---- schema retry: tool's done-side validation failed → directive + replay ----
+        // Emit even on the exhausting attempt so observers see the
+        // sequence `SchemaRetried(N) → PolicyViolated`. The directive
+        // rides in the same user message as the tool-result blocks.
+        let mut blocks: Vec<ContentBlock> = outcomes.into_iter().map(|(b, _)| b).collect();
+        if let Some(detail) = &schema_failure_message {
+            emit(EventKind::SchemaRetried {
+                attempt: consecutive_schema_failures,
+                max_attempts: max_schema_retries,
+                message: detail.clone(),
+            });
+            blocks.push(ContentBlock::Text {
+                text: schema_retry(detail),
+            });
+        }
         messages.push(Message::User { content: blocks });
 
         for _ in 0..calls.len() {
@@ -334,9 +416,6 @@ async fn process_ticket(
                 kind: crate::event::PolicyKind::MaxSchemaRetries,
                 limit: u64::from(max_schema_retries),
             });
-            // Force-fail the ticket so Path A doesn't re-pick it
-            // forever. The agent demonstrably can't satisfy the schema;
-            // the ticket is dead.
             let _ = tickets_force_status(ticket_system, key, Status::Failed);
             emit(EventKind::TicketFailed {
                 key: key.to_string(),
@@ -346,8 +425,8 @@ async fn process_ticket(
     }
 }
 
-/// Whether a tool call goes through `done`-side schema validation. Used
-/// to reset `consecutive_schema_failures` on a successful `done` call.
+/// True if the call settles via `done`-side schema validation. Used
+/// to reset the schema-retry counter on a successful settle.
 fn is_done_call(call: &ToolCall) -> bool {
     if call.name == "mark_ticket_done_tool" {
         return true;
@@ -367,5 +446,697 @@ fn terminal_event(status: Status, key: &str) -> EventKind {
             key: key.to_string(),
         },
         other => unreachable!("terminal_event called with non-terminal status {other:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Loop-level tests for request retries, schema retries, the
+    //! mark-done shortcut, and cancellation. Each test scripts a
+    //! `MockProvider` sequence and asserts on the event stream and
+    //! ticket status.
+    use std::pin::Pin;
+    use std::sync::Mutex as StdMutex;
+
+    use crate::event::PolicyKind;
+    use crate::providers::types::{ModelResponse, TokenUsage};
+    use crate::providers::{Provider, ProviderError, ProviderResult};
+    use crate::schemas::Schema;
+    use crate::tools::ManageTicketsTool;
+
+    use super::super::tickets::{Ticket, TicketSystem};
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    // ---- mock provider ----
+
+    /// Scripted provider. Pops one `ProviderResult` per `respond`
+    /// call; falls back to a non-retryable error once exhausted.
+    struct MockProvider {
+        results: StdMutex<Vec<ProviderResult<ModelResponse>>>,
+        requests: AtomicUsize,
+    }
+
+    impl MockProvider {
+        fn with_results(results: Vec<ProviderResult<ModelResponse>>) -> Arc<Self> {
+            Arc::new(Self {
+                results: StdMutex::new(results),
+                requests: AtomicUsize::new(0),
+            })
+        }
+
+        fn requests(&self) -> usize {
+            self.requests.load(Ordering::Relaxed)
+        }
+    }
+
+    impl Provider for MockProvider {
+        fn respond(
+            &self,
+            _request: ModelRequest,
+            _on_event: Arc<dyn Fn(crate::providers::types::StreamEvent) + Send + Sync>,
+        ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
+            self.requests.fetch_add(1, Ordering::Relaxed);
+            // Non-retryable fallback once exhausted: a retryable
+            // fallback would spin up retry chains in tests that don't
+            // want them.
+            let next = {
+                let mut results = self.results.lock().unwrap();
+                if results.is_empty() {
+                    Err(ProviderError::AuthenticationFailed {
+                        message: "MockProvider exhausted".into(),
+                    })
+                } else {
+                    results.remove(0)
+                }
+            };
+            // Yield once: the failure-then-Path-A-re-claim path has no
+            // Pending await otherwise, hot-loops the agent task on the
+            // current_thread runtime, and starves the run-dry watcher.
+            Box::pin(async move {
+                tokio::task::yield_now().await;
+                next
+            })
+        }
+    }
+
+    // ---- response builders ----
+
+    fn mark_done_response() -> ModelResponse {
+        ModelResponse {
+            content: vec![ContentBlock::ToolUse {
+                id: "call-1".into(),
+                name: "mark_ticket_done_tool".into(),
+                input: serde_json::json!({}),
+            }],
+            status: ResponseStatus::ToolUse,
+            usage: TokenUsage::default(),
+            model: "mock".into(),
+        }
+    }
+
+    fn mark_done_with_result(result: &str) -> ModelResponse {
+        ModelResponse {
+            content: vec![ContentBlock::ToolUse {
+                id: "call-1".into(),
+                name: "mark_ticket_done_tool".into(),
+                input: serde_json::json!({ "result": result }),
+            }],
+            status: ResponseStatus::ToolUse,
+            usage: TokenUsage::default(),
+            model: "mock".into(),
+        }
+    }
+
+    fn text_response(text: &str) -> ModelResponse {
+        ModelResponse {
+            content: vec![ContentBlock::Text { text: text.into() }],
+            status: ResponseStatus::EndTurn,
+            usage: TokenUsage::default(),
+            model: "mock".into(),
+        }
+    }
+
+    /// `manage_tickets_tool` `done` action — goes through the
+    /// schema-retry path (the mark-done shortcut bypasses it).
+    fn manage_done_with_result(result: &str) -> ModelResponse {
+        ModelResponse {
+            content: vec![ContentBlock::ToolUse {
+                id: "call-1".into(),
+                name: "manage_tickets_tool".into(),
+                input: serde_json::json!({ "action": "done", "result": result }),
+            }],
+            status: ResponseStatus::ToolUse,
+            usage: TokenUsage::default(),
+            model: "mock".into(),
+        }
+    }
+
+    fn rate_limit() -> ProviderError {
+        ProviderError::RateLimited {
+            message: "rate limited".into(),
+            status: 429,
+            retry_delay: None,
+        }
+    }
+
+    fn connection_failed(message: &str) -> ProviderError {
+        ProviderError::ConnectionFailed {
+            message: message.into(),
+        }
+    }
+
+    // ---- event filters ----
+
+    fn retries_in(events: &[Event]) -> Vec<(u32, u32, String)> {
+        events
+            .iter()
+            .filter_map(|e| match &e.kind {
+                EventKind::RequestRetried {
+                    attempt,
+                    max_attempts,
+                    message,
+                    ..
+                } => Some((*attempt, *max_attempts, message.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn failures_in(events: &[Event]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match &e.kind {
+                EventKind::RequestFailed { message, .. } => Some(message.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn schema_retries_in(events: &[Event]) -> Vec<(u32, u32, String)> {
+        events
+            .iter()
+            .filter_map(|e| match &e.kind {
+                EventKind::SchemaRetried {
+                    attempt,
+                    max_attempts,
+                    message,
+                } => Some((*attempt, *max_attempts, message.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // ---- harness ----
+
+    /// Run one ticket against `provider`; return collected events, the
+    /// provider handle (for request-count assertions), and the settled
+    /// ticket.
+    async fn run_one(
+        provider: Arc<MockProvider>,
+        max_request_retries: u32,
+        max_schema_retries: u32,
+        schema: Option<Schema>,
+    ) -> (Vec<Event>, Arc<MockProvider>, Option<Ticket>) {
+        let collected: Arc<StdMutex<Vec<Event>>> = Arc::new(StdMutex::new(Vec::new()));
+        let handler: Arc<dyn Fn(Event) + Send + Sync> = {
+            let c = Arc::clone(&collected);
+            Arc::new(move |e| c.lock().unwrap().push(e))
+        };
+
+        let tickets = TicketSystem::new()
+            .max_request_retries(max_request_retries)
+            .request_retry_delay(Duration::from_millis(1))
+            .max_schema_retries(max_schema_retries)
+            // Short timeout: tests where the loop bails leave the ticket
+            // InProgress, so Path A would re-claim forever without it.
+            .timeout(Duration::from_millis(200));
+
+        let agent = Agent::new()
+            .name("tester")
+            .provider(provider.clone() as Arc<dyn Provider>)
+            .model("mock")
+            .role("test")
+            // ManageTicketsTool drives the schema-retry path; the
+            // mark-done shortcut bypasses it and uses the auto-
+            // registered MarkTicketDoneTool instead.
+            .tool(ManageTicketsTool)
+            .event_handler(handler);
+        tickets.add(agent);
+
+        if let Some(schema) = schema {
+            tickets.task_schema("go", schema);
+        } else {
+            tickets.task("go");
+        }
+
+        let _ = tickets.run_dry().await;
+        let events = collected.lock().unwrap().clone();
+        let settled = tickets.first();
+        (events, provider, settled)
+    }
+
+    // =====================================================================
+    // Bucket A — request retries
+    // =====================================================================
+
+    #[tokio::test]
+    async fn retry_succeeds_after_rate_limit() {
+        let provider = MockProvider::with_results(vec![
+            Err(rate_limit()),
+            Err(rate_limit()),
+            Ok(mark_done_response()),
+        ]);
+        let (events, provider, settled) = run_one(provider, 3, 10, None).await;
+
+        assert_eq!(provider.requests(), 3);
+        assert_eq!(retries_in(&events).len(), 2);
+        assert!(failures_in(&events).is_empty());
+        assert_eq!(settled.unwrap().status(), Status::Done);
+    }
+
+    #[tokio::test]
+    async fn no_retry_on_auth_error() {
+        let provider =
+            MockProvider::with_results(vec![Err(ProviderError::AuthenticationFailed {
+                message: "unauthorized".into(),
+            })]);
+        let (events, _, _) = run_one(provider, 3, 10, None).await;
+
+        // Path A re-claims an unfailed ticket, so several
+        // `RequestFailed`s land before the run-dry timeout. The first
+        // one carries the scripted error; what matters is that no
+        // retries fire.
+        assert!(retries_in(&events).is_empty());
+        let failures = failures_in(&events);
+        assert!(!failures.is_empty());
+        assert!(failures[0].contains("unauthorized"));
+    }
+
+    #[tokio::test]
+    async fn retries_exhausted_emits_request_failed() {
+        let provider = MockProvider::with_results(vec![
+            Err(rate_limit()),
+            Err(rate_limit()),
+            Err(rate_limit()),
+        ]);
+        let (events, _, _) = run_one(provider, 2, 10, None).await;
+
+        let retries: Vec<(u32, u32)> = retries_in(&events)
+            .into_iter()
+            .map(|(a, m, _)| (a, m))
+            .collect();
+        assert_eq!(retries, vec![(1, 2), (2, 2)]);
+        // Path A re-claims an unfailed ticket, so the same scenario
+        // can emit several `RequestFailed`s before the run-dry timeout
+        // cuts the loop. The first one is the contract under test.
+        let failures = failures_in(&events);
+        assert!(!failures.is_empty());
+        assert!(failures[0].contains("rate limited"));
+    }
+
+    #[tokio::test]
+    async fn happy_path_emits_no_request_failed() {
+        let provider = MockProvider::with_results(vec![Ok(mark_done_response())]);
+        let (events, _, settled) = run_one(provider, 3, 10, None).await;
+
+        assert!(retries_in(&events).is_empty());
+        assert!(failures_in(&events).is_empty());
+        assert_eq!(settled.unwrap().status(), Status::Done);
+    }
+
+    #[tokio::test]
+    async fn max_retries_on_event_matches_policy() {
+        for max_retries in [0u32, 1, 3, 5] {
+            // Exactly `max_retries + 1` retryable errors so the first
+            // process_ticket cycle exhausts them. Any Path A re-claim
+            // afterwards hits the MockProvider's non-retryable
+            // exhausted-fallback, which doesn't add extra retries.
+            let results: Vec<_> = (0..=max_retries).map(|_| Err(rate_limit())).collect();
+            let provider = MockProvider::with_results(results);
+            let (events, _, _) = run_one(provider, max_retries, 10, None).await;
+
+            let retries = retries_in(&events);
+            assert_eq!(
+                retries.len() as u32,
+                max_retries,
+                "max_retries={max_retries}",
+            );
+            for (_, evt_max, _) in &retries {
+                assert_eq!(*evt_max, max_retries);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn max_request_retries_zero_goes_straight_to_request_failed() {
+        let provider = MockProvider::with_results(vec![Err(rate_limit())]);
+        let (events, _, _) = run_one(provider, 0, 10, None).await;
+
+        // Same Path-A re-claim caveat as the other terminal-error
+        // tests: assert structure (no retries, at least one failure),
+        // not exact counts.
+        assert!(retries_in(&events).is_empty());
+        assert!(!failures_in(&events).is_empty());
+    }
+
+    #[tokio::test]
+    async fn request_retried_attempt_numbers_are_one_based() {
+        let provider = MockProvider::with_results(vec![
+            Err(rate_limit()),
+            Err(rate_limit()),
+            Ok(mark_done_response()),
+        ]);
+        let (events, _, _) = run_one(provider, 4, 10, None).await;
+
+        let attempts: Vec<u32> = retries_in(&events).into_iter().map(|(a, ..)| a).collect();
+        assert_eq!(attempts, vec![1, 2]);
+    }
+
+    #[tokio::test]
+    async fn request_retried_carries_provider_error_display() {
+        let provider = MockProvider::with_results(vec![
+            Err(connection_failed("dns lookup failed: no such host")),
+            Ok(mark_done_response()),
+        ]);
+        let (events, _, _) = run_one(provider, 3, 10, None).await;
+
+        let retries = retries_in(&events);
+        assert_eq!(retries.len(), 1);
+        assert!(retries[0].2.contains("dns lookup failed"));
+    }
+
+    #[tokio::test]
+    async fn request_failed_carries_terminal_error_display_for_each_non_retryable_variant() {
+        let cases: Vec<(ProviderError, &'static str)> = vec![
+            (
+                ProviderError::AuthenticationFailed {
+                    message: "bad key 401".into(),
+                },
+                "bad key 401",
+            ),
+            (
+                ProviderError::PermissionDenied {
+                    message: "no access 403".into(),
+                },
+                "no access 403",
+            ),
+            (
+                ProviderError::ModelNotFound {
+                    message: "unknown-model-xyz".into(),
+                },
+                "unknown-model-xyz",
+            ),
+            (
+                ProviderError::SafetyFilterTriggered {
+                    message: "blocked by safety-filter-7".into(),
+                },
+                "safety-filter-7",
+            ),
+            (
+                ProviderError::ResponseMalformed {
+                    message: "malformed-json-token".into(),
+                },
+                "malformed-json-token",
+            ),
+        ];
+
+        for (err, needle) in cases {
+            let provider = MockProvider::with_results(vec![Err(err)]);
+            let (events, _, _) = run_one(provider, 3, 10, None).await;
+
+            // Same Path-A re-claim caveat as the other terminal-error
+            // tests: the first failure is the scripted one; later
+            // entries come from re-claim cycles hitting the
+            // exhausted-fallback.
+            let failures = failures_in(&events);
+            assert!(!failures.is_empty(), "{needle}");
+            assert!(failures[0].contains(needle), "{needle}: {}", failures[0]);
+            assert!(retries_in(&events).is_empty(), "{needle}");
+        }
+    }
+
+    // =====================================================================
+    // Bucket B — backoff timing
+    // =====================================================================
+
+    #[tokio::test(start_paused = true)]
+    async fn request_retried_fires_after_backoff_sleep_not_before() {
+        let provider = MockProvider::with_results(vec![
+            Err(ProviderError::RateLimited {
+                message: "rl".into(),
+                status: 429,
+                retry_delay: Some(Duration::from_millis(1_000)),
+            }),
+            Ok(mark_done_response()),
+        ]);
+        let collected: Arc<StdMutex<Vec<Event>>> = Arc::new(StdMutex::new(Vec::new()));
+        let handler: Arc<dyn Fn(Event) + Send + Sync> = {
+            let c = Arc::clone(&collected);
+            Arc::new(move |e| c.lock().unwrap().push(e))
+        };
+
+        let tickets = TicketSystem::new()
+            .max_request_retries(3)
+            .request_retry_delay(Duration::from_millis(1));
+        let agent = Agent::new()
+            .name("tester")
+            .provider(provider as Arc<dyn Provider>)
+            .model("mock")
+            .role("test")
+            .event_handler(handler);
+        tickets.add(agent);
+        tickets.task("go");
+
+        let run_fut = tickets.run_dry();
+        let check_fut = async {
+            for _ in 0..20 {
+                tokio::task::yield_now().await;
+            }
+            let retries = || {
+                collected
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|e| matches!(e.kind, EventKind::RequestRetried { .. }))
+                    .count()
+            };
+            assert_eq!(retries(), 1, "retry event fires immediately on Err");
+
+            tokio::time::advance(Duration::from_millis(999)).await;
+            for _ in 0..20 {
+                tokio::task::yield_now().await;
+            }
+            // sleep is still in progress; no second retry yet
+            assert_eq!(retries(), 1);
+            tokio::time::advance(Duration::from_millis(2)).await;
+            for _ in 0..20 {
+                tokio::task::yield_now().await;
+            }
+            // sleep done; mark_done_response served on the next attempt
+        };
+
+        let (_, _) = tokio::join!(run_fut, check_fut);
+    }
+
+    // =====================================================================
+    // Bucket E — text-only replies (no-tool branch terminates the ticket)
+    // =====================================================================
+
+    #[tokio::test]
+    async fn text_reply_no_schema_settles_done() {
+        let provider = MockProvider::with_results(vec![Ok(text_response("Hello!"))]);
+        let (events, provider, settled) = run_one(provider, 3, 10, None).await;
+
+        assert_eq!(provider.requests(), 1);
+        let done = events
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::TicketDone { .. }))
+            .count();
+        let failed = events
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::TicketFailed { .. }))
+            .count();
+        assert_eq!(done, 1);
+        assert_eq!(failed, 0);
+        assert_eq!(settled.unwrap().status(), Status::Done);
+    }
+
+    #[tokio::test]
+    async fn text_reply_with_schema_force_fails_when_result_not_satisfied() {
+        let provider = MockProvider::with_results(vec![Ok(text_response("Hello!"))]);
+        let (events, provider, settled) =
+            run_one(provider, 3, 10, Some(schema_for_partial_sum())).await;
+
+        assert_eq!(provider.requests(), 1);
+        let failed = events
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::TicketFailed { .. }))
+            .count();
+        let done = events
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::TicketDone { .. }))
+            .count();
+        assert_eq!(failed, 1);
+        assert_eq!(done, 0);
+        assert_eq!(settled.unwrap().status(), Status::Failed);
+    }
+
+    #[tokio::test]
+    async fn mark_ticket_done_tool_call_settles_via_loop_shortcut() {
+        let provider = MockProvider::with_results(vec![Ok(mark_done_with_result(
+            r#"{"partial_sum": 42}"#,
+        ))]);
+        let (events, provider, settled) =
+            run_one(provider, 3, 10, Some(schema_for_partial_sum())).await;
+
+        assert_eq!(provider.requests(), 1);
+        let done = events
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::TicketDone { .. }))
+            .count();
+        let failed = events
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::TicketFailed { .. }))
+            .count();
+        assert_eq!(done, 1);
+        assert_eq!(failed, 0);
+        let settled = settled.unwrap();
+        assert_eq!(settled.status(), Status::Done);
+        assert_eq!(settled.result(), Some(r#"{"partial_sum": 42}"#));
+    }
+
+    #[tokio::test]
+    async fn mark_ticket_done_tool_call_with_invalid_result_force_fails() {
+        let provider =
+            MockProvider::with_results(vec![Ok(mark_done_with_result("not json"))]);
+        let (events, provider, settled) =
+            run_one(provider, 3, 10, Some(schema_for_partial_sum())).await;
+
+        // The shortcut writes the bad result, the schema check fails,
+        // ticket force-fails. There's no tool-execution path here, so
+        // schema-retry doesn't fire — this is the terminal classifier
+        // for the mark-done shortcut.
+        assert_eq!(provider.requests(), 1);
+        let failed = events
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::TicketFailed { .. }))
+            .count();
+        let done = events
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::TicketDone { .. }))
+            .count();
+        assert_eq!(failed, 1);
+        assert_eq!(done, 0);
+        assert_eq!(settled.unwrap().status(), Status::Failed);
+    }
+
+    // =====================================================================
+    // Bucket C — schema retries
+    // =====================================================================
+
+    fn schema_for_partial_sum() -> Schema {
+        Schema::parse(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "partial_sum": { "type": "integer" }
+            },
+            "required": ["partial_sum"]
+        }))
+        .expect("valid schema")
+    }
+
+    #[tokio::test]
+    async fn schema_violation_emits_schema_retried_with_attempt_numbers() {
+        let provider = MockProvider::with_results(vec![
+            Ok(manage_done_with_result("not json")),
+            Ok(manage_done_with_result("not json again")),
+            Ok(manage_done_with_result(r#"{"partial_sum": 42}"#)),
+        ]);
+        let (events, _, settled) =
+            run_one(provider, 3, 10, Some(schema_for_partial_sum())).await;
+
+        let schema_retries = schema_retries_in(&events);
+        let attempts: Vec<u32> = schema_retries.iter().map(|(a, ..)| *a).collect();
+        assert_eq!(attempts, vec![1, 2]);
+        for (_, max_attempts, _) in &schema_retries {
+            assert_eq!(*max_attempts, 10);
+        }
+        assert_eq!(settled.unwrap().status(), Status::Done);
+    }
+
+    #[tokio::test]
+    async fn schema_retry_appends_directive_to_user_message() {
+        let provider = MockProvider::with_results(vec![
+            Ok(manage_done_with_result("not json")),
+            Ok(manage_done_with_result(r#"{"partial_sum": 1}"#)),
+        ]);
+        let (events, _, _) = run_one(provider, 3, 10, Some(schema_for_partial_sum())).await;
+        // We can't peek at the second request directly without a richer
+        // mock. Instead, assert the schema-retry event message carries
+        // the validator detail (which is what the directive uses for
+        // {detail} substitution).
+        let schema_retries = schema_retries_in(&events);
+        assert_eq!(schema_retries.len(), 1);
+        assert!(
+            !schema_retries[0].2.is_empty(),
+            "schema-retry message must carry validator detail"
+        );
+    }
+
+    #[tokio::test]
+    async fn schema_retry_exhausted_emits_policy_violated_and_force_fails_ticket() {
+        let provider = MockProvider::with_results(vec![
+            Ok(manage_done_with_result("nope")),
+            Ok(manage_done_with_result("still nope")),
+            Ok(manage_done_with_result("never")),
+        ]);
+        let (events, _, settled) =
+            run_one(provider, 3, 2, Some(schema_for_partial_sum())).await;
+
+        let policy_violated = events.iter().any(|e| {
+            matches!(
+                &e.kind,
+                EventKind::PolicyViolated {
+                    kind: PolicyKind::MaxSchemaRetries,
+                    limit: 2,
+                },
+            )
+        });
+        assert!(policy_violated, "expected MaxSchemaRetries PolicyViolated");
+        assert_eq!(settled.unwrap().status(), Status::Failed);
+    }
+
+    // =====================================================================
+    // Bucket D — cancellation interactions with retries
+    // =====================================================================
+
+    #[tokio::test(start_paused = true)]
+    async fn cancel_during_backoff_sleep_aborts_immediately() {
+        let provider = MockProvider::with_results(vec![Err(ProviderError::RateLimited {
+            message: "rl".into(),
+            status: 429,
+            retry_delay: Some(Duration::from_secs(60)),
+        })]);
+        let collected: Arc<StdMutex<Vec<Event>>> = Arc::new(StdMutex::new(Vec::new()));
+        let handler: Arc<dyn Fn(Event) + Send + Sync> = {
+            let c = Arc::clone(&collected);
+            Arc::new(move |e| c.lock().unwrap().push(e))
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let tickets = TicketSystem::new()
+            .interrupt_signal(Arc::clone(&cancel))
+            .max_request_retries(3)
+            .request_retry_delay(Duration::from_secs(60));
+        let agent = Agent::new()
+            .name("tester")
+            .provider(provider as Arc<dyn Provider>)
+            .model("mock")
+            .role("test")
+            .event_handler(handler);
+        tickets.add(agent);
+        tickets.task("go");
+
+        let run_fut = tickets.run_dry();
+        let cancel_fut = async {
+            // Let the loop hit the inter-attempt sleep.
+            for _ in 0..20 {
+                tokio::task::yield_now().await;
+            }
+            cancel.store(true, Ordering::Relaxed);
+            // wait_for_signal polls on a 50ms cadence; advance past it.
+            tokio::time::advance(Duration::from_millis(100)).await;
+            for _ in 0..20 {
+                tokio::task::yield_now().await;
+            }
+        };
+
+        let _ = tokio::join!(run_fut, cancel_fut);
+        let events = collected.lock().unwrap().clone();
+        // One RequestRetried fires (the initial Err triggers it);
+        // cancel kicks in during the 60s backoff sleep so the loop
+        // exits before any further provider request.
+        assert_eq!(retries_in(&events).len(), 1);
+        assert!(failures_in(&events).is_empty());
     }
 }

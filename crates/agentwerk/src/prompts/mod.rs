@@ -12,6 +12,17 @@ pub(crate) use section::Section;
 
 const DEFAULT_CONTEXT_TEMPLATE: &str = include_str!("default.context.md");
 
+const SCHEMA_RETRY_TEMPLATE: &str = include_str!("schema-retry.directive.md");
+
+/// Render the corrective user message sent after a schema-validation
+/// failure. Pushed alongside the failing tool's `ToolResult::SchemaError`
+/// content block so the model sees both the error and a directive to
+/// reply with a corrected JSON value. Ported from
+/// `aa725dc^:crates/agentwerk/src/prompts/contract-retry.directive.md`.
+pub(crate) fn schema_retry(detail: &str) -> String {
+    SCHEMA_RETRY_TEMPLATE.replace("{detail}", detail)
+}
+
 /// Build the default context body: a `## Context` markdown block with the
 /// working directory, platform, OS version, and date. Pass the result to
 /// `Agent::context(...)` if you want this block as the agent's first user
@@ -59,6 +70,13 @@ fn format_current_date() -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn schema_retry_substitutes_detail_placeholder() {
+        let rendered = schema_retry("expected integer at /partial_sum");
+        assert!(rendered.contains("expected integer at /partial_sum"));
+        assert!(!rendered.contains("{detail}"));
+    }
 
     #[test]
     fn default_context_renders_markdown_block_with_substituted_values() {

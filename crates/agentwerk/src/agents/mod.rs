@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod r#loop;
 pub mod policy;
+pub(crate) mod retry;
 pub mod stats;
 pub mod tickets;
 

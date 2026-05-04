@@ -147,6 +147,29 @@ fn print_event(event: &Event, style: &Style) {
             let short = message.split_once(':').map(|(h, _)| h).unwrap_or(message);
             eprintln!("\n{}✗ request failed: {short}{}", style.red, style.reset);
         }
+        EventKind::RequestRetried {
+            attempt,
+            max_attempts,
+            message,
+            ..
+        } => {
+            let short = message.split_once(':').map(|(h, _)| h).unwrap_or(message);
+            eprintln!(
+                "\n{}↻ retry {attempt}/{max_attempts}: {short}{}",
+                style.dim, style.reset,
+            );
+        }
+        EventKind::SchemaRetried {
+            attempt,
+            max_attempts,
+            message,
+        } => {
+            let short = message.split_once(':').map(|(h, _)| h).unwrap_or(message);
+            eprintln!(
+                "\n{}↻ schema retry {attempt}/{max_attempts}: {short}{}",
+                style.dim, style.reset,
+            );
+        }
         EventKind::PolicyViolated { kind, limit } => {
             eprintln!(
                 "\n{}✗ policy {kind:?} (limit {limit}){}",

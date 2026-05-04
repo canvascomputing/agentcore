@@ -68,6 +68,15 @@ pub enum EventKind {
         kind: RequestErrorKind,
         message: String,
     },
+    /// Provider request failed transiently; the loop is about to sleep
+    /// and retry. `attempt` is 1-based; on the first retry the user
+    /// sees `attempt = 1, max_attempts = N`.
+    RequestRetried {
+        attempt: u32,
+        max_attempts: u32,
+        kind: RequestErrorKind,
+        message: String,
+    },
     /// Provider reported token counts for the last request.
     TokensReported { model: String, usage: TokenUsage },
     /// A streamed text chunk arrived from the provider.
@@ -94,6 +103,14 @@ pub enum EventKind {
     },
     /// A configured policy was exceeded; the run is about to stop.
     PolicyViolated { kind: PolicyKind, limit: u64 },
+    /// A `done`-side schema validation failed; the loop is about to
+    /// re-prompt the model with a corrective directive. `attempt` is
+    /// 1-based.
+    SchemaRetried {
+        attempt: u32,
+        max_attempts: u32,
+        message: String,
+    },
 }
 
 /// Default observer. Prints ticket lifecycle, tool activity, policy
@@ -127,6 +144,21 @@ pub fn default_logger() -> Arc<dyn Fn(Event) + Send + Sync> {
             }
             EventKind::RequestFailed { message, .. } => {
                 eprintln!("[{agent}] request failed: {message}");
+            }
+            EventKind::RequestRetried {
+                attempt,
+                max_attempts,
+                message,
+                ..
+            } => {
+                eprintln!("[{agent}] retry {attempt}/{max_attempts}: {message}");
+            }
+            EventKind::SchemaRetried {
+                attempt,
+                max_attempts,
+                message,
+            } => {
+                eprintln!("[{agent}] schema retry {attempt}/{max_attempts}: {message}");
             }
             EventKind::PolicyViolated { kind, limit } => {
                 eprintln!("[{agent}] policy violated: {kind:?} limit={limit}");
@@ -162,6 +194,17 @@ mod tests {
             EventKind::RequestFailed {
                 kind: RequestErrorKind::ConnectionFailed,
                 message: "timeout".into(),
+            },
+            EventKind::RequestRetried {
+                attempt: 1,
+                max_attempts: 10,
+                kind: RequestErrorKind::ConnectionFailed,
+                message: "transient".into(),
+            },
+            EventKind::SchemaRetried {
+                attempt: 1,
+                max_attempts: 5,
+                message: "missing required field 'idx'".into(),
             },
             EventKind::TokensReported {
                 model: "m".into(),
