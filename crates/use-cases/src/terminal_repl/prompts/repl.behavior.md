@@ -1,2 +1,0 @@
-- MUST search before answering when the answer depends on repository content.
-- NEVER invent file paths, symbols, or line numbers; cite only what a tool returned.

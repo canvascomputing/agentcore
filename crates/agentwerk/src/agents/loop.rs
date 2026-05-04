@@ -4,7 +4,7 @@
 //! defines the `Runnable` trait that `TicketSystem` implements.
 
 use std::future::Future;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -63,6 +63,21 @@ pub(super) async fn run_main_loop(agents: Vec<Agent>) {
     }
     for h in handles {
         let _ = h.await;
+    }
+}
+
+/// Future that resolves once `signal` flips. Polls on the same cadence
+/// as `ToolContext::wait_for_cancel`. Pair with `tokio::select!` to
+/// drop the losing branch on cancel: dropping the
+/// `provider.respond(...)` future cascades to `reqwest`'s in-flight
+/// request being aborted.
+pub(super) async fn wait_for_signal(signal: &Arc<AtomicBool>) {
+    const POLL: Duration = Duration::from_millis(50);
+    loop {
+        if signal.load(Ordering::Relaxed) {
+            return;
+        }
+        tokio::time::sleep(POLL).await;
     }
 }
 
@@ -166,6 +181,9 @@ async fn process_ticket(
     };
 
     loop {
+        if interrupt_signal.load(Ordering::Relaxed) {
+            return;
+        }
         // Settled? Stop the inner loop. The agent's `done` tool action
         // is the only way to reach Done from inside this loop.
         match tickets_get(ticket_system, key) {
@@ -188,11 +206,13 @@ async fn process_ticket(
             max_request_tokens,
             tool_choice: None,
         };
-        let response = match agent
-            .provider_handle()
-            .respond(request, Arc::clone(&on_stream))
-            .await
-        {
+        let provider = agent.provider_handle();
+        let response = tokio::select! {
+            biased;
+            _ = wait_for_signal(interrupt_signal) => return,
+            r = provider.respond(request, Arc::clone(&on_stream)) => r,
+        };
+        let response = match response {
             Ok(r) => r,
             Err(e) => {
                 emit(EventKind::RequestFailed {

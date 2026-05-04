@@ -27,7 +27,6 @@ use agentwerk::{
 use serde_json::{json, Value};
 
 const ROLE: &str = include_str!("prompts/worker.role.md");
-const BEHAVIOR: &str = include_str!("prompts/worker.behavior.md");
 
 #[tokio::main]
 async fn main() {
@@ -43,7 +42,7 @@ async fn main() {
 
     print_intro(&args, total, &style);
 
-    let role = format!("{}\n\n{}", ROLE.trim(), BEHAVIOR.trim());
+    let role = ROLE.trim();
 
     let schema = Schema::parse(json!({
         "type": "object",
@@ -88,7 +87,7 @@ async fn main() {
             .name(format!("worker_{w}"))
             .provider(Arc::clone(&provider))
             .model(&model)
-            .role(&role)
+            .role(role)
             .label("worker")
             .tool(python_tool())
             .tool(ManageTicketsTool)

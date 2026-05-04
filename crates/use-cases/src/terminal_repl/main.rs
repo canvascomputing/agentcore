@@ -1,21 +1,26 @@
 //! Interactive terminal chat. Each input line gets a fresh
 //! `TicketSystem` + `Agent`; the model's response streams to stdout
 //! via `EventKind::TextChunkReceived`, and the agent settles its
-//! ticket via `manage_tickets_tool`. Ctrl-C at the prompt exits the
-//! REPL; Ctrl-C during a turn cancels that turn (a second Ctrl-C
-//! while the cancel is still draining force-quits with exit code 130).
-//! `/exit` quits cleanly.
+//! ticket via the auto-registered `mark_ticket_done_tool`. Ctrl-C at
+//! the prompt exits the REPL with code 130; Ctrl-C during a turn
+//! cancels that turn (a second Ctrl-C while the cancel is still
+//! draining force-quits with exit code 130). `/exit` quits cleanly.
+//!
+//! Every exit path goes through `std::process::exit` rather than a
+//! plain `return`: the stdin reader runs on a tokio blocking thread
+//! parked in `read(2)`, which the runtime can't cancel on shutdown.
+//! Exiting the process directly bypasses the runtime drop and avoids
+//! a hang on outstanding blocking tasks.
 
 use std::io::{self, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use agentwerk::providers::{from_env, model_from_env};
-use agentwerk::tools::{GlobTool, GrepTool, ListDirectoryTool, ManageTicketsTool, ReadFileTool};
+use agentwerk::tools::{GlobTool, GrepTool, ListDirectoryTool, ReadFileTool};
 use agentwerk::{Agent, Event, EventKind, Runnable, Status, TicketSystem};
 
 const ROLE: &str = include_str!("prompts/repl.role.md");
-const BEHAVIOR: &str = include_str!("prompts/repl.behavior.md");
 
 #[tokio::main]
 async fn main() {
@@ -27,13 +32,7 @@ async fn main() {
 
     let provider = from_env().expect("LLM provider required");
     let model = model_from_env().expect("model name required");
-    let role = format!(
-        "{}\n\n{}\n\n- When you have answered the user, settle the ticket by \
-         calling `manage_tickets_tool` with `action: \"done\"` and `result` set \
-         to a brief one-line summary.",
-        ROLE.trim(),
-        BEHAVIOR.trim(),
-    );
+    let role = ROLE.trim();
 
     let user_prompt = format!("\n{}you ›{} ", style.user, style.reset);
 
@@ -42,15 +41,15 @@ async fn main() {
             line = read_line(&user_prompt) => line,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\n{}^C{}", style.dim, style.reset);
-                return;
+                std::process::exit(130);
             }
         };
-        let Some(line) = line else { return };
+        let Some(line) = line else { std::process::exit(0) };
         if line.is_empty() {
             continue;
         }
         if line == "/exit" || line == "/quit" {
-            return;
+            std::process::exit(0);
         }
 
         announce_assistant(&style);
@@ -68,12 +67,11 @@ async fn main() {
             .name("orchestrator")
             .provider(Arc::clone(&provider))
             .model(&model)
-            .role(&role)
+            .role(role)
             .tool(GlobTool)
             .tool(GrepTool)
             .tool(ListDirectoryTool)
             .tool(ReadFileTool)
-            .tool(ManageTicketsTool)
             .event_handler(handler);
 
         tickets.add(agent);
