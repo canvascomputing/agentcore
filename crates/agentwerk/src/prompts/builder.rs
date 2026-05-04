@@ -8,7 +8,7 @@ use super::section::Section;
 
 /// Assembled prompt envelope. Field order follows the canonical spec
 /// section order: context first, then the system message (role +
-/// appended directives), then work. Tools are not present here — they
+/// appended directives), then task. Tools are not present here — they
 /// reach the model as structured data via the registry, not as a
 /// section in the prompt envelope.
 #[allow(dead_code)]
@@ -20,7 +20,7 @@ pub struct Prompt {
     /// blank lines. May be empty when no role is set.
     pub system: String,
     /// Task message; `None` means the caller will supply a task later.
-    pub work: Option<String>,
+    pub task: Option<String>,
 }
 
 /// Inverse of `Agent::{context, role}`. Owns spacing rules and the
@@ -30,7 +30,7 @@ pub struct Prompt {
 pub struct PromptBuilder {
     context: Option<Section>,
     role: Option<Section>,
-    work: Option<Section>,
+    task: Option<Section>,
     directives: Vec<Section>,
 }
 
@@ -47,8 +47,8 @@ impl PromptBuilder {
     }
 
     #[allow(dead_code)]
-    pub fn work(mut self, body: impl Into<Cow<'static, str>>) -> Self {
-        self.work = Some(Section::work(body));
+    pub fn task(mut self, body: impl Into<Cow<'static, str>>) -> Self {
+        self.task = Some(Section::task(body));
         self
     }
 
@@ -62,7 +62,7 @@ impl PromptBuilder {
 
     pub fn build(self) -> Prompt {
         let context = self.context.map(|s| s.render()).filter(|s| !s.is_empty());
-        let work = self.work.map(|s| s.render()).filter(|s| !s.is_empty());
+        let task = self.task.map(|s| s.render()).filter(|s| !s.is_empty());
 
         let mut system_parts: Vec<String> = Vec::new();
         if let Some(role) = self.role {
@@ -81,7 +81,7 @@ impl PromptBuilder {
         Prompt {
             context,
             system: system_parts.join("\n\n"),
-            work,
+            task,
         }
     }
 }
@@ -97,7 +97,7 @@ mod tests {
             .build();
         assert_eq!(p.system, "You are a senior reviewer.");
         assert!(p.context.is_none());
-        assert!(p.work.is_none());
+        assert!(p.task.is_none());
     }
 
     #[test]
@@ -123,11 +123,11 @@ mod tests {
     }
 
     #[test]
-    fn work_renders_bare() {
+    fn task_renders_bare() {
         let p = PromptBuilder::default()
             .role("R")
-            .work("Review the auth module.")
+            .task("Review the auth module.")
             .build();
-        assert_eq!(p.work.as_deref(), Some("Review the auth module."));
+        assert_eq!(p.task.as_deref(), Some("Review the auth module."));
     }
 }

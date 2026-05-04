@@ -29,10 +29,10 @@ pub(crate) trait TicketStats: Send + Sync {
     fn record_created(&self);
     /// First call wins (CAS into `started_at`); later calls are no-ops.
     fn record_started(&self, when: u64);
-    /// Adds `run_time.as_secs()` and `work_time.as_secs()` to the
-    /// corresponding atomic sums.
-    fn record_done(&self, run_time: Duration, work_time: Duration);
-    fn record_failed(&self, run_time: Duration, work_time: Duration);
+    /// Adds `ticket_duration.as_secs()` and `work_duration.as_secs()` to
+    /// the corresponding atomic sums.
+    fn record_done(&self, ticket_duration: Duration, work_duration: Duration);
+    fn record_failed(&self, ticket_duration: Duration, work_duration: Duration);
 }
 
 /// Run-wide counters. Implements every recorder protocol; exposes
@@ -55,11 +55,11 @@ pub struct Stats {
     /// `mark_finished` stamps it when the watcher fires.
     finished_at: AtomicU64,
     /// Sum of finished tickets' creation→terminal durations, seconds.
-    run_time: AtomicU64,
+    total_ticket_duration: AtomicU64,
     /// Sum of finished tickets' started→terminal durations, seconds.
     /// With concurrent agents this can exceed the run's wall-clock
     /// duration.
-    work_time: AtomicU64,
+    total_work_duration: AtomicU64,
 }
 
 impl Stats {
@@ -76,8 +76,8 @@ impl Stats {
             tickets_failed: AtomicU64::new(0),
             started_at: AtomicU64::new(0),
             finished_at: AtomicU64::new(0),
-            run_time: AtomicU64::new(0),
-            work_time: AtomicU64::new(0),
+            total_ticket_duration: AtomicU64::new(0),
+            total_work_duration: AtomicU64::new(0),
         }
     }
 
@@ -144,19 +144,19 @@ impl Stats {
     }
 
     /// Sum of finished tickets' creation→terminal spans.
-    pub fn run_time(&self) -> Duration {
-        Duration::from_secs(self.run_time.load(Ordering::Relaxed))
+    pub fn total_ticket_duration(&self) -> Duration {
+        Duration::from_secs(self.total_ticket_duration.load(Ordering::Relaxed))
     }
 
     /// Mean of finished tickets' creation→terminal spans. `None`
     /// while no ticket has finished.
-    pub fn avg_run_time(&self) -> Option<Duration> {
+    pub fn avg_ticket_duration(&self) -> Option<Duration> {
         let n =
             self.tickets_done.load(Ordering::Relaxed) + self.tickets_failed.load(Ordering::Relaxed);
         if n == 0 {
             None
         } else {
-            let secs = self.run_time.load(Ordering::Relaxed);
+            let secs = self.total_ticket_duration.load(Ordering::Relaxed);
             Some(Duration::from_secs(secs / n))
         }
     }
@@ -164,8 +164,8 @@ impl Stats {
     /// Sum of finished tickets' started→terminal spans. With
     /// concurrent agents this aggregates work across all of them, so
     /// it can exceed `run_duration`.
-    pub fn work_time(&self) -> Duration {
-        Duration::from_secs(self.work_time.load(Ordering::Relaxed))
+    pub fn total_work_duration(&self) -> Duration {
+        Duration::from_secs(self.total_work_duration.load(Ordering::Relaxed))
     }
 
     /// Stamp the run's finish wall-clock. Idempotent in practice
@@ -216,20 +216,20 @@ impl TicketStats for Stats {
             .compare_exchange(0, when, Ordering::Relaxed, Ordering::Relaxed);
     }
 
-    fn record_done(&self, run_time: Duration, work_time: Duration) {
+    fn record_done(&self, ticket_duration: Duration, work_duration: Duration) {
         self.tickets_done.fetch_add(1, Ordering::Relaxed);
-        self.run_time
-            .fetch_add(run_time.as_secs(), Ordering::Relaxed);
-        self.work_time
-            .fetch_add(work_time.as_secs(), Ordering::Relaxed);
+        self.total_ticket_duration
+            .fetch_add(ticket_duration.as_secs(), Ordering::Relaxed);
+        self.total_work_duration
+            .fetch_add(work_duration.as_secs(), Ordering::Relaxed);
     }
 
-    fn record_failed(&self, run_time: Duration, work_time: Duration) {
+    fn record_failed(&self, ticket_duration: Duration, work_duration: Duration) {
         self.tickets_failed.fetch_add(1, Ordering::Relaxed);
-        self.run_time
-            .fetch_add(run_time.as_secs(), Ordering::Relaxed);
-        self.work_time
-            .fetch_add(work_time.as_secs(), Ordering::Relaxed);
+        self.total_ticket_duration
+            .fetch_add(ticket_duration.as_secs(), Ordering::Relaxed);
+        self.total_work_duration
+            .fetch_add(work_duration.as_secs(), Ordering::Relaxed);
     }
 }
 
@@ -249,10 +249,10 @@ mod tests {
         assert_eq!(s.tickets_created(), 0);
         assert_eq!(s.tickets_done(), 0);
         assert_eq!(s.tickets_failed(), 0);
-        assert_eq!(s.run_time(), Duration::ZERO);
-        assert_eq!(s.work_time(), Duration::ZERO);
+        assert_eq!(s.total_ticket_duration(), Duration::ZERO);
+        assert_eq!(s.total_work_duration(), Duration::ZERO);
         assert!(s.run_duration().is_none());
-        assert!(s.avg_run_time().is_none());
+        assert!(s.avg_ticket_duration().is_none());
         assert!(s.success_rate().is_none());
     }
 
@@ -285,8 +285,8 @@ mod tests {
         assert_eq!(s.tickets_created(), 2);
         assert_eq!(s.tickets_done(), 1);
         assert_eq!(s.tickets_failed(), 1);
-        assert_eq!(s.run_time(), Duration::from_secs(8));
-        assert_eq!(s.work_time(), Duration::from_secs(6));
+        assert_eq!(s.total_ticket_duration(), Duration::from_secs(8));
+        assert_eq!(s.total_work_duration(), Duration::from_secs(6));
     }
 
     #[test]
@@ -327,15 +327,15 @@ mod tests {
     }
 
     #[test]
-    fn avg_run_time_is_arithmetic_mean() {
+    fn avg_ticket_duration_is_arithmetic_mean() {
         let s = Stats::new();
         s.record_done(Duration::from_secs(2), Duration::from_secs(2));
         s.record_failed(Duration::from_secs(4), Duration::from_secs(4));
-        assert_eq!(s.avg_run_time(), Some(Duration::from_secs(3)));
+        assert_eq!(s.avg_ticket_duration(), Some(Duration::from_secs(3)));
     }
 
     #[test]
-    fn work_time_can_exceed_run_duration_with_concurrency() {
+    fn total_work_duration_can_exceed_run_duration_with_concurrency() {
         // Two tickets, each 5s of work, finished in a 6s window —
         // models 2 agents working in parallel.
         let s = Stats::new();
@@ -344,6 +344,6 @@ mod tests {
         s.record_done(Duration::from_secs(5), Duration::from_secs(5));
         s.mark_finished(7_000);
         assert_eq!(s.run_duration(), Some(Duration::from_secs(6)));
-        assert_eq!(s.work_time(), Duration::from_secs(10));
+        assert_eq!(s.total_work_duration(), Duration::from_secs(10));
     }
 }

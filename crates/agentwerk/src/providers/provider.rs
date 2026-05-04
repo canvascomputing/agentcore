@@ -58,7 +58,7 @@ pub enum ToolChoice {
 /// [`OpenAiProvider`](crate::providers::OpenAiProvider),
 /// [`MistralProvider`](crate::providers::MistralProvider),
 /// [`LiteLlmProvider`](crate::providers::LiteLlmProvider)) or pick one from the
-/// environment with [`from_env`](crate::providers::from_env).
+/// environment with [`provider_from_env`](crate::providers::provider_from_env).
 pub trait Provider: Send + Sync {
     /// Drive one model step. Emits incremental [`StreamEvent`]s via the
     /// callback as the model generates, then returns the assembled reply.

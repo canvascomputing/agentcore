@@ -133,9 +133,9 @@ impl Ticket {
         self.failed_at
     }
 
-    /// Wall-clock time from creation to terminal status (Done or
+    /// Wall-clock duration from creation to terminal status (Done or
     /// Failed), `None` while the ticket has not yet reached one.
-    pub fn run_time(&self) -> Option<Duration> {
+    pub fn duration(&self) -> Option<Duration> {
         let terminal = self.finished_at.or(self.failed_at)?;
         Some(Duration::from_millis(
             terminal.saturating_sub(self.created_at),
@@ -795,17 +795,17 @@ fn stamp_transition_timestamps(ticket: &mut Ticket, next: Status, now: u64) {
     }
 }
 
-/// Compute (run_time, work_time) for a ticket that just reached a
-/// terminal status. `run_time` is creation→terminal; `work_time` is
-/// started→terminal. Both default to zero if the relevant timestamps
-/// aren't both set.
+/// Compute (ticket_duration, work_duration) for a ticket that just
+/// reached a terminal status. `ticket_duration` is creation→terminal;
+/// `work_duration` is started→terminal. Both default to zero if the
+/// relevant timestamps aren't both set.
 fn terminal_durations(ticket: &Ticket) -> (Duration, Duration) {
-    let run_time = ticket.run_time().unwrap_or_default();
-    let work_time = match (ticket.started_at, ticket.finished_at.or(ticket.failed_at)) {
+    let ticket_duration = ticket.duration().unwrap_or_default();
+    let work_duration = match (ticket.started_at, ticket.finished_at.or(ticket.failed_at)) {
         (Some(start), Some(end)) => Duration::from_millis(end.saturating_sub(start)),
         _ => Duration::ZERO,
     };
-    (run_time, work_time)
+    (ticket_duration, work_duration)
 }
 
 /// Fire the appropriate recorder hook for a status transition. Called
@@ -815,7 +815,7 @@ fn fire_transition_recorder(
     prev: Status,
     next: Status,
     now: u64,
-    (run_time, work_time): (Duration, Duration),
+    (ticket_duration, work_duration): (Duration, Duration),
 ) {
     if prev == next {
         return;
@@ -824,8 +824,8 @@ fn fire_transition_recorder(
         stats.record_started(now);
     }
     match next {
-        Status::Done => stats.record_done(run_time, work_time),
-        Status::Failed => stats.record_failed(run_time, work_time),
+        Status::Done => stats.record_done(ticket_duration, work_duration),
+        Status::Failed => stats.record_failed(ticket_duration, work_duration),
         _ => {}
     }
 }

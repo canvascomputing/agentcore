@@ -12,7 +12,7 @@ pub(crate) mod stream;
 pub mod types;
 
 pub use anthropic::AnthropicProvider;
-pub use environment::{from_env, model_from_env};
+pub use environment::{model_from_env, provider_from_env};
 pub use error::{ProviderError, ProviderResult, RequestErrorKind};
 pub use litellm::LiteLlmProvider;
 pub use mistral::MistralProvider;

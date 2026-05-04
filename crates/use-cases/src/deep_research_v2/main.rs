@@ -20,7 +20,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use agentwerk::providers::{from_env, model_from_env, ProviderResult};
+use agentwerk::providers::{model_from_env, provider_from_env, ProviderResult};
 use agentwerk::tools::ManageTicketsTool;
 use agentwerk::{Agent, Event, EventKind, Runnable, Schema, TicketSystem, Tool, ToolResult};
 
@@ -34,7 +34,7 @@ async fn main() {
 
     eprintln!("Question: {question}\n");
 
-    let provider = from_env().expect("LLM provider required");
+    let provider = provider_from_env().expect("LLM provider required");
     let model = model_from_env().expect("model name required");
     let signal = setup_interrupt_signal();
     let event_handler: Arc<dyn Fn(Event) + Send + Sync> =
@@ -149,14 +149,17 @@ async fn main() {
     println!("\n{}\n", format_title_first(&parsed));
     let stats = tickets.stats();
     eprintln!("Duration:  {:?}", stats.run_duration().unwrap_or_default());
-    eprintln!("Work time: {:?}", stats.work_time());
+    eprintln!("Work time: {:?}", stats.total_work_duration());
     eprintln!(
         "Tickets:   {} done, {} failed ({:.0}%)",
         stats.tickets_done(),
         stats.tickets_failed(),
         stats.success_rate().map(|r| r * 100.0).unwrap_or(0.0),
     );
-    eprintln!("Avg time:  {:?}", stats.avg_run_time().unwrap_or_default());
+    eprintln!(
+        "Avg time:  {:?}",
+        stats.avg_ticket_duration().unwrap_or_default()
+    );
     eprintln!(
         "Tokens:    {} in, {} out",
         stats.input_tokens(),

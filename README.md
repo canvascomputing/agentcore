@@ -31,14 +31,14 @@ cargo add agentwerk
 ## Quick Start
 
 ```rust
-use agentwerk::providers::{from_env, model_from_env};
+use agentwerk::providers::{model_from_env, provider_from_env};
 use agentwerk::tools::ReadFileTool;
 use agentwerk::Agent;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let answer = Agent::new()
-        .provider(from_env()?)
+        .provider(provider_from_env()?)
         .model(&model_from_env()?)
         .role("Answer questions about this repository.")
         .tool(ReadFileTool)
@@ -102,9 +102,9 @@ let provider = AnthropicProvider::new(key)
 Pick a provider from environment variables (see [Environment](#environment)):
 
 ```rust
-use agentwerk::providers::{from_env, model_from_env};
+use agentwerk::providers::{model_from_env, provider_from_env};
 
-let provider = from_env()?;
+let provider = provider_from_env()?;
 let model = model_from_env()?;
 ```
 
@@ -337,13 +337,13 @@ Run-wide counters and timings. Read after `run()` / `run_dry()` (or any time dur
 | | Method | Description |
 |-|--------|-------------|
 | **Run** | `run_duration()` | Returns the duration from the first ticket start to the end of the run, or `None` while the run is still active. |
-| | `work_time()` | Returns the sum of every finished ticket's `started → terminal` span; may exceed `run_duration` with concurrent agents. |
+| | `total_work_duration()` | Returns the sum of every finished ticket's `started → terminal` span; may exceed `run_duration` with concurrent agents. |
 | **Tickets** | `tickets_created()` | Returns the total number of tickets created during the run. |
 | | `tickets_done()` | Returns the number of tickets that reached `Status::Done`. |
 | | `tickets_failed()` | Returns the number of tickets that reached `Status::Failed`. |
 | | `success_rate()` | Returns `tickets_done / (tickets_done + tickets_failed)`, or `None` until at least one ticket finishes. |
-| | `run_time()` | Returns the sum of every finished ticket's `creation → terminal` span. |
-| | `avg_run_time()` | Returns the mean of every finished ticket's `creation → terminal` span, or `None` until at least one ticket finishes. |
+| | `total_ticket_duration()` | Returns the sum of every finished ticket's `creation → terminal` span. |
+| | `avg_ticket_duration()` | Returns the mean of every finished ticket's `creation → terminal` span, or `None` until at least one ticket finishes. |
 | **Tokens** | `input_tokens()` | Returns the total input tokens across all provider responses. |
 | | `output_tokens()` | Returns the total output tokens across all provider responses. |
 | **Activity** | `steps()` | Returns the total ticket-claim iterations across all agents. |
@@ -354,14 +354,14 @@ Run-wide counters and timings. Read after `run()` / `run_dry()` (or any time dur
 ```rust
 let s = tickets.stats();
 println!("Duration:  {:?}", s.run_duration().unwrap_or_default());
-println!("Work time: {:?}", s.work_time());
+println!("Work time: {:?}", s.total_work_duration());
 println!(
     "Tickets:   {} done, {} failed ({:.0}%)",
     s.tickets_done(),
     s.tickets_failed(),
     s.success_rate().map(|r| r * 100.0).unwrap_or(0.0),
 );
-println!("Avg time:  {:?}", s.avg_run_time().unwrap_or_default());
+println!("Avg time:  {:?}", s.avg_ticket_duration().unwrap_or_default());
 println!("Tokens:    {} in, {} out", s.input_tokens(), s.output_tokens());
 println!(
     "Activity:  {} requests · {} tool calls · {} errors",

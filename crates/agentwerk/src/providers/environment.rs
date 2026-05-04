@@ -1,4 +1,4 @@
-//! Picks a provider from environment variables, so callers can say `Provider::from_env()` without coding the detection matrix themselves.
+//! Picks a provider from environment variables, so callers can say `provider_from_env()` without coding the detection matrix themselves.
 
 use std::sync::Arc;
 
@@ -44,7 +44,7 @@ pub(crate) fn env_required(name: &'static str) -> ProviderResult<String> {
 ///   4. `OPENAI_API_KEY`   → OpenAI
 ///
 /// Empty env vars are treated as unset.
-pub fn from_env() -> ProviderResult<Arc<dyn Provider>> {
+pub fn provider_from_env() -> ProviderResult<Arc<dyn Provider>> {
     let detected = detect_provider_name(|name| std::env::var(name).ok().filter(|v| !v.is_empty()))?;
     Ok(match detected {
         DetectedProvider::Anthropic => Arc::new(AnthropicProvider::from_env()?),
@@ -59,7 +59,7 @@ pub fn from_env() -> ProviderResult<Arc<dyn Provider>> {
 /// Priority:
 ///   1. `MODEL`        — generic override, wins regardless of provider.
 ///   2. `*_MODEL`      — provider-prefixed, selected by the same detection
-///                       matrix as [`from_env`] (e.g. `OPENAI_MODEL`).
+///                       matrix as [`provider_from_env`] (e.g. `OPENAI_MODEL`).
 ///   3. hosted default — the vendor's canonical model for the detected provider.
 pub fn model_from_env() -> ProviderResult<String> {
     model_from_env_with(|name| std::env::var(name).ok())

@@ -28,7 +28,7 @@ impl Section {
     }
 
     #[allow(dead_code)]
-    pub fn work(body: impl Into<Cow<'static, str>>) -> Self {
+    pub fn task(body: impl Into<Cow<'static, str>>) -> Self {
         Self {
             heading: None,
             body: body.into(),

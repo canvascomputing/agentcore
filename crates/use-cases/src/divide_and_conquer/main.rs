@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use agentwerk::providers::{from_env, model_from_env};
+use agentwerk::providers::{model_from_env, provider_from_env};
 use agentwerk::tools::ManageTicketsTool;
 use agentwerk::{
     Agent, Event, EventKind, Runnable, Schema, Status, TicketSystem, Tool, ToolResult,
@@ -31,7 +31,7 @@ const ROLE: &str = include_str!("prompts/worker.role.md");
 #[tokio::main]
 async fn main() {
     let args = parse_args();
-    let provider = from_env().expect("LLM provider required");
+    let provider = provider_from_env().expect("LLM provider required");
     let model = model_from_env().expect("model name required");
     let style = Style::detect();
     let cancel = install_interrupt_signal();

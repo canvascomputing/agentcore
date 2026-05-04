@@ -1243,10 +1243,8 @@ mod tests {
 
     #[tokio::test]
     async fn history_off_by_default_each_ticket_starts_cold() {
-        let provider = MockProvider::with_results(vec![
-            Ok(mark_done_response()),
-            Ok(mark_done_response()),
-        ]);
+        let provider =
+            MockProvider::with_results(vec![Ok(mark_done_response()), Ok(mark_done_response())]);
         let provider = run_two_tickets(provider, false).await;
 
         let calls = provider.received();
@@ -1257,10 +1255,8 @@ mod tests {
 
     #[tokio::test]
     async fn remember_history_seeds_next_ticket_with_prior_transcript() {
-        let provider = MockProvider::with_results(vec![
-            Ok(mark_done_response()),
-            Ok(mark_done_response()),
-        ]);
+        let provider =
+            MockProvider::with_results(vec![Ok(mark_done_response()), Ok(mark_done_response())]);
         let provider = run_two_tickets(provider, true).await;
 
         let calls = provider.received();
@@ -1279,7 +1275,10 @@ mod tests {
         let unpaired = calls[1].iter().any(|m| {
             matches!(m, Message::User { content } if content.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. })))
         });
-        assert!(unpaired, "mark-done ToolUse must be paired with a ToolResult before flush");
+        assert!(
+            unpaired,
+            "mark-done ToolUse must be paired with a ToolResult before flush"
+        );
     }
 
     #[tokio::test]
@@ -1309,7 +1308,11 @@ mod tests {
         let _ = tickets.run_dry().await;
 
         let calls = provider.received();
-        assert_eq!(calls.len(), 2, "first ticket fails after one schema miss; second ticket follows");
+        assert_eq!(
+            calls.len(),
+            2,
+            "first ticket fails after one schema miss; second ticket follows"
+        );
         let last = calls.last().unwrap();
         let texts = user_texts(last);
         assert_eq!(
@@ -1322,14 +1325,10 @@ mod tests {
 
     #[tokio::test]
     async fn two_agents_one_remembers_one_does_not_have_independent_history() {
-        let p_a = MockProvider::with_results(vec![
-            Ok(mark_done_response()),
-            Ok(mark_done_response()),
-        ]);
-        let p_b = MockProvider::with_results(vec![
-            Ok(mark_done_response()),
-            Ok(mark_done_response()),
-        ]);
+        let p_a =
+            MockProvider::with_results(vec![Ok(mark_done_response()), Ok(mark_done_response())]);
+        let p_b =
+            MockProvider::with_results(vec![Ok(mark_done_response()), Ok(mark_done_response())]);
 
         let tickets = TicketSystem::new()
             .max_request_retries(0)
@@ -1384,10 +1383,8 @@ mod tests {
 
     #[tokio::test]
     async fn remember_history_survives_across_run_dry_calls() {
-        let provider = MockProvider::with_results(vec![
-            Ok(mark_done_response()),
-            Ok(mark_done_response()),
-        ]);
+        let provider =
+            MockProvider::with_results(vec![Ok(mark_done_response()), Ok(mark_done_response())]);
 
         let cancel = Arc::new(AtomicBool::new(false));
         let tickets = TicketSystem::new()
@@ -1460,10 +1457,12 @@ mod tests {
             .expect("history must be on")
             .into_iter()
             .filter(|m| match m {
-                Message::User { content } => !content.iter().any(|b| matches!(
-                    b,
-                    ContentBlock::Text { text } if text.starts_with("## Context\n\n")
-                )),
+                Message::User { content } => !content.iter().any(|b| {
+                    matches!(
+                        b,
+                        ContentBlock::Text { text } if text.starts_with("## Context\n\n")
+                    )
+                }),
                 _ => true,
             })
             .collect();
