@@ -523,9 +523,14 @@ pub(crate) fn insert_ticket(
         Status::Todo
     };
     let key = ticket.key.clone();
+    let labels = ticket.labels.clone();
     store.insert(key.clone(), ticket);
     drop(store);
     TicketStats::record_created(&ticket_system.stats);
+    for l in &labels {
+        let slice = ticket_system.stats.stats_for_label(l);
+        TicketStats::record_created(&*slice);
+    }
     key
 }
 
@@ -584,9 +589,11 @@ pub(crate) fn tickets_update_status(
         stamp_transition_timestamps(ticket, status, now);
         ticket.status = status;
         let durations = terminal_durations(ticket);
-        (prev, durations)
+        let labels = ticket.labels.clone();
+        (prev, durations, labels)
     };
     fire_transition_recorder(&ticket_system.stats, outcome.0, status, now, outcome.1);
+    fire_label_transition(&ticket_system.stats, status, outcome.1, &outcome.2);
     Ok(())
 }
 
@@ -610,9 +617,11 @@ pub(crate) fn tickets_force_status(
         stamp_transition_timestamps(ticket, status, now);
         ticket.status = status;
         let durations = terminal_durations(ticket);
-        (prev, durations)
+        let labels = ticket.labels.clone();
+        (prev, durations, labels)
     };
     fire_transition_recorder(&ticket_system.stats, outcome.0, status, now, outcome.1);
+    fire_label_transition(&ticket_system.stats, status, outcome.1, &outcome.2);
     Ok(())
 }
 
@@ -882,6 +891,28 @@ fn fire_transition_recorder(
     }
 }
 
+/// Mirror a terminal transition onto every per-label slice the ticket
+/// carries. `record_started` is intentionally not mirrored: per-label
+/// `started_at` stays zero so `run_duration()` reads `None` on a slice.
+fn fire_label_transition(
+    stats: &Stats,
+    next: Status,
+    (ticket_duration, work_duration): (Duration, Duration),
+    labels: &[String],
+) {
+    if !matches!(next, Status::Done | Status::Failed) {
+        return;
+    }
+    for l in labels {
+        let slice = stats.stats_for_label(l);
+        match next {
+            Status::Done => slice.record_done(ticket_duration, work_duration),
+            Status::Failed => slice.record_failed(ticket_duration, work_duration),
+            _ => unreachable!(),
+        }
+    }
+}
+
 fn is_allowed_transition(from: Status, to: Status) -> bool {
     matches!(
         (from, to),
@@ -1086,5 +1117,57 @@ mod tests {
         sys.update_status("TICKET-2", Status::Failed).unwrap();
         assert_eq!(sys.stats().tickets_done(), 1);
         assert_eq!(sys.stats().tickets_failed(), 1);
+    }
+
+    #[test]
+    fn stats_for_label_counts_creation_per_label() {
+        let sys = TicketSystem::new();
+        sys.create(Ticket::new("a").labels(["scan", "high"]));
+        sys.create(Ticket::new("b").label("scan"));
+        sys.create(Ticket::new("c"));
+        let stats = sys.stats();
+        assert_eq!(stats.tickets_created(), 3);
+        assert_eq!(stats.stats_for_label("scan").tickets_created(), 2);
+        assert_eq!(stats.stats_for_label("high").tickets_created(), 1);
+        assert_eq!(stats.stats_for_label("never-used").tickets_created(), 0);
+    }
+
+    #[test]
+    fn stats_for_label_counts_terminal_transitions_per_label() {
+        let sys = TicketSystem::new();
+        sys.create(Ticket::new("a").labels(["scan", "high"]));
+        sys.create(Ticket::new("b").label("scan"));
+        sys.update_status("TICKET-1", Status::InProgress).unwrap();
+        sys.update_status("TICKET-1", Status::Done).unwrap();
+        sys.update_status("TICKET-2", Status::InProgress).unwrap();
+        sys.update_status("TICKET-2", Status::Failed).unwrap();
+        let stats = sys.stats();
+        let scan = stats.stats_for_label("scan");
+        let high = stats.stats_for_label("high");
+        assert_eq!(scan.tickets_done(), 1);
+        assert_eq!(scan.tickets_failed(), 1);
+        assert_eq!(scan.success_rate(), Some(0.5));
+        assert_eq!(high.tickets_done(), 1);
+        assert_eq!(high.tickets_failed(), 0);
+        assert_eq!(high.success_rate(), Some(1.0));
+    }
+
+    #[test]
+    fn stats_for_label_force_status_path_records_per_label() {
+        let sys = TicketSystem::new();
+        sys.create(Ticket::new("a").label("scan"));
+        sys.force_status("TICKET-1", Status::Failed).unwrap();
+        assert_eq!(sys.stats().stats_for_label("scan").tickets_failed(), 1);
+    }
+
+    #[test]
+    fn stats_for_label_unaffected_by_no_label_ticket() {
+        let sys = TicketSystem::new();
+        sys.create(Ticket::new("a"));
+        sys.update_status("TICKET-1", Status::InProgress).unwrap();
+        sys.update_status("TICKET-1", Status::Done).unwrap();
+        assert_eq!(sys.stats().tickets_done(), 1);
+        assert_eq!(sys.stats().stats_for_label("scan").tickets_done(), 0);
+        assert_eq!(sys.stats().stats_for_label("scan").tickets_created(), 0);
     }
 }

@@ -102,6 +102,7 @@ async fn respond_with_retry<F: Fn(EventKind)>(
     retry: &super::retry::ExponentialRetry,
     interrupt_signal: &Arc<AtomicBool>,
     stats: &super::stats::Stats,
+    labels: &[String],
     key: &str,
     emit: &F,
 ) -> Option<crate::providers::types::ModelResponse> {
@@ -136,6 +137,9 @@ async fn respond_with_retry<F: Fn(EventKind)>(
                     message: e.to_string(),
                 });
                 stats.record_error();
+                for l in labels {
+                    stats.stats_for_label(l).record_error();
+                }
                 emit(EventKind::TicketFailed {
                     key: key.to_string(),
                 });
@@ -185,7 +189,6 @@ pub(super) async fn handle_tickets(agent: Agent) {
                     let _ = tickets_assign_to(&ticket_system, &key, agent.get_name());
                     let _ = tickets_update_status(&ticket_system, &key, Status::InProgress);
                 }
-                ticket_system.stats.record_step();
                 key
             }
             None => {
@@ -208,10 +211,16 @@ async fn process_ticket(
     let handler = agent.resolve_event_handler();
     let emit = |kind: EventKind| handler(Event::new(agent.get_name(), kind));
 
-    let task_msg = tickets_get(ticket_system, key).map(|t| t.as_user_message());
-    let Some(task_msg) = task_msg else {
+    ticket_system.stats.record_step();
+
+    let Some(ticket) = tickets_get(ticket_system, key) else {
         return;
     };
+    let labels = ticket.labels.clone();
+    let task_msg = ticket.as_user_message();
+    for l in &labels {
+        ticket_system.stats.stats_for_label(l).record_step();
+    }
 
     let prior = agent.history();
     let history_on = prior.is_some();
@@ -289,6 +298,7 @@ async fn process_ticket(
             &retry,
             interrupt_signal,
             &ticket_system.stats,
+            &labels,
             key,
             &emit,
         )
@@ -309,6 +319,12 @@ async fn process_ticket(
         ticket_system
             .stats
             .record_request(response.usage.input_tokens, response.usage.output_tokens);
+        for l in &labels {
+            ticket_system
+                .stats
+                .stats_for_label(l)
+                .record_request(response.usage.input_tokens, response.usage.output_tokens);
+        }
         messages.push(Message::Assistant {
             content: response.content.clone(),
         });
@@ -432,6 +448,9 @@ async fn process_ticket(
 
         for _ in 0..calls.len() {
             ticket_system.stats.record_tool_call();
+            for l in &labels {
+                ticket_system.stats.stats_for_label(l).record_tool_call();
+            }
         }
 
         if consecutive_schema_failures >= max_schema_retries {

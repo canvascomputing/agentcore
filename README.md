@@ -333,7 +333,17 @@ let handler = Arc::new(|event: Event| match &event.kind {
 
 ### Stats
 
-Run-wide counters and timings. Read after `run()` / `run_dry()` (or any time during a run).
+```rust
+let s = tickets.stats();
+println!("{} done, {} requests, {} in / {} out tokens",
+    s.tickets_done(), s.requests(), s.input_tokens(), s.output_tokens());
+
+// Same accessors, scoped to one ticket label.
+let scan = s.stats_for_label("scan");
+println!("[scan] {} done, {} tokens", scan.tickets_done(), scan.input_tokens());
+```
+
+Run-wide counters and timings. Read after `run()` / `run_dry()` (or any time during a run). `stats_for_label(label)` returns a slice with the same accessors, scoped to tickets carrying that label; `run_duration()` is `None` on a slice (run wall-clock stays global).
 
 | | Method | Description |
 |-|--------|-------------|
@@ -351,26 +361,7 @@ Run-wide counters and timings. Read after `run()` / `run_dry()` (or any time dur
 | | `requests()` | Returns the total number of provider responses received. |
 | | `tool_calls()` | Returns the total number of tool calls made. |
 | | `errors()` | Returns the total number of provider errors. |
-
-```rust
-let s = tickets.stats();
-println!("Duration:  {:?}", s.run_duration().unwrap_or_default());
-println!("Work time: {:?}", s.total_work_duration());
-println!(
-    "Tickets:   {} done, {} failed ({:.0}%)",
-    s.tickets_done(),
-    s.tickets_failed(),
-    s.success_rate().map(|r| r * 100.0).unwrap_or(0.0),
-);
-println!("Avg time:  {:?}", s.avg_ticket_duration().unwrap_or_default());
-println!("Tokens:    {} in, {} out", s.input_tokens(), s.output_tokens());
-println!(
-    "Activity:  {} requests · {} tool calls · {} errors",
-    s.requests(),
-    s.tool_calls(),
-    s.errors(),
-);
-```
+| **Labels** | `stats_for_label(label)` | Returns a nested `Stats` slice whose accessors reflect tickets carrying `label`. |
 
 ## Development
 

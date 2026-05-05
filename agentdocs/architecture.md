@@ -90,6 +90,7 @@ Two layers of memory exist. The intra-ticket message vector inside `process_tick
 - `TicketStats` is what the ticket lifecycle sees: `record_created`, `record_started`, `record_done`, `record_failed`.
 - Reads happen on `Stats` directly through inherent accessors (`steps()`, `tickets_done()`, `run_duration()`, `success_rate()`, ...), never through the recorder traits.
 - Lock-free for increments; readers do one atomic load per call.
+- `Stats::stats_for_label(label)` returns a nested `Stats` slice scoped to one label. The loop and ticket lifecycle bump each slice alongside the global counters; `run_duration()` is `None` on a slice (run wall-clock stays global).
 
 ## Policies are per-system, checked at step boundaries
 

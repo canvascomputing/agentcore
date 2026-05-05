@@ -9,7 +9,9 @@
 //! Lock-free for counter increments; readers do one atomic load per
 //! call.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Recorder protocol for the agent loop. Each agent holds an
@@ -60,6 +62,10 @@ pub struct Stats {
     /// With concurrent agents this can exceed the run's wall-clock
     /// duration.
     total_work_duration: AtomicU64,
+    /// Lazy-init map of nested counter slices keyed by ticket label.
+    /// Always empty on a slice itself; populated only on the run-wide
+    /// `Stats` owned by `TicketSystem`.
+    label_stats: Mutex<HashMap<String, Arc<Stats>>>,
 }
 
 impl Stats {
@@ -78,7 +84,19 @@ impl Stats {
             finished_at: AtomicU64::new(0),
             total_ticket_duration: AtomicU64::new(0),
             total_work_duration: AtomicU64::new(0),
+            label_stats: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Live counters scoped to one ticket label. Lazy-init on first
+    /// access; subsequent calls return the same `Arc`. Reads use the
+    /// same accessors as the run-wide `Stats`; `run_duration()` is
+    /// always `None` on a slice (run wall-clock stays global).
+    pub fn stats_for_label(&self, label: &str) -> Arc<Stats> {
+        let mut map = self.label_stats.lock().unwrap();
+        map.entry(label.to_string())
+            .or_insert_with(|| Arc::new(Stats::new()))
+            .clone()
     }
 
     pub fn steps(&self) -> u64 {
@@ -332,6 +350,36 @@ mod tests {
         s.record_done(Duration::from_secs(2), Duration::from_secs(2));
         s.record_failed(Duration::from_secs(4), Duration::from_secs(4));
         assert_eq!(s.avg_ticket_duration(), Some(Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn stats_for_label_returns_same_slice_on_repeat_access() {
+        let s = Stats::new();
+        let a = s.stats_for_label("scan");
+        let b = s.stats_for_label("scan");
+        assert!(Arc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn stats_for_label_slice_records_independently() {
+        let s = Stats::new();
+        let slice = s.stats_for_label("scan");
+        slice.record_step();
+        slice.record_request(10, 5);
+        assert_eq!(slice.steps(), 1);
+        assert_eq!(slice.input_tokens(), 10);
+        assert_eq!(slice.output_tokens(), 5);
+        assert_eq!(s.steps(), 0);
+        assert_eq!(s.input_tokens(), 0);
+    }
+
+    #[test]
+    fn stats_for_label_slice_run_duration_is_none() {
+        let s = Stats::new();
+        let slice = s.stats_for_label("scan");
+        slice.record_done(Duration::from_secs(2), Duration::from_secs(1));
+        assert!(slice.run_duration().is_none());
+        assert_eq!(slice.tickets_done(), 1);
     }
 
     #[test]
