@@ -57,7 +57,8 @@ Example applications living under `crates/use-cases/`:
 
 - [Terminal REPL](crates/use-cases/src/terminal_repl/): minimal interactive chat
 - [Divide and Conquer](crates/use-cases/src/divide_and_conquer/): arithmetic problem shared across agents
-- [Deep Research](crates/use-cases/src/deep_research_v2/): agentic web research pipeline (requires `BRAVE_API_KEY`).
+- [Deep Research](crates/use-cases/src/deep_research_v2/): agentic web research pipeline (requires `BRAVE_API_KEY`)
+- [Malware Scanner](crates/use-cases/src/malware_scanner/): identify indicators of compromise in a software package
 
 Run one with:
 

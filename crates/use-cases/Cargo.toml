@@ -23,5 +23,5 @@ name = "divide-and-conquer"
 path = "src/divide_and_conquer/main.rs"
 
 [[bin]]
-name = "project-scanner"
-path = "src/project_scanner/main.rs"
+name = "malware-scanner"
+path = "src/malware_scanner/main.rs"
