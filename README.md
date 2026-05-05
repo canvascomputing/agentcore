@@ -151,9 +151,9 @@ Methods called after the agent is built:
 | Method | Description |
 |--------|-------------|
 | `task(value)` | Create a task. |
-| `task_assigned(value, label)` | Create a labelled task. |
-| `task_schema(value, schema)` | Result must validate against `schema`. |
-| `task_schema_assigned(value, schema, label)` | Labelled and schema-validated. |
+| `task_labeled(value, label)` | Create a task tagged with `label` for label-scoped routing. |
+| `task_schema(value, schema)` | Create a task whose result must validate against `schema`. |
+| `task_schema_labeled(value, schema, label)` | Create a labelled task whose result must validate against `schema`. |
 | `create(ticket)` | Add a caller-built `Ticket`; a preset `assignee` starts it `InProgress`. |
 | `run().await` | Process every queued task and return the last result. |
 | `results()` | Every `Done` ticket's `ResultRecord`, in creation order. |
@@ -184,8 +184,10 @@ let result = tickets.run_dry().await;
 |--------|-------------|
 | `TicketSystem::new()` | `Arc<TicketSystem>`; agents share one queue. |
 | `add(agent)` | Bind an `Agent` and return it for chaining. |
-| `task(value)` / `task_assigned(value, label)` | Create a task; pair with `task_assigned` for a label. |
-| `task_schema(value, schema)` / `task_schema_assigned(...)` | Result must validate against `schema`; `*_assigned` for a label. |
+| `task(value)` | Create a task. |
+| `task_labeled(value, label)` | Create a task tagged with `label` for label-scoped routing. |
+| `task_schema(value, schema)` | Create a task whose result must validate against `schema`. |
+| `task_schema_labeled(value, schema, label)` | Create a labelled task whose result must validate against `schema`. |
 | `create(ticket)` | Add a caller-built `Ticket`; a preset `assignee` starts it `InProgress`. |
 | `run().await` | Run continuously until the interrupt signal fires. |
 | `run_dry().await` | Process every queued ticket; returns last finished result or `""`. |
@@ -279,7 +281,7 @@ let schema = Schema::parse(json!({
 Via the `task_schema*` shorthands:
 
 ```rust
-tickets.task_schema_assigned(body, schema, "report");
+tickets.task_schema_labeled(body, schema, "report");
 ```
 
 Via a fully-built `Ticket` — chain `.schema(...)` with `.label(...)` for Path B routing or `.assign_to(...)` for Path A:

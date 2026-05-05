@@ -9,10 +9,7 @@ use std::io::Write as _;
 
 use serde_json::Value;
 
-use crate::agents::tickets::{
-    insert_ticket, tickets_edit, tickets_get, tickets_search, tickets_set_result_record,
-    tickets_update_status, ResultRecord, Status, Ticket, TicketError, TicketSystem,
-};
+use crate::agents::tickets::{ResultRecord, Status, Ticket, TicketError, TicketSystem};
 use crate::schemas::{format_violations, Schema};
 
 use super::tool::{ToolContext, ToolResult};
@@ -190,7 +187,7 @@ fn action_get(ticket_system: &TicketSystem, input: &Value, ctx: &ToolContext) ->
         Ok(k) => k,
         Err(e) => return e,
     };
-    match tickets_get(ticket_system, &key) {
+    match ticket_system.get(&key) {
         Some(t) => ToolResult::success(render_ticket(&t)),
         None => ToolResult::error(format!("Ticket {key} not found")),
     }
@@ -247,7 +244,7 @@ fn action_search(ticket_system: &TicketSystem, input: &Value) -> ToolResult {
         Some(q) => q,
         None => return ToolResult::error("Missing required parameter: query"),
     };
-    let hits = tickets_search(ticket_system, query);
+    let hits = ticket_system.search(query);
     if hits.is_empty() {
         return ToolResult::success("(no matching tickets)".to_string());
     }
@@ -317,7 +314,7 @@ fn action_create(ticket_system: &TicketSystem, input: &Value, ctx: &ToolContext)
         .agent_name_str()
         .expect("agent_name on ToolContext")
         .to_string();
-    let key = insert_ticket(ticket_system, ticket, reporter);
+    let key = ticket_system.insert(ticket, reporter);
     ToolResult::success(format!("Created ticket {key}"))
 }
 
@@ -354,7 +351,7 @@ fn action_edit(ticket_system: &TicketSystem, input: &Value, ctx: &ToolContext) -
         return ToolResult::error("Edit needs at least one of `task`, `labels`, or `schema`");
     }
 
-    match tickets_edit(ticket_system, &key, new_task, new_labels, new_schema) {
+    match ticket_system.edit(&key, new_task, new_labels, new_schema) {
         Ok(()) => ToolResult::success(format!("Edited ticket {key}")),
         Err(e) => ToolResult::error(ticket_error_message(e)),
     }
@@ -380,7 +377,7 @@ pub(super) fn write_result(
         }
     };
 
-    let schema = tickets_get(ticket_system, key).and_then(|t| t.schema.clone());
+    let schema = ticket_system.get(key).and_then(|t| t.schema.clone());
     if let Some(schema) = schema.as_ref() {
         if let Err(violations) = schema.validate(&result) {
             return ToolResult::schema_error(format_violations(&violations));
@@ -414,10 +411,10 @@ pub(super) fn write_result(
         }
     }
 
-    if let Err(e) = tickets_set_result_record(ticket_system, key, record) {
+    if let Err(e) = ticket_system.set_result(key, record) {
         return ToolResult::error(ticket_error_message(e));
     }
-    match tickets_update_status(ticket_system, key, Status::Done) {
+    match ticket_system.update_status(key, Status::Done) {
         Ok(()) => ToolResult::success(format!("Ticket {key} marked done")),
         Err(e) => ToolResult::error(ticket_error_message(e)),
     }
@@ -440,10 +437,7 @@ fn append_ndjson(dir: &std::path::Path, record: &ResultRecord) -> std::io::Resul
 mod tests {
     use super::super::tool::ToolLike;
     use super::*;
-    use crate::agents::tickets::{
-        insert_ticket, tickets_assign_to, tickets_force_status, tickets_get, tickets_update_status,
-        TicketSystem,
-    };
+    use crate::agents::tickets::TicketSystem;
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -459,9 +453,9 @@ mod tests {
     /// so `sys.find(...)` resolves it as the current ticket for `agent`.
     fn shared_with_one_ticket(agent: &str) -> (Arc<TicketSystem>, String) {
         let sys = TicketSystem::new();
-        let key = insert_ticket(&sys, Ticket::new("body"), "tester".into());
-        tickets_force_status(&sys, &key, Status::InProgress).unwrap();
-        tickets_assign_to(&sys, &key, agent).unwrap();
+        let key = sys.insert(Ticket::new("body"), "tester".into());
+        sys.force_status(&key, Status::InProgress).unwrap();
+        sys.set_assignee(&key, agent).unwrap();
         (sys, key)
     }
 
@@ -487,9 +481,9 @@ mod tests {
     #[tokio::test]
     async fn read_list_filters_by_status() {
         let sys = TicketSystem::new();
-        insert_ticket(&sys, Ticket::new("a"), "tester".into());
-        insert_ticket(&sys, Ticket::new("b"), "tester".into());
-        tickets_update_status(&sys, "TICKET-1", Status::InProgress).unwrap();
+        sys.insert(Ticket::new("a"), "tester".into());
+        sys.insert(Ticket::new("b"), "tester".into());
+        sys.update_status("TICKET-1", Status::InProgress).unwrap();
 
         let ctx = ctx_with(Arc::clone(&sys), "alice");
         let result = call(
@@ -514,7 +508,7 @@ mod tests {
         )
         .await;
         assert!(matches!(result, ToolResult::Success(_)));
-        let t = tickets_get(&sys, "TICKET-1").unwrap();
+        let t = sys.get("TICKET-1").unwrap();
         assert_eq!(t.task, serde_json::Value::String("new ticket".into()));
         assert_eq!(t.reporter(), "alice");
     }
@@ -534,7 +528,7 @@ mod tests {
         )
         .await;
         assert!(matches!(result, ToolResult::Success(_)));
-        let t = tickets_get(&sys, "TICKET-1").unwrap();
+        let t = sys.get("TICKET-1").unwrap();
         assert_eq!(t.labels, vec!["research".to_string()]);
         assert!(t.assignee().is_none());
         assert_eq!(t.status(), Status::Todo);
@@ -555,7 +549,7 @@ mod tests {
         )
         .await;
         assert!(matches!(result, ToolResult::Success(_)));
-        let t = tickets_get(&sys, "TICKET-1").unwrap();
+        let t = sys.get("TICKET-1").unwrap();
         assert_eq!(t.assignee(), Some("alice"));
         assert_eq!(t.status(), Status::InProgress);
     }
@@ -575,7 +569,7 @@ mod tests {
         )
         .await;
         assert!(matches!(result, ToolResult::Success(_)));
-        assert!(tickets_get(&sys, "TICKET-1").unwrap().schema.is_some());
+        assert!(sys.get("TICKET-1").unwrap().schema.is_some());
     }
 
     #[tokio::test]
@@ -593,7 +587,7 @@ mod tests {
         )
         .await;
         assert!(matches!(result, ToolResult::Success(_)));
-        let t = tickets_get(&sys, &key).unwrap();
+        let t = sys.get(&key).unwrap();
         assert_eq!(t.task, serde_json::Value::String("new body".into()));
         assert_eq!(t.labels, vec!["urgent".to_string(), "review".to_string()]);
     }

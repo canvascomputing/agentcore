@@ -79,7 +79,7 @@ async fn main() {
             "Compute the partial sum S = sum_{{k={lo}}}^{{{hi}}} k^2.\n\
              lo={lo}\nhi={hi}\nidx={idx}",
         );
-        tickets.task_schema_assigned(body, schema.clone(), "worker");
+        tickets.task_schema_labeled(body, schema.clone(), "worker");
     }
 
     for w in 0..args.concurrency.min(total) {

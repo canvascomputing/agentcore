@@ -80,10 +80,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::agents::tickets::{
-        insert_ticket, tickets_assign_to, tickets_force_status, tickets_get, Status, Ticket,
-        TicketSystem,
-    };
+    use crate::agents::tickets::{Status, Ticket, TicketSystem};
     use crate::schemas::Schema;
 
     fn ctx_with(ticket_system: Arc<TicketSystem>, agent: &str, working_dir: PathBuf) -> ToolContext {
@@ -94,9 +91,9 @@ mod tests {
 
     fn one_ticket(agent: &str) -> (Arc<TicketSystem>, String) {
         let sys = TicketSystem::new();
-        let key = insert_ticket(&sys, Ticket::new("body"), "tester".into());
-        tickets_force_status(&sys, &key, Status::InProgress).unwrap();
-        tickets_assign_to(&sys, &key, agent).unwrap();
+        let key = sys.insert(Ticket::new("body"), "tester".into());
+        sys.force_status(&key, Status::InProgress).unwrap();
+        sys.set_assignee(&key, agent).unwrap();
         (sys, key)
     }
 
@@ -111,7 +108,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(outcome, ToolResult::Success(_)));
-        let t = tickets_get(&sys, &key).unwrap();
+        let t = sys.get(&key).unwrap();
         assert_eq!(t.status(), Status::Done);
         let record = t.result().unwrap();
         assert_eq!(record.agent, "alice");
@@ -137,7 +134,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(outcome, ToolResult::Error(_)));
-        let t = tickets_get(&sys, &key).unwrap();
+        let t = sys.get(&key).unwrap();
         assert_eq!(t.status(), Status::InProgress);
         assert!(!dir.path().join("results.jsonl").exists());
     }
@@ -153,7 +150,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(outcome, ToolResult::Success(_)));
-        let t = tickets_get(&sys, &key).unwrap();
+        let t = sys.get(&key).unwrap();
         assert_eq!(t.status(), Status::Done);
         assert_eq!(t.result().unwrap().result["x"], 1);
 
@@ -188,9 +185,9 @@ mod tests {
             "required": ["x"]
         }))
         .unwrap();
-        let key = insert_ticket(&sys, Ticket::new("hi").schema(schema), "tester".into());
-        tickets_force_status(&sys, &key, Status::InProgress).unwrap();
-        tickets_assign_to(&sys, &key, "alice").unwrap();
+        let key = sys.insert(Ticket::new("hi").schema(schema), "tester".into());
+        sys.force_status(&key, Status::InProgress).unwrap();
+        sys.set_assignee(&key, "alice").unwrap();
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
 
         // wrong shape
@@ -199,7 +196,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(outcome, ToolResult::SchemaError(_)));
-        let t = tickets_get(&sys, &key).unwrap();
+        let t = sys.get(&key).unwrap();
         assert_eq!(t.status(), Status::InProgress);
 
         // valid shape
@@ -208,7 +205,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(outcome, ToolResult::Success(_)));
-        let t = tickets_get(&sys, &key).unwrap();
+        let t = sys.get(&key).unwrap();
         assert_eq!(t.status(), Status::Done);
         assert_eq!(t.result().unwrap().result["x"], "ok");
     }
@@ -255,18 +252,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sys = TicketSystem::new().results_dir(dir.path().to_path_buf());
 
-        let key1 = insert_ticket(&sys, Ticket::new("a"), "tester".into());
-        tickets_force_status(&sys, &key1, Status::InProgress).unwrap();
-        tickets_assign_to(&sys, &key1, "alice").unwrap();
+        let key1 = sys.insert(Ticket::new("a"), "tester".into());
+        sys.force_status(&key1, Status::InProgress).unwrap();
+        sys.set_assignee(&key1, "alice").unwrap();
         let ctx_alice = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
         WriteResultTool
             .call(serde_json::json!({"result": "from alice"}), &ctx_alice)
             .await
             .unwrap();
 
-        let key2 = insert_ticket(&sys, Ticket::new("b"), "tester".into());
-        tickets_force_status(&sys, &key2, Status::InProgress).unwrap();
-        tickets_assign_to(&sys, &key2, "bob").unwrap();
+        let key2 = sys.insert(Ticket::new("b"), "tester".into());
+        sys.force_status(&key2, Status::InProgress).unwrap();
+        sys.set_assignee(&key2, "bob").unwrap();
         let ctx_bob = ctx_with(Arc::clone(&sys), "bob", dir.path().to_path_buf());
         WriteResultTool
             .call(serde_json::json!({"result": "from bob"}), &ctx_bob)
@@ -295,9 +292,9 @@ mod tests {
         let mut expected = Vec::with_capacity(N);
         for i in 0..N {
             let agent = format!("agent_{i}");
-            let key = insert_ticket(&sys, Ticket::new(format!("body_{i}")), "tester".into());
-            tickets_force_status(&sys, &key, Status::InProgress).unwrap();
-            tickets_assign_to(&sys, &key, &agent).unwrap();
+            let key = sys.insert(Ticket::new(format!("body_{i}")), "tester".into());
+            sys.force_status(&key, Status::InProgress).unwrap();
+            sys.set_assignee(&key, &agent).unwrap();
             expected.push((agent, key));
         }
 

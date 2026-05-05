@@ -51,7 +51,7 @@ async fn main() {
              sources for one perspective on this question. Focus on a different angle \
              than perspectives 1..3 — the report writer will compare all three."
         );
-        tickets.task_assigned(body, "research");
+        tickets.task_labeled(body, "research");
         research_keys.push(format!("TICKET-{i}"));
     }
 
@@ -115,7 +115,7 @@ async fn main() {
         "Question:\n{question}\n\n--- Researcher findings ---\n\n{}",
         findings.join("\n\n")
     );
-    tickets.task_schema_assigned(final_body, final_schema, "report");
+    tickets.task_schema_labeled(final_body, final_schema, "report");
 
     let report_writer = Agent::new()
         .name("report_writer")

@@ -24,7 +24,7 @@ The invariants that shape how code fits together. Layout says where code lives; 
 **Tickets reach agents either by direct assignment (Path A) or by label scope (Path B).**
 
 - A ticket built with `Ticket::new(...).assign_to(name)` is born `Status::InProgress` and pinned to the named agent; only that agent can pick it up.
-- A ticket built with `.label(...)` (or via `task_assigned(value, label)`) is `Status::Todo` and picked up by any agent whose `label` scope intersects.
+- A ticket built with `.label(...)` (or via `task_labeled(value, label)`) is `Status::Todo` and picked up by any agent whose `label` scope intersects.
 - An agent with empty labels handles only tickets with no labels; that is the "default scope".
 - The system never auto-resolves a name against the registered-agent set: callers know which routing path they want.
 

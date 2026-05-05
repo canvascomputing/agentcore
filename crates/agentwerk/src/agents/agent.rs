@@ -18,7 +18,7 @@ use crate::providers::{Message, Provider, ProviderToolDefinition};
 use crate::tools::{ToolLike, ToolRegistry, WriteResultTool};
 
 use super::r#loop::Runnable;
-use super::tickets::{insert_ticket, ResultRecord, Ticket, TicketSystem};
+use super::tickets::{ResultRecord, Ticket, TicketSystem};
 
 static AGENT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -315,7 +315,7 @@ impl Agent {
     /// Enqueue a ticket carrying `value` and attached to `label` for
     /// Path B routing. To pin a ticket directly to an agent (Path A),
     /// build it explicitly: `agent.create(Ticket::new(...).assign_to("alice"))`.
-    pub fn task_assigned<T: Serialize>(&self, value: T, label: impl Into<String>) -> &Self {
+    pub fn task_labeled<T: Serialize>(&self, value: T, label: impl Into<String>) -> &Self {
         let ticket = Ticket::new(value).label(label);
         self.dispatch(ticket);
         self
@@ -329,8 +329,8 @@ impl Agent {
         self
     }
 
-    /// `task_schema` + `task_assigned` combined.
-    pub fn task_schema_assigned<T: Serialize>(
+    /// `task_schema` + `task_labeled` combined.
+    pub fn task_schema_labeled<T: Serialize>(
         &self,
         value: T,
         schema: crate::schemas::Schema,
@@ -358,7 +358,7 @@ impl Agent {
         if let serde_json::Value::String(s) = &ticket.task {
             ticket.task = serde_json::Value::String(self.interpolate(s));
         }
-        insert_ticket(&sys, ticket, self.name.clone());
+        sys.insert(ticket, self.name.clone());
     }
 
     /// Drive the agent's bound `TicketSystem` until the queue settles
@@ -545,14 +545,13 @@ mod tests {
 
     #[tokio::test]
     async fn results_and_last_result_forward_to_bound_ticket_system() {
-        use super::super::tickets::{tickets_set_result_record, Status};
+        use super::super::tickets::Status;
 
         let sys = crate::agents::TicketSystem::new();
         let agent = Agent::new().ticket_system(&sys);
         sys.task("a").task("b");
         for (key, payload) in [("TICKET-1", "first"), ("TICKET-2", "second")] {
-            tickets_set_result_record(
-                &sys,
+            sys.set_result(
                 key,
                 ResultRecord {
                     agent: "tester".into(),

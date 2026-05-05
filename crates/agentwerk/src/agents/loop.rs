@@ -16,10 +16,7 @@ use crate::tools::{ToolCall, ToolContext, ToolError};
 use super::agent::Agent;
 use super::retry::ExponentialRetry;
 use super::stats::LoopStats;
-use super::tickets::{
-    policy_violated_kind, tickets_assign_to, tickets_find, tickets_force_status, tickets_get,
-    tickets_update_status, Status,
-};
+use super::tickets::{policy_violated_kind, Status};
 use crate::prompts::schema_retry;
 
 /// Surface for binding agents and running them. Implemented by `TicketSystem`.
@@ -173,22 +170,20 @@ pub(super) async fn handle_tickets(agent: Agent) {
             return;
         }
         // Path A: ticket already pinned to this agent.
-        let path_a = tickets_find(&ticket_system, |t| {
-            t.is_in_progress() && t.is_assigned_to(agent.get_name())
-        })
-        .map(|t| (t.key().to_string(), false));
+        let path_a = ticket_system
+            .find(|t| t.is_in_progress() && t.is_assigned_to(agent.get_name()))
+            .map(|t| (t.key().to_string(), false));
         // Path B: open Todo whose labels match this agent's scope.
-        let path_b = tickets_find(&ticket_system, |t| {
-            t.is_todo() && t.assignee().is_none() && agent.handles(&t.labels)
-        })
-        .map(|t| (t.key().to_string(), true));
+        let path_b = ticket_system
+            .find(|t| t.is_todo() && t.assignee().is_none() && agent.handles(&t.labels))
+            .map(|t| (t.key().to_string(), true));
         let claim = path_a.or(path_b);
 
         let key = match claim {
             Some((key, needs_assign)) => {
                 if needs_assign {
-                    let _ = tickets_assign_to(&ticket_system, &key, agent.get_name());
-                    let _ = tickets_update_status(&ticket_system, &key, Status::InProgress);
+                    let _ = ticket_system.set_assignee(&key, agent.get_name());
+                    let _ = ticket_system.update_status(&key, Status::InProgress);
                 }
                 key
             }
@@ -214,7 +209,7 @@ async fn process_ticket(
 
     ticket_system.stats.record_step();
 
-    let Some(ticket) = tickets_get(ticket_system, key) else {
+    let Some(ticket) = ticket_system.get(key) else {
         return;
     };
     let labels = ticket.labels.clone();
@@ -264,7 +259,7 @@ async fn process_ticket(
         if interrupt_signal.load(Ordering::Relaxed) {
             return;
         }
-        match tickets_get(ticket_system, key) {
+        match ticket_system.get(key) {
             Some(t) if matches!(t.status(), Status::Done | Status::Failed) => {
                 if history_on {
                     agent.replace_history(messages);
@@ -349,7 +344,7 @@ async fn process_ticket(
         // Done by default; schema-bound tickets without a valid result
         // force-fail.
         if response.status != ResponseStatus::ToolUse || calls.is_empty() {
-            let final_status = match tickets_get(ticket_system, key) {
+            let final_status = match ticket_system.get(key) {
                 None => return,
                 Some(ticket) => match (&ticket.schema, ticket.result()) {
                     (Some(schema), Some(record)) => {
@@ -363,7 +358,7 @@ async fn process_ticket(
                     (None, _) => Status::Done,
                 },
             };
-            let _ = tickets_force_status(ticket_system, key, final_status);
+            let _ = ticket_system.force_status(key, final_status);
             if history_on {
                 pair_unpaired_tool_uses(&mut messages);
                 agent.replace_history(messages);
@@ -459,7 +454,7 @@ async fn process_ticket(
                 kind: crate::event::PolicyKind::MaxSchemaRetries,
                 limit: u64::from(max_schema_retries),
             });
-            let _ = tickets_force_status(ticket_system, key, Status::Failed);
+            let _ = ticket_system.force_status(key, Status::Failed);
             if history_on {
                 agent.replace_history(messages);
             }
@@ -1346,10 +1341,10 @@ mod tests {
         tickets.add(agent_a);
         tickets.add(agent_b);
 
-        tickets.task_assigned("a-1", "a");
-        tickets.task_assigned("a-2", "a");
-        tickets.task_assigned("b-1", "b");
-        tickets.task_assigned("b-2", "b");
+        tickets.task_labeled("a-1", "a");
+        tickets.task_labeled("a-2", "a");
+        tickets.task_labeled("b-1", "b");
+        tickets.task_labeled("b-2", "b");
         let _ = tickets.run_dry().await;
 
         let a_calls = p_a.received();
