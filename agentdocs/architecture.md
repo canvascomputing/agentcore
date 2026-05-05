@@ -36,16 +36,15 @@ The invariants that shape how code fits together. Layout says where code lives; 
 - `task_schema*` attaches a `Schema` to the ticket; the tool validates the result and the loop applies `max_schema_retries` on mismatch.
 - A successful call appends one NDJSON record `{agent, ticket, result}` to `<results_dir>/results.jsonl` (configured on `TicketSystem`; falls back to the agent's working directory) and attaches the same `ResultRecord` to the ticket. The record is surfaced through `Ticket::result()`; `run_dry` returns its serialized form for the most recent `Done` ticket.
 
-## Conversation history is opt-in and per-agent
+## Memory is opt-in and shareable across agents
 
-**An agent can carry its transcript across every ticket it handles via `Agent::remember_history()`, including across separate `run` / `run_dry` calls on the same `TicketSystem`. Off by default; each ticket starts cold.**
+**An agent can carry durable facts across every ticket it handles via `Agent::memory(&store)`, including across separate `run` / `run_dry` calls and across process restarts. Off by default; each ticket starts without a memory section.**
 
-Two layers of memory exist. The intra-ticket message vector inside `process_ticket` is always present; it carries a multi-step tool turn through to settlement and is dropped when the ticket reaches a terminal status. `Agent::remember_history()` toggles a separate cross-ticket layer that survives between tickets and across separate runs.
+Two layers of state exist. The intra-ticket message vector inside `process_ticket` is always present; it carries a multi-step tool turn through and is dropped when the ticket reaches a terminal status. `Agent::memory(&store)` adds a separate cross-ticket layer: a `Memory` rooted at a caller-supplied directory, surfaced to the model through `MemoryTool` and rendered into the system prompt under `## Memory`.
 
-- The cross-ticket transcript lives on the agent behind an `Arc<Mutex<Vec<Message>>>`; shared by every clone of the agent (including the `bind_agent` clone in `TicketSystem.agents`); survives across separate `run` / `run_dry` calls and is dropped when the last clone of the agent goes away.
-- It is flushed only at the two terminal-status sites in `process_ticket` (the terminal-reply branch and the schema-retry-exhausted branch). Mid-cycle aborts (cancel, request failure that does not force a status) are not persisted, so an unpaired `Assistant{ToolUse}` never lands in stored history.
-- A terminal text-only assistant turn whose preceding `Assistant{ToolUse}` blocks lack `ToolResult` pairs is repaired with synthesised empty `ToolResult`s before flush, keeping the persisted log valid for replay against providers that require tool-use/tool-result pairing.
-- Callers can read the slot via `Agent::history()` (returns a clone) and reset it via `Agent::clear_history()`. Disk persistence is a separate concern, covered by `specs/2026-04-16-session-resumption.md`.
+- The store is constructed via `Memory::open(memory_dir)` and passed to one or more agents through `Agent::memory(&store)`. Two agents bound to the same `Arc<Memory>` share `memory.md`; two agents bound to different stores see independent memory. The pattern mirrors `Agent::ticket_system(&Arc<TicketSystem>)`.
+- The loop reads `Memory::entries()` once at the top of `process_ticket`, concatenates them, and feeds the result to `Agent::system_prompt(memory: Option<&str>)`. The system prompt stays byte-stable across every turn of the ticket so the provider's prefix cache survives mid-ticket memory writes; cross-ticket and cross-agent writes become visible at the top of the next ticket.
+- Memory is purely model-driven. The model calls `memory_tool` with `add` / `replace` / `remove`; the tool description carries the policy (work-feedback triggers, utility-ranked priority, do NOT save task progress / completed-work logs / TODOs). A hard char limit (default 2200) rejects writes that would push the file past the cap and tells the model to consolidate first. Callers that want to drive their own consolidation outside the model loop call `Memory::rewrite(new_entries)` directly.
 
 ## One observer, one error path
 

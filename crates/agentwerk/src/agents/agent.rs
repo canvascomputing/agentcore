@@ -8,14 +8,16 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak};
 
 use serde::Serialize;
 
 use crate::event::{default_logger, Event};
 use crate::prompts::{default_context, PromptBuilder, Section};
-use crate::providers::{Message, Provider, ProviderToolDefinition};
-use crate::tools::{ToolLike, ToolRegistry, WriteResultTool};
+use crate::providers::{Provider, ProviderToolDefinition};
+use crate::tools::{MemoryTool, ToolLike, ToolRegistry, WriteResultTool};
+
+use super::memory::Memory;
 
 use super::r#loop::Runnable;
 use super::tickets::{ResultRecord, Ticket, TicketSystem};
@@ -39,7 +41,7 @@ pub struct Agent {
     tools: ToolRegistry,
     working_dir: Option<PathBuf>,
     event_handler: Option<Arc<dyn Fn(Event) + Send + Sync>>,
-    history: Option<Arc<Mutex<Vec<Message>>>>,
+    memory: Option<Arc<Memory>>,
     pub(crate) ticket_system: Weak<TicketSystem>,
 }
 
@@ -58,7 +60,7 @@ impl Default for Agent {
             tools,
             working_dir: None,
             event_handler: None,
-            history: None,
+            memory: None,
             ticket_system: Weak::new(),
         }
     }
@@ -170,37 +172,22 @@ impl Agent {
         self
     }
 
-    /// Carry this agent's conversation transcript across every ticket
-    /// it handles, including across separate `run` / `run_dry` calls
-    /// on the same `TicketSystem`. Off by default; each ticket starts
-    /// from a blank message vector. When set, prior assistant turns,
-    /// tool calls, and tool results are replayed as context for the
-    /// next ticket. Only flushed at terminal ticket status (`Done` or
-    /// `Failed`); mid-cycle aborts (cancel, request failure) are not
-    /// persisted. Storage is shared by every clone of the agent: the
-    /// `bind_agent` clone in `TicketSystem.agents` writes back to the
-    /// same slot the caller's original handle reads from.
-    pub fn remember_history(mut self) -> Self {
-        self.history = Some(Arc::new(Mutex::new(Vec::new())));
+    /// Bind this agent to a shared `Memory`. Registers `MemoryTool` on
+    /// the agent's tool registry and arranges for the store's entries to be
+    /// concatenated into the system prompt under `## Memory` at the top of
+    /// every ticket. Pass the same `Arc<Memory>` to multiple agents to share
+    /// memory across them, the same way `ticket_system(&shared)` shares a
+    /// queue. Off by default; each ticket starts without a memory section
+    /// when no store is bound.
+    pub fn memory(mut self, store: &Arc<Memory>) -> Self {
+        let store = Arc::clone(store);
+        self.tools.register(MemoryTool::new(Arc::clone(&store)));
+        self.memory = Some(store);
         self
     }
 
-    /// Read the agent's stored conversation history. Returns `None`
-    /// when [`Self::remember_history`] was not set on this agent. The
-    /// returned vector is a clone; callers cannot mutate the slot
-    /// through it.
-    pub fn history(&self) -> Option<Vec<Message>> {
-        self.history
-            .as_ref()
-            .map(|slot| slot.lock().unwrap().clone())
-    }
-
-    /// Drop everything in the agent's stored history slot. No-op when
-    /// [`Self::remember_history`] was not set on this agent.
-    pub fn clear_history(&self) {
-        if let Some(slot) = self.history.as_ref() {
-            slot.lock().unwrap().clear();
-        }
+    pub(super) fn memory_handle(&self) -> Option<Arc<Memory>> {
+        self.memory.clone()
     }
 
     /// Bind this agent to a shared `TicketSystem`. Drains any tickets
@@ -225,12 +212,6 @@ impl Agent {
 
     pub(super) fn resolve_event_handler(&self) -> Arc<dyn Fn(Event) + Send + Sync> {
         self.event_handler.clone().unwrap_or_else(default_logger)
-    }
-
-    pub(super) fn replace_history(&self, messages: Vec<Message>) {
-        if let Some(slot) = self.history.as_ref() {
-            *slot.lock().unwrap() = messages;
-        }
     }
 
     /// Returns true when the agent's label scope intersects the ticket's
@@ -274,10 +255,16 @@ impl Agent {
             .expect("Agent::run requires .model(...) to be set")
     }
 
-    pub(super) fn system_prompt(&self) -> String {
+    /// Build the system prompt. `memory` is the body the loop captured at the
+    /// top of the current ticket, or `None` if [`Self::memory`] was not set.
+    /// Tests may pass `None`.
+    pub(super) fn system_prompt(&self, memory: Option<&str>) -> String {
         let mut b = PromptBuilder::default();
         if let Some(role) = &self.role {
             b = b.role(self.interpolate(role));
+        }
+        if let Some(snap) = memory.filter(|s| !s.is_empty()) {
+            b = b.memory(snap.to_string());
         }
         b.build().system
     }
@@ -454,7 +441,7 @@ mod tests {
     #[test]
     fn system_prompt_does_not_include_context() {
         let agent = Agent::new().role("ROLE").context("CTX");
-        let prompt = agent.system_prompt();
+        let prompt = agent.system_prompt(None);
         assert!(prompt.contains("ROLE"));
         assert!(!prompt.contains("CTX"));
         assert!(!prompt.contains("## Context"));
@@ -463,14 +450,14 @@ mod tests {
     #[test]
     fn system_prompt_is_role_only() {
         let agent = Agent::new().role("ROLE");
-        let prompt = agent.system_prompt();
+        let prompt = agent.system_prompt(None);
         assert_eq!(prompt, "ROLE");
     }
 
     #[test]
     fn system_prompt_empty_when_role_unset() {
         let agent = Agent::new();
-        assert!(agent.system_prompt().is_empty());
+        assert!(agent.system_prompt(None).is_empty());
     }
 
     #[test]
@@ -489,7 +476,7 @@ mod tests {
         let agent = Agent::new()
             .role("You are {persona}.")
             .template_variable("persona", "a senior reviewer");
-        assert_eq!(agent.system_prompt(), "You are a senior reviewer.");
+        assert_eq!(agent.system_prompt(None), "You are a senior reviewer.");
     }
 
     #[test]
@@ -508,7 +495,7 @@ mod tests {
         let agent = Agent::new()
             .role("Hi {missing}.")
             .context("- Note: {also_missing}");
-        assert_eq!(agent.system_prompt(), "Hi {missing}.");
+        assert_eq!(agent.system_prompt(None), "Hi {missing}.");
         assert_eq!(
             agent.context_message().as_deref(),
             Some("## Context\n\n- Note: {also_missing}"),
@@ -520,13 +507,13 @@ mod tests {
         let agent = Agent::new()
             .role("{greeting}, {name}.")
             .template_variables([("greeting", "Hello"), ("name", "Alice")]);
-        assert_eq!(agent.system_prompt(), "Hello, Alice.");
+        assert_eq!(agent.system_prompt(None), "Hello, Alice.");
     }
 
     #[test]
     fn no_variables_renders_role_unchanged() {
         let agent = Agent::new().role("You are a senior reviewer.");
-        assert_eq!(agent.system_prompt(), "You are a senior reviewer.");
+        assert_eq!(agent.system_prompt(None), "You are a senior reviewer.");
     }
 
     #[tokio::test]
@@ -583,56 +570,58 @@ mod tests {
     }
 
     #[test]
-    fn history_defaults_to_none() {
+    fn memory_defaults_to_none() {
         let agent = Agent::new();
-        assert!(agent.history().is_none());
+        assert!(agent.memory_handle().is_none());
     }
 
     #[test]
-    fn remember_history_turns_history_on() {
-        let agent = Agent::new().remember_history();
-        assert!(agent.history().is_some());
+    fn memory_registers_memory_tool_on_the_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Memory::open(dir.path()).unwrap();
+        let agent = Agent::new().memory(&store);
+        let names: Vec<String> = agent
+            .tool_definitions()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "memory_tool"),
+            "memory_tool should be registered: {names:?}"
+        );
     }
 
     #[test]
-    fn history_storage_is_shared_across_clones() {
-        let agent = Agent::new().remember_history();
+    fn cloned_agent_observes_writes_through_original_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Memory::open(dir.path()).unwrap();
+        let agent = Agent::new().memory(&store);
         let cloned = agent.clone();
-
-        // bind_agent relies on this: the loop's clone writes the slot
-        // the caller's original handle later reads from.
-        cloned.replace_history(vec![Message::user("via clone")]);
-        let snap = agent.history().expect("opted in");
-        assert_eq!(snap.len(), 1);
+        agent.memory_handle().unwrap().add("via original").unwrap();
+        assert_eq!(cloned.memory_handle().unwrap().entries().join("\n§\n"), "via original");
     }
 
     #[test]
-    fn history_returns_clone_when_opted_in() {
-        let agent = Agent::new().remember_history();
-        agent.replace_history(vec![Message::user("hello")]);
-        let snap = agent.history().expect("opted in");
-        assert_eq!(snap.len(), 1);
+    fn two_agents_bound_to_one_store_see_each_others_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Memory::open(dir.path()).unwrap();
+        let alice = Agent::new().memory(&store);
+        let bob = Agent::new().memory(&store);
+        alice.memory_handle().unwrap().add("from alice").unwrap();
+        assert_eq!(bob.memory_handle().unwrap().entries().join("\n§\n"), "from alice");
     }
 
     #[test]
-    fn clear_history_empties_the_slot() {
-        let agent = Agent::new().remember_history();
-        agent.replace_history(vec![Message::user("hello")]);
-        agent.clear_history();
-        assert_eq!(agent.history().unwrap().len(), 0);
+    fn system_prompt_renders_memory_section_when_body_present() {
+        let agent = Agent::new().role("R");
+        let prompt = agent.system_prompt(Some("note one\n§\nnote two"));
+        assert!(prompt.contains("R"));
+        assert!(prompt.contains("## Memory\n\nnote one\n§\nnote two"));
     }
 
     #[test]
-    fn clear_history_is_no_op_when_history_off() {
-        let agent = Agent::new();
-        agent.clear_history();
-        assert!(agent.history().is_none());
-    }
-
-    #[test]
-    fn replace_history_is_no_op_when_history_off() {
-        let agent = Agent::new();
-        agent.replace_history(vec![Message::user("ignored")]);
-        assert!(agent.history().is_none());
+    fn system_prompt_omits_memory_when_body_empty() {
+        let agent = Agent::new().role("R");
+        assert_eq!(agent.system_prompt(Some("")), "R");
     }
 }

@@ -30,6 +30,7 @@ pub struct Prompt {
 pub struct PromptBuilder {
     context: Option<Section>,
     role: Option<Section>,
+    memory: Option<Section>,
     task: Option<Section>,
     directives: Vec<Section>,
 }
@@ -43,6 +44,11 @@ impl PromptBuilder {
 
     pub fn role(mut self, body: impl Into<Cow<'static, str>>) -> Self {
         self.role = Some(Section::role(body));
+        self
+    }
+
+    pub fn memory(mut self, body: impl Into<Cow<'static, str>>) -> Self {
+        self.memory = Some(Section::memory(body));
         self
     }
 
@@ -69,6 +75,12 @@ impl PromptBuilder {
             let r = role.render();
             if !r.is_empty() {
                 system_parts.push(r);
+            }
+        }
+        if let Some(memory) = self.memory {
+            let m = memory.render();
+            if !m.is_empty() {
+                system_parts.push(m);
             }
         }
         for d in self.directives {
@@ -129,5 +141,23 @@ mod tests {
             .task("Review the auth module.")
             .build();
         assert_eq!(p.task.as_deref(), Some("Review the auth module."));
+    }
+
+    #[test]
+    fn memory_appends_after_role_in_system() {
+        let p = PromptBuilder::default()
+            .role("You are an agent.")
+            .memory("note one\n§\nnote two")
+            .build();
+        assert_eq!(
+            p.system,
+            "You are an agent.\n\n## Memory\n\nnote one\n§\nnote two"
+        );
+    }
+
+    #[test]
+    fn memory_alone_renders_in_system() {
+        let p = PromptBuilder::default().memory("note one").build();
+        assert_eq!(p.system, "## Memory\n\nnote one");
     }
 }

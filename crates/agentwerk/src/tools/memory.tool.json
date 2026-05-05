@@ -1,0 +1,50 @@
+{
+  "name": "memory_tool",
+  "summary": [
+    "Persist a fact across tickets so future tickets do not have to rediscover it. Three actions on a shared store: `add` appends a new entry, `replace` swaps the entry containing `old_text`, `remove` deletes it.",
+    "Entries are rendered into the next ticket's system prompt under a `## Memory` heading. Default to no write: the bar is `this fact will still matter next ticket`. If you would not bet on that, skip the write."
+  ],
+  "constraints": [
+    "Save when work feedback reveals a durable fact future tickets will need: a tool result clarifies a quirk, a schema rejection teaches the required result shape, the actual environment contradicts your assumptions, repeated failure pinpoints a constraint, or a ticket task contradicts a prior approach.",
+    "PRIORITY when memory is contested or full: facts that would cause the next ticket to fail if absent, then facts that would slow it down, then facts that are merely informative.",
+    "Each `add` or `replace` carries one declarative fact, one sentence long where possible. Each entry must be self-contained: understandable without the conversation that produced it.",
+    "`old_text` must match exactly one existing entry. Zero or multiple matches is rejected; pick a longer unique substring drawn from a unique stretch of the target entry.",
+    "Memory has a fixed char limit. When full, `replace` or `remove` an entry before any further `add`."
+  ],
+  "anti_patterns": [
+    "Saving task progress, completed-work logs, or TODOs. Those belong in tickets, not memory.",
+    "Saving facts that are only true for the current ticket. Memory persists across every later ticket.",
+    "Saving secrets, credentials, or anything an attacker controlling model output could exfiltrate.",
+    "Acting on a fact you `add`ed earlier in the same ticket. Mid-ticket writes do not surface until the next ticket starts; relying on them within the same turn is a no-op."
+  ],
+  "cautions": [
+    "IMPORTANT: every entry is visible to every later turn of every later ticket. Treat the content as system-prompt content.",
+    "IMPORTANT: the memory contents the model sees are captured at the top of each ticket. Mid-ticket writes show up in the next ticket, not this one."
+  ],
+  "output": [
+    "Success: `entry added`, `entry replaced`, or `entry removed`.",
+    "Input error `old_text matched zero entries`: list the entries from your `## Memory` block and pick a longer unique substring.",
+    "Input error `old_text matched N entries`: pick a substring unique to the entry you mean.",
+    "Input error `content exceeded the char limit`: shorten the new entry, or `remove` a lower-priority existing entry first, then retry."
+  ],
+  "read_only": false,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["add", "replace", "remove"],
+        "description": "The action to perform."
+      },
+      "content": {
+        "type": "string",
+        "description": "Entry text. Required for `add` and `replace`."
+      },
+      "old_text": {
+        "type": "string",
+        "description": "A unique substring identifying an existing entry. Required for `replace` and `remove`."
+      }
+    },
+    "required": ["action"]
+  }
+}

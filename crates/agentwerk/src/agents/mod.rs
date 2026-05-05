@@ -2,12 +2,14 @@
 
 pub mod agent;
 pub mod r#loop;
+pub mod memory;
 pub mod policy;
 pub(crate) mod retry;
 pub mod stats;
 pub mod tickets;
 
 pub use agent::Agent;
+pub use memory::Memory;
 pub use policy::Policies;
 pub use r#loop::Runnable;
 pub use stats::{LoopStats, Stats};

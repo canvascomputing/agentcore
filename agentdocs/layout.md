@@ -25,6 +25,7 @@ Where code lives and the rules that govern placement.
 - `agent.rs` holds the `Agent` builder and ticket-dispatch helpers; an `Agent` carries a `Weak<TicketSystem>` stamped at `bind_agent` time.
 - `tickets.rs` holds `Ticket`, `Status`, `TicketError`, and `TicketSystem`: the orchestrator that owns the shared queue, registered agents, policies, interrupt signal, and stats.
 - `loop.rs` holds the `Runnable` trait (implemented by `TicketSystem`) and the per-agent loop driver.
+- `memory.rs` holds `Memory`: the file-backed cross-ticket store. Mutations go through `add` / `replace` / `remove` / `rewrite`.
 - `policy.rs` holds `Policies` and the limit checks the loop applies on each step.
 - `stats.rs` holds `Stats`, `LoopStats`, and the run-wide counters and timings.
 
@@ -46,6 +47,7 @@ Where code lives and the rules that govern placement.
 - `read_file.rs`, `write_file.rs`, `edit_file.rs`, `glob.rs`, `grep.rs`, and `list_directory.rs` are filesystem tools.
 - `bash.rs` is the shell tool (restricted via `new()`, unrestricted via `unrestricted()`).
 - `tickets/` holds `ManageTicketsTool`, `ReadTicketsTool`, and `WriteTicketsTool`.
+- `memory.rs` is the model-facing wrapper around `Memory` (the store and curator live in `agents::memory`).
 - `tool_search.rs` is the discovery surface for deferred tools.
 - `web_fetch.rs` is the web fetch tool.
 - `tool_file.rs` and `util.rs` are shared helpers; `error.rs` holds `ToolError`.

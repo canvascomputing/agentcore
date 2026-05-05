@@ -27,6 +27,13 @@ impl Section {
         }
     }
 
+    pub fn memory(body: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            heading: Some("Memory"),
+            body: body.into(),
+        }
+    }
+
     #[allow(dead_code)]
     pub fn task(body: impl Into<Cow<'static, str>>) -> Self {
         Self {
@@ -69,6 +76,12 @@ mod tests {
     fn context_wraps_body_in_h2_heading() {
         let s = Section::context("- Working directory: /tmp/test");
         assert_eq!(s.render(), "## Context\n\n- Working directory: /tmp/test");
+    }
+
+    #[test]
+    fn memory_wraps_body_in_h2_heading() {
+        let s = Section::memory("note one\n§\nnote two");
+        assert_eq!(s.render(), "## Memory\n\nnote one\n§\nnote two");
     }
 
     #[test]

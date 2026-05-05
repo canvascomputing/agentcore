@@ -218,18 +218,18 @@ async fn process_ticket(
         ticket_system.stats.stats_for_label(l).record_step();
     }
 
-    let prior = agent.history();
-    let history_on = prior.is_some();
-    let mut messages: Vec<Message> = match prior {
-        Some(p) if !p.is_empty() => p,
-        _ => {
-            let mut seed = Vec::new();
-            if let Some(ctx) = agent.context_message() {
-                seed.push(Message::user(ctx));
-            }
-            seed
-        }
-    };
+    // Read memory once, at the top of the ticket: the system prompt stays
+    // byte-stable across every turn of this ticket so the provider's prefix
+    // cache survives mid-ticket memory writes. Cross-ticket and cross-agent
+    // writes become visible at the top of the next ticket.
+    let memory_contents = agent
+        .memory_handle()
+        .map(|s| s.entries().join("\n\n"));
+
+    let mut messages: Vec<Message> = Vec::new();
+    if let Some(ctx) = agent.context_message() {
+        messages.push(Message::user(ctx));
+    }
     messages.push(task_msg);
     emit(EventKind::TicketStarted {
         key: key.to_string(),
@@ -261,9 +261,6 @@ async fn process_ticket(
         }
         match ticket_system.get(key) {
             Some(t) if matches!(t.status(), Status::Done | Status::Failed) => {
-                if history_on {
-                    agent.replace_history(messages);
-                }
                 emit(terminal_event(t.status(), key));
                 return;
             }
@@ -276,7 +273,7 @@ async fn process_ticket(
         });
         let request = ModelRequest {
             model: agent.model_str().to_string(),
-            system_prompt: agent.system_prompt(),
+            system_prompt: agent.system_prompt(memory_contents.as_deref()),
             messages: messages.clone(),
             tools: agent.tool_definitions(),
             max_request_tokens,
@@ -359,10 +356,6 @@ async fn process_ticket(
                 },
             };
             let _ = ticket_system.force_status(key, final_status);
-            if history_on {
-                pair_unpaired_tool_uses(&mut messages);
-                agent.replace_history(messages);
-            }
             emit(terminal_event(final_status, key));
             return;
         }
@@ -455,44 +448,12 @@ async fn process_ticket(
                 limit: u64::from(max_schema_retries),
             });
             let _ = ticket_system.force_status(key, Status::Failed);
-            if history_on {
-                agent.replace_history(messages);
-            }
             emit(EventKind::TicketFailed {
                 key: key.to_string(),
             });
             return;
         }
     }
-}
-
-/// Synthesise empty `ToolResult` blocks for any unpaired `ToolUse`
-/// blocks in the last `Assistant` message. Used at the terminal-reply
-/// flush site so persisted history stays valid for replay (Anthropic
-/// requires every tool_use to be followed by a tool_result).
-fn pair_unpaired_tool_uses(messages: &mut Vec<Message>) {
-    let pending_ids: Vec<String> = match messages.last() {
-        Some(Message::Assistant { content }) => content
-            .iter()
-            .filter_map(|b| match b {
-                ContentBlock::ToolUse { id, .. } => Some(id.clone()),
-                _ => None,
-            })
-            .collect(),
-        _ => return,
-    };
-    if pending_ids.is_empty() {
-        return;
-    }
-    let blocks: Vec<ContentBlock> = pending_ids
-        .into_iter()
-        .map(|id| ContentBlock::ToolResult {
-            tool_use_id: id,
-            content: String::new(),
-            is_error: false,
-        })
-        .collect();
-    messages.push(Message::User { content: blocks });
 }
 
 fn terminal_event(status: Status, key: &str) -> EventKind {
@@ -536,6 +497,7 @@ mod tests {
         results: StdMutex<Vec<ProviderResult<ModelResponse>>>,
         requests: AtomicUsize,
         received: StdMutex<Vec<Vec<Message>>>,
+        received_system_prompts: StdMutex<Vec<String>>,
     }
 
     impl MockProvider {
@@ -544,6 +506,7 @@ mod tests {
                 results: StdMutex::new(results),
                 requests: AtomicUsize::new(0),
                 received: StdMutex::new(Vec::new()),
+                received_system_prompts: StdMutex::new(Vec::new()),
             })
         }
 
@@ -554,6 +517,10 @@ mod tests {
         fn received(&self) -> Vec<Vec<Message>> {
             self.received.lock().unwrap().clone()
         }
+
+        fn received_system_prompts(&self) -> Vec<String> {
+            self.received_system_prompts.lock().unwrap().clone()
+        }
     }
 
     impl Provider for MockProvider {
@@ -563,6 +530,10 @@ mod tests {
             _on_event: Arc<dyn Fn(crate::providers::types::StreamEvent) + Send + Sync>,
         ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
             self.received.lock().unwrap().push(request.messages.clone());
+            self.received_system_prompts
+                .lock()
+                .unwrap()
+                .push(request.system_prompt.clone());
             self.requests.fetch_add(1, Ordering::Relaxed);
             // Non-retryable fallback once exhausted: a retryable
             // fallback would spin up retry chains in tests that don't
@@ -613,6 +584,22 @@ mod tests {
                 id: "call-1".into(),
                 name: "write_result_tool".into(),
                 input: serde_json::json!({ "result": result }),
+            }],
+            status: ResponseStatus::ToolUse,
+            usage: TokenUsage::default(),
+            model: "mock".into(),
+        }
+    }
+
+    /// `memory_tool` `add` call: the model's first turn writes a single entry
+    /// with `content`. The loop's tool dispatch will append it to the bound
+    /// `Memory`.
+    fn memory_add_response(content: &str) -> ModelResponse {
+        ModelResponse {
+            content: vec![ContentBlock::ToolUse {
+                id: "call-1".into(),
+                name: "memory_tool".into(),
+                input: serde_json::json!({"action": "add", "content": content}),
             }],
             status: ResponseStatus::ToolUse,
             usage: TokenUsage::default(),
@@ -1174,11 +1161,11 @@ mod tests {
     }
 
     // =====================================================================
-    // Bucket F — cross-ticket conversation history
+    // Bucket F — cross-ticket memory (body capture)
     // =====================================================================
 
     /// First user-side text in each `User` message, in order, with the
-    /// auto-injected `## Context` block filtered out so history-replay
+    /// auto-injected `## Context` block filtered out so cross-ticket
     /// tests can assert on task bodies without re-stating the environment
     /// prelude every time.
     fn user_texts(messages: &[Message]) -> Vec<String> {
@@ -1195,10 +1182,12 @@ mod tests {
             .collect()
     }
 
-    async fn run_two_tickets(
-        provider: Arc<MockProvider>,
-        remember_history: bool,
-    ) -> Arc<MockProvider> {
+    #[tokio::test]
+    async fn messages_contain_only_the_current_tickets_task() {
+        let provider = MockProvider::with_results(vec![
+            Ok(write_result_response("ok")),
+            Ok(write_result_response("ok")),
+        ]);
         let results_dir = tempfile::tempdir().unwrap();
         let tickets = TicketSystem::new()
             .results_dir(results_dir.path().to_path_buf())
@@ -1206,30 +1195,18 @@ mod tests {
             .request_retry_delay(Duration::from_millis(1))
             .max_schema_retries(10)
             .max_time(Duration::from_millis(500));
-
-        let mut builder = Agent::new()
-            .name("tester")
-            .provider(provider.clone() as Arc<dyn Provider>)
-            .model("mock")
-            .role("test")
-            .tool(ManageTicketsTool)
-            .silent();
-        if remember_history {
-            builder = builder.remember_history();
-        }
-        tickets.add(builder);
-
+        tickets.add(
+            Agent::new()
+                .name("tester")
+                .provider(provider.clone() as Arc<dyn Provider>)
+                .model("mock")
+                .role("test")
+                .tool(ManageTicketsTool)
+                .silent(),
+        );
         tickets.task("first");
         tickets.task("second");
         let _ = tickets.run_dry().await;
-        provider
-    }
-
-    #[tokio::test]
-    async fn history_off_by_default_each_ticket_starts_cold() {
-        let provider =
-            MockProvider::with_results(vec![Ok(write_result_response("ok")), Ok(write_result_response("ok"))]);
-        let provider = run_two_tickets(provider, false).await;
 
         let calls = provider.received();
         assert_eq!(calls.len(), 2);
@@ -1238,297 +1215,166 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remember_history_seeds_next_ticket_with_prior_transcript() {
-        let provider =
-            MockProvider::with_results(vec![Ok(write_result_response("ok")), Ok(write_result_response("ok"))]);
-        let provider = run_two_tickets(provider, true).await;
+    async fn model_writes_in_ticket_n_become_visible_in_ticket_n_plus_one_system_prompt() {
+        use crate::agents::Memory;
 
-        let calls = provider.received();
-        assert_eq!(calls.len(), 2);
-        let texts = user_texts(&calls[1]);
-        assert_eq!(
-            texts.first().map(String::as_str),
-            Some("first"),
-            "second call should replay the first ticket task at the head",
-        );
-        assert_eq!(
-            texts.last().map(String::as_str),
-            Some("second"),
-            "second call should end with the new ticket task",
-        );
-        let unpaired = calls[1].iter().any(|m| {
-            matches!(m, Message::User { content } if content.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. })))
-        });
-        assert!(
-            unpaired,
-            "mark-done ToolUse must be paired with a ToolResult before flush"
-        );
-    }
-
-    #[tokio::test]
-    async fn remember_history_flushes_on_failed_terminal_status() {
+        // Ticket 1: model adds a memory entry (turn 1) then finishes (turn 2).
+        // Ticket 2: model finishes immediately (turn 3). The system prompt at
+        // turn 3 must contain the entry written at turn 1.
         let provider = MockProvider::with_results(vec![
-            Ok(write_result_response("nope")),
-            Ok(write_result_response("ok")),
+            Ok(memory_add_response("note from ticket 1")),
+            Ok(write_result_response("done 1")),
+            Ok(write_result_response("done 2")),
         ]);
         let results_dir = tempfile::tempdir().unwrap();
-        let tickets = TicketSystem::new()
-            .results_dir(results_dir.path().to_path_buf())
-            .max_request_retries(0)
-            .request_retry_delay(Duration::from_millis(1))
-            .max_schema_retries(1)
-            .max_time(Duration::from_millis(500));
+        let memory_dir = tempfile::tempdir().unwrap();
+        let store = Memory::open(memory_dir.path()).unwrap();
 
-        let agent = Agent::new()
-            .name("tester")
-            .provider(provider.clone() as Arc<dyn Provider>)
-            .model("mock")
-            .role("test")
-            .tool(ManageTicketsTool)
-            .silent()
-            .remember_history();
-        tickets.add(agent);
-
-        tickets.task_schema("first", schema_for_partial_sum());
-        tickets.task("second");
-        let _ = tickets.run_dry().await;
-
-        let calls = provider.received();
-        assert_eq!(
-            calls.len(),
-            2,
-            "first ticket fails after one schema miss; second ticket follows"
-        );
-        let last = calls.last().unwrap();
-        let texts = user_texts(last);
-        assert_eq!(
-            texts.first().map(String::as_str),
-            Some("first"),
-            "history should carry forward across a Failed terminal status",
-        );
-        assert_eq!(texts.last().map(String::as_str), Some("second"));
-    }
-
-    #[tokio::test]
-    async fn two_agents_one_remembers_one_does_not_have_independent_history() {
-        let p_a =
-            MockProvider::with_results(vec![Ok(write_result_response("ok")), Ok(write_result_response("ok"))]);
-        let p_b =
-            MockProvider::with_results(vec![Ok(write_result_response("ok")), Ok(write_result_response("ok"))]);
-
-        let results_dir = tempfile::tempdir().unwrap();
         let tickets = TicketSystem::new()
             .results_dir(results_dir.path().to_path_buf())
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1))
             .max_time(Duration::from_millis(500));
-
-        let agent_a = Agent::new()
-            .name("a")
-            .label("a")
-            .provider(p_a.clone() as Arc<dyn Provider>)
-            .model("mock")
-            .role("test")
-            .silent()
-            .remember_history();
-        let agent_b = Agent::new()
-            .name("b")
-            .label("b")
-            .provider(p_b.clone() as Arc<dyn Provider>)
-            .model("mock")
-            .role("test")
-            .silent();
-        tickets.add(agent_a);
-        tickets.add(agent_b);
-
-        tickets.task_labeled("a-1", "a");
-        tickets.task_labeled("a-2", "a");
-        tickets.task_labeled("b-1", "b");
-        tickets.task_labeled("b-2", "b");
-        let _ = tickets.run_dry().await;
-
-        let a_calls = p_a.received();
-        assert_eq!(a_calls.len(), 2);
-        assert_eq!(
-            user_texts(&a_calls[0]).first().map(String::as_str),
-            Some("a-1"),
-        );
-        assert_eq!(
-            user_texts(&a_calls[1]).first().map(String::as_str),
-            Some("a-1"),
-            "agent a remembers across tickets",
-        );
-
-        let b_calls = p_b.received();
-        assert_eq!(b_calls.len(), 2);
-        assert_eq!(user_texts(&b_calls[0]), vec!["b-1".to_string()]);
-        assert_eq!(
-            user_texts(&b_calls[1]),
-            vec!["b-2".to_string()],
-            "agent b stays cold each ticket",
-        );
-    }
-
-    #[tokio::test]
-    async fn remember_history_survives_across_run_dry_calls() {
-        let provider =
-            MockProvider::with_results(vec![Ok(write_result_response("ok")), Ok(write_result_response("ok"))]);
-
-        let results_dir = tempfile::tempdir().unwrap();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let tickets = TicketSystem::new()
-            .results_dir(results_dir.path().to_path_buf())
-            .interrupt_signal(Arc::clone(&cancel))
-            .max_request_retries(0)
-            .request_retry_delay(Duration::from_millis(1))
-            .max_time(Duration::from_millis(500));
-
-        let agent = Agent::new()
-            .name("tester")
-            .provider(provider.clone() as Arc<dyn Provider>)
-            .model("mock")
-            .role("test")
-            .silent()
-            .remember_history();
-        tickets.add(agent);
-
-        tickets.task("first");
-        let _ = tickets.run_dry().await;
-
-        // run_dry flips the cancel flag when the queue settles. Reset
-        // it before the next call so handle_tickets doesn't bail.
-        cancel.store(false, Ordering::Relaxed);
-        tickets.task("second");
-        let _ = tickets.run_dry().await;
-
-        let calls = provider.received();
-        assert_eq!(calls.len(), 2);
-        let texts = user_texts(&calls[1]);
-        assert_eq!(
-            texts.first().map(String::as_str),
-            Some("first"),
-            "the second run_dry must replay the first ticket task at the head",
-        );
-        assert_eq!(texts.last().map(String::as_str), Some("second"));
-    }
-
-    #[tokio::test]
-    async fn history_holds_full_transcript_after_two_tickets() {
-        let provider = MockProvider::with_results(vec![
-            Ok(write_result_response("answered first")),
-            Ok(write_result_response("answered second")),
-        ]);
-
-        let results_dir = tempfile::tempdir().unwrap();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let tickets = TicketSystem::new()
-            .results_dir(results_dir.path().to_path_buf())
-            .interrupt_signal(Arc::clone(&cancel))
-            .max_request_retries(0)
-            .request_retry_delay(Duration::from_millis(1))
-            .max_time(Duration::from_millis(500));
-
-        let agent = tickets.add(
+        tickets.add(
             Agent::new()
-                .name("snap")
+                .name("tester")
                 .provider(provider.clone() as Arc<dyn Provider>)
                 .model("mock")
                 .role("test")
-                .silent()
-                .remember_history(),
+                .memory(&store)
+                .silent(),
+        );
+        tickets.task("first");
+        tickets.task("second");
+        let _ = tickets.run_dry().await;
+
+        let prompts = provider.received_system_prompts();
+        assert_eq!(prompts.len(), 3);
+        assert!(
+            !prompts[0].contains("note from ticket 1"),
+            "ticket 1 turn 1 sees an empty memory: {:?}",
+            prompts[0]
+        );
+        assert!(
+            prompts[2].contains("## Memory"),
+            "ticket 2 should render the memory section: {:?}",
+            prompts[2]
+        );
+        assert!(
+            prompts[2].contains("note from ticket 1"),
+            "ticket 2 should see ticket 1's write: {:?}",
+            prompts[2]
+        );
+    }
+
+    #[tokio::test]
+    async fn system_prompt_does_not_change_after_mid_ticket_memory_write() {
+        use crate::agents::Memory;
+
+        // One ticket, two turns: the model writes memory in turn 1, then
+        // finishes in turn 2. The two turns must see byte-identical system
+        // prompts so the provider's prefix cache survives the mid-ticket write.
+        let provider = MockProvider::with_results(vec![
+            Ok(memory_add_response("written mid-ticket")),
+            Ok(write_result_response("ok")),
+        ]);
+        let results_dir = tempfile::tempdir().unwrap();
+        let memory_dir = tempfile::tempdir().unwrap();
+        let store = Memory::open(memory_dir.path()).unwrap();
+
+        let tickets = TicketSystem::new()
+            .results_dir(results_dir.path().to_path_buf())
+            .max_request_retries(0)
+            .request_retry_delay(Duration::from_millis(1))
+            .max_time(Duration::from_millis(500));
+        tickets.add(
+            Agent::new()
+                .name("tester")
+                .provider(provider.clone() as Arc<dyn Provider>)
+                .model("mock")
+                .role("test")
+                .memory(&store)
+                .silent(),
+        );
+        tickets.task("hi");
+        let _ = tickets.run_dry().await;
+
+        let prompts = provider.received_system_prompts();
+        assert_eq!(prompts.len(), 2);
+        assert_eq!(
+            prompts[0], prompts[1],
+            "mid-ticket memory write must not change the system prompt within the same ticket"
+        );
+        // Disk write was durable, so the next ticket would see it.
+        assert_eq!(store.entries().join("\n§\n"), "written mid-ticket");
+    }
+
+    #[tokio::test]
+    async fn agent_a_writes_in_one_ticket_then_agent_b_sees_it_in_its_next_ticket() {
+        use crate::agents::Memory;
+
+        // Two agents share one Memory via the Arc passed to memory(&store).
+        // Drive alice's ticket to completion first, then enqueue bob's so the
+        // ordering is deterministic. Bob's ticket-1 system prompt must show
+        // alice's write.
+        let p_a = MockProvider::with_results(vec![
+            Ok(memory_add_response("note from alice")),
+            Ok(write_result_response("alice done")),
+        ]);
+        let p_b = MockProvider::with_results(vec![Ok(write_result_response("bob done"))]);
+
+        let results_dir = tempfile::tempdir().unwrap();
+        let memory_dir = tempfile::tempdir().unwrap();
+        let store = Memory::open(memory_dir.path()).unwrap();
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let tickets = TicketSystem::new()
+            .results_dir(results_dir.path().to_path_buf())
+            .interrupt_signal(Arc::clone(&cancel))
+            .max_request_retries(0)
+            .request_retry_delay(Duration::from_millis(1))
+            .max_time(Duration::from_millis(500));
+
+        tickets.add(
+            Agent::new()
+                .name("alice")
+                .label("a")
+                .provider(p_a.clone() as Arc<dyn Provider>)
+                .model("mock")
+                .role("test")
+                .memory(&store)
+                .silent(),
+        );
+        tickets.add(
+            Agent::new()
+                .name("bob")
+                .label("b")
+                .provider(p_b.clone() as Arc<dyn Provider>)
+                .model("mock")
+                .role("test")
+                .memory(&store)
+                .silent(),
         );
 
-        tickets.task("how many planets are in our solar system?");
+        tickets.task_labeled("alice work", "a");
         let _ = tickets.run_dry().await;
+        assert_eq!(store.entries().join("\n§\n"), "note from alice");
+
+        // run_dry flips the cancel flag when the queue settles. Reset before
+        // the second call so the supervisor doesn't bail.
         cancel.store(false, Ordering::Relaxed);
-        tickets.task("which one is the smallest?");
+        tickets.task_labeled("bob work", "b");
         let _ = tickets.run_dry().await;
 
-        let stored: Vec<Message> = agent
-            .history()
-            .expect("history must be on")
-            .into_iter()
-            .filter(|m| match m {
-                Message::User { content } => !content.iter().any(|b| {
-                    matches!(
-                        b,
-                        ContentBlock::Text { text } if text.starts_with("## Context\n\n")
-                    )
-                }),
-                _ => true,
-            })
-            .collect();
-        let actual = serde_json::to_string_pretty(&stored).unwrap();
-        let expected = r#"[
-  {
-    "role": "user",
-    "content": [
-      {
-        "type": "text",
-        "text": "how many planets are in our solar system?"
-      }
-    ]
-  },
-  {
-    "role": "assistant",
-    "content": [
-      {
-        "type": "tool_use",
-        "id": "call-1",
-        "name": "write_result_tool",
-        "input": {
-          "result": "answered first"
-        }
-      }
-    ]
-  },
-  {
-    "role": "user",
-    "content": [
-      {
-        "type": "tool_result",
-        "tool_use_id": "call-1",
-        "content": "Ticket TICKET-1 marked done",
-        "is_error": false
-      }
-    ]
-  },
-  {
-    "role": "user",
-    "content": [
-      {
-        "type": "text",
-        "text": "which one is the smallest?"
-      }
-    ]
-  },
-  {
-    "role": "assistant",
-    "content": [
-      {
-        "type": "tool_use",
-        "id": "call-1",
-        "name": "write_result_tool",
-        "input": {
-          "result": "answered second"
-        }
-      }
-    ]
-  },
-  {
-    "role": "user",
-    "content": [
-      {
-        "type": "tool_result",
-        "tool_use_id": "call-1",
-        "content": "Ticket TICKET-2 marked done",
-        "is_error": false
-      }
-    ]
-  }
-]"#;
-        assert_eq!(actual, expected);
+        let bob_prompts = p_b.received_system_prompts();
+        assert_eq!(bob_prompts.len(), 1, "bob processed exactly one ticket");
+        assert!(
+            bob_prompts[0].contains("note from alice"),
+            "bob should see alice's write: {:?}",
+            bob_prompts[0]
+        );
     }
+
 
     // ---- late-add tests ----
     //

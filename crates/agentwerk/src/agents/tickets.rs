@@ -743,7 +743,7 @@ impl TicketSystem {
 }
 
 /// Whether the run-wide policies have been exceeded by the current
-/// stats snapshot. Used by the `run_dry` watcher and by the per-agent
+/// stats reading. Used by the `run_dry` watcher and by the per-agent
 /// loop's pre-claim check.
 pub(crate) fn policy_violated(policies: &Policies, stats: &Stats) -> bool {
     if let Some(limit) = policies.max_steps {

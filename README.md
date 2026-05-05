@@ -16,7 +16,7 @@
   <a href="#development">Development</a>
 </p>
 
-<p align="center">This crate provides a core implementation for agentic applications: execution loop based on ticketing system, built-in tools, agent orchestration, multi-provider support, schema-based output, and retry mechanisms.</p>
+<p align="center">A Rust crate for agentic workflows: a ticket-driven execution loop, agent orchestration, built-in tools, durable memory, schema-validated results, retry and token policies, and multi-provider support.</p>
 
 <p align="center"><em>agentwerk pairs "agent" with the German "Werk," a word that means both factory and artwork; machinery for building agentic systems, engineered like a craft.</em></p>
 
@@ -75,6 +75,7 @@ make use_case name=<name>    # run one
 - [Agents](#agents): the workers that pick up tickets and produce results
 - [Ticket Systems](#ticket-systems): queue for organizing work
 - [Tools](#tools): tools agents can use to finish a task
+- [Memory](#memory): durable facts the model curates and reuses across tickets
 - [Schemas](#schemas): schemas used for result validation
 - [Events](#events): lifecycle events of agentic work
 - [Stats](#stats): insight into the work of agents
@@ -131,38 +132,36 @@ let answer = agent.run().await;
 
 Builder methods (each returns the `Agent` for chaining):
 
-| Method | Description |
-|--------|-------------|
-| `Agent::new()` | New builder. |
-| `name(s)` | Identifier used by routing and events. |
-| `provider(p)` | LLM provider. |
-| `model(m)` | Model the provider runs. |
-| `role(text)` | Role prompt. |
-| `context(text)` | Prepended to the first message of every ticket. |
-| `label(l)` / `labels([..])` | Restrict to tickets carrying matching labels. |
-| `tool(t)` / `tools([..])` | Register a tool; `WriteResultTool` is auto-registered. |
-| `working_dir(p)` | Directory tools resolve paths against. |
-| `event_handler(fn)` | Custom event observer. |
-| `silent()` | Drop every event instead of routing to the default logger. |
-| `remember_history()` | Persist conversation across tickets and `run_dry`; off by default. |
+| | Method | Description |
+|-|--------|-------------|
+| **Construct** | `Agent::new()` | New builder. |
+| **Identity** | `name(s)` | Identifier used by routing and events. |
+| | `label(l)` / `labels([..])` | Restrict to tickets carrying matching labels. |
+| **Provider** | `provider(p)` | LLM provider. |
+| | `model(m)` | Model the provider runs. |
+| **Prompt** | `role(text)` | Role prompt. |
+| | `context(text)` | Prepended to the first message of every ticket. |
+| **Tools** | `tool(t)` / `tools([..])` | Register a tool; `WriteResultTool` is auto-registered. |
+| | `working_dir(p)` | Directory tools resolve paths against. |
+| **Events** | `event_handler(fn)` | Custom event observer. |
+| | `silent()` | Drop every event instead of routing to the default logger. |
+| **Memory** | `memory(&store)` | Bind a shared `Memory`; durable facts persist across tickets and process restarts. Off by default. |
 
 Methods called after the agent is built:
 
-| Method | Description |
-|--------|-------------|
-| `task(value)` | Create a task. |
-| `task_labeled(value, label)` | Create a task tagged with `label` for label-scoped routing. |
-| `task_schema(value, schema)` | Create a task whose result must validate against `schema`. |
-| `task_schema_labeled(value, schema, label)` | Create a labelled task whose result must validate against `schema`. |
-| `create(ticket)` | Add a caller-built `Ticket`; a preset `assignee` starts it `InProgress`. |
-| `run().await` | Process every queued task and return the last result. |
-| `results()` | Every `Done` ticket's `ResultRecord`, in creation order. |
-| `last_result()` | Most recent `Done` ticket's `ResultRecord`, or `None`. |
-| `get_name()` | Configured name. |
-| `get_labels()` | Configured label scope. |
-| `handles(labels)` | True when the label scope overlaps. |
-| `history()` | Clone of conversation history, or `None` when memory is off. |
-| `clear_history()` | Clear the conversation history. |
+| | Method | Description |
+|-|--------|-------------|
+| **Tasks** | `task(value)` | Create a task. |
+| | `task_labeled(value, label)` | Create a task tagged with `label` for label-scoped routing. |
+| | `task_schema(value, schema)` | Create a task whose result must validate against `schema`. |
+| | `task_schema_labeled(value, schema, label)` | Create a labelled task whose result must validate against `schema`. |
+| | `create(ticket)` | Add a caller-built `Ticket`; a preset `assignee` starts it `InProgress`. |
+| **Run** | `run().await` | Process every queued task and return the last result. |
+| **Results** | `results()` | Every `Done` ticket's `ResultRecord`, in creation order. |
+| | `last_result()` | Most recent `Done` ticket's `ResultRecord`, or `None`. |
+| **Inspect** | `get_name()` | Configured name. |
+| | `get_labels()` | Configured label scope. |
+| | `handles(labels)` | True when the label scope overlaps. |
 
 ### Ticket Systems
 
@@ -180,21 +179,21 @@ tickets.add(agent);
 let result = tickets.run_dry().await;
 ```
 
-| Method | Description |
-|--------|-------------|
-| `TicketSystem::new()` | `Arc<TicketSystem>`; agents share one queue. |
-| `add(agent)` | Bind an `Agent` and return it for chaining. |
-| `task(value)` | Create a task. |
-| `task_labeled(value, label)` | Create a task tagged with `label` for label-scoped routing. |
-| `task_schema(value, schema)` | Create a task whose result must validate against `schema`. |
-| `task_schema_labeled(value, schema, label)` | Create a labelled task whose result must validate against `schema`. |
-| `create(ticket)` | Add a caller-built `Ticket`; a preset `assignee` starts it `InProgress`. |
-| `run().await` | Run continuously until the interrupt signal fires. |
-| `run_dry().await` | Process every queued ticket; returns last finished result or `""`. |
-| `results()` | Every `Done` ticket's `ResultRecord`, in creation order. |
-| `last_result()` | Most recent `Done` ticket's `ResultRecord`, or `None`. |
-| `get(key)` / `tickets()` / `first()` | Finished tickets. |
-| `stats()` | Run counters and timings. |
+| | Method | Description |
+|-|--------|-------------|
+| **Construct** | `TicketSystem::new()` | `Arc<TicketSystem>`; agents share one queue. |
+| | `add(agent)` | Bind an `Agent` and return it for chaining. |
+| **Tasks** | `task(value)` | Create a task. |
+| | `task_labeled(value, label)` | Create a task tagged with `label` for label-scoped routing. |
+| | `task_schema(value, schema)` | Create a task whose result must validate against `schema`. |
+| | `task_schema_labeled(value, schema, label)` | Create a labelled task whose result must validate against `schema`. |
+| | `create(ticket)` | Add a caller-built `Ticket`; a preset `assignee` starts it `InProgress`. |
+| **Run** | `run().await` | Run continuously until the interrupt signal fires. |
+| | `run_dry().await` | Process every queued ticket; returns last finished result or `""`. |
+| **Results** | `results()` | Every `Done` ticket's `ResultRecord`, in creation order. |
+| | `last_result()` | Most recent `Done` ticket's `ResultRecord`, or `None`. |
+| **Inspect** | `get(key)` / `tickets()` / `first()` | Finished tickets. |
+| | `stats()` | Run counters and timings. |
 
 #### Policies
 
@@ -259,7 +258,43 @@ let greet = Tool::new("greet", "Say hello")
 | **Tickets** | `WriteResultTool` | Writes the agent's result for the current ticket. Validates against the ticket's `schema` (when set), appends an NDJSON record to `<results_dir>/results.jsonl`, attaches the record to the ticket, and transitions it to `Done`. Auto-registered on every agent. |
 | | `ManageTicketsTool` | Reads the ticket queue and creates or edits tickets. |
 | | `ReadTicketsTool` / `WriteTicketsTool` | Read-only and write-only halves of `ManageTicketsTool`. |
+| **Memory** | `MemoryTool` | Adds, replaces, or removes entries in the agent's `Memory`. Auto-registered when `Agent::memory(&store)` is set. |
 | **Discovery** | `ToolSearchTool` | Discovers tools registered with `Tool::defer(true)`. |
+
+### Memory
+
+A `Memory` is a file-backed store of durable facts the model curates itself via `MemoryTool`. The current entries are rendered into the system prompt under `## Memory` at the top of every ticket; mid-ticket writes land on disk and become visible at the next ticket. Multiple agents share one store the same way they share a `TicketSystem`.
+
+```rust
+use agentwerk::{Agent, Memory};
+
+let memory = Memory::open("./.agentwerk-memory")?;
+
+let alice = Agent::new()
+    .name("alice")
+    .provider(provider.clone())
+    .model(&model)
+    .memory(&memory);
+
+let bob = Agent::new()
+    .name("bob")
+    .provider(provider)
+    .model(&model)
+    .memory(&memory);
+```
+
+Both agents read and write the same `memory.md`. Bind two agents to two different stores for independent memory.
+
+Methods on `Memory`:
+
+| | Method | Description |
+|-|--------|-------------|
+| **Open** | `Memory::open(dir)` | Open or create a store at `dir`; returns `Arc<Memory>`. |
+| **Read** | `entries()` | Clone of the current entries, in insertion order. |
+| **Mutate** | `add(content)` | Append an entry. Rejects empty content, duplicates, and over-limit content. |
+| | `replace(old_text, content)` | Swap the unique entry containing `old_text`. |
+| | `remove(old_text)` | Drop the unique entry containing `old_text`. |
+| | `rewrite(entries)` | Replace every entry in one shot. |
 
 ### Schemas
 

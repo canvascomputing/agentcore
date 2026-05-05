@@ -1,14 +1,15 @@
-//! Interactive terminal chat. One `TicketSystem` + `Agent` lives for
-//! the whole session; each input line enqueues a ticket and runs
-//! `run_dry` once. The agent has `remember_history` set, so prior
-//! turns are replayed as context for the next one. The model's
-//! response streams to stdout via `EventKind::TextChunkReceived`,
-//! and the agent finishes its ticket via the auto-registered
-//! `write_result_tool`. Slash commands: `/exit` quits, `/history`
-//! prints the stored transcript, `/clear` resets it. Ctrl-C at the
-//! prompt exits with code 130; Ctrl-C during a turn cancels that
-//! turn (a second Ctrl-C while the cancel is still draining
-//! force-quits with exit code 130).
+//! Interactive terminal chat. One `TicketSystem` + `Agent` + `Memory`
+//! lives for the whole session; each input line enqueues a ticket and
+//! runs `run_dry` once. The agent has `memory(...)` bound, so durable
+//! facts the model writes via `memory_tool` survive across turns and
+//! across process restarts (the file lives at `./.agentwerk-memory/`).
+//! The model's response streams to stdout via
+//! `EventKind::TextChunkReceived`, and the agent finishes its ticket
+//! via the auto-registered `write_result_tool`. Slash commands:
+//! `/exit` quits, `/memory` prints the current memory contents,
+//! `/clear` resets them. Ctrl-C at the prompt exits with code 130;
+//! Ctrl-C during a turn cancels that turn (a second Ctrl-C while the
+//! cancel is still draining force-quits with exit code 130).
 //!
 //! Every exit path goes through `std::process::exit` rather than a
 //! plain `return`: the stdin reader runs on a tokio blocking thread
@@ -22,7 +23,7 @@ use std::sync::Arc;
 
 use agentwerk::providers::{model_from_env, provider_from_env};
 use agentwerk::tools::{GlobTool, GrepTool, ListDirectoryTool, ReadFileTool};
-use agentwerk::{Agent, Event, EventKind, Runnable, Status, TicketSystem};
+use agentwerk::{Agent, Event, EventKind, Memory, Runnable, Status, TicketSystem};
 
 const ROLE: &str = include_str!("prompts/repl.role.md");
 
@@ -50,20 +51,22 @@ async fn main() {
         .max_steps(40);
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let memory_dir = cwd.join(".agentwerk-memory");
+    let memory = Memory::open(&memory_dir).expect("open memory store");
 
-    let agent = tickets.add(
+    let _agent = tickets.add(
         Agent::new()
             .name("orchestrator")
             .provider(Arc::clone(&provider))
             .model(&model)
             .role(role)
-            .working_dir(cwd)
+            .working_dir(&cwd)
             .tool(GlobTool)
             .tool(GrepTool)
             .tool(ListDirectoryTool)
             .tool(ReadFileTool)
             .event_handler(handler)
-            .remember_history(),
+            .memory(&memory),
     );
 
     let mut prev_steps: u64 = 0;
@@ -87,17 +90,19 @@ async fn main() {
         if line == "/exit" || line == "/quit" {
             std::process::exit(0);
         }
-        if line == "/history" {
-            let body = agent
-                .history()
-                .map(|msgs| serde_json::to_string_pretty(&msgs).unwrap_or_default())
-                .unwrap_or_else(|| "(history disabled)".into());
-            eprintln!("{}{}{}", style.dim, body, style.reset);
+        if line == "/memory" {
+            let entries = memory.entries();
+            let rendered = if entries.is_empty() {
+                "(memory empty)".to_string()
+            } else {
+                entries.join("\n\n")
+            };
+            eprintln!("{}{}{}", style.dim, rendered, style.reset);
             continue;
         }
         if line == "/clear" {
-            agent.clear_history();
-            eprintln!("{}history cleared{}", style.dim, style.reset);
+            memory.rewrite(Vec::new()).ok();
+            eprintln!("{}memory cleared{}", style.dim, style.reset);
             continue;
         }
 
