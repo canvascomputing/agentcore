@@ -1,29 +1,28 @@
 {
   "name": "write_tickets_tool",
   "summary": [
-    "Mutate the ticket queue: create new tickets, edit fields, or settle the current ticket with `done`.",
-    "Use `done` to mark the agent's current ticket finished — this is the only way to transition status from a tool.",
-    "Use `create` with `assign` to delegate work to another agent (their name) or scope it to a label."
+    "Mutate the ticket queue: create new tickets or edit fields.",
+    "Use `create` with `assignee` to delegate work to another agent (their name) or scope it to a label.",
+    "Finishing a ticket is done with `write_result_tool`, not this tool."
   ],
   "constraints": [
-    "One `action` per call: `create`, `edit`, or `done`.",
-    "Every action except `create` defaults `key` to the agent's current ticket — omit `key` to act on your own work.",
-    "`create` stamps `reporter` from the calling agent automatically; there is no `reporter` parameter.",
-    "`done` validates `result` against the ticket's `schema` (when set). On validation failure the call counts toward `max_schema_retries`; consecutive failures terminate ticket processing."
+    "One `action` per call: `create` or `edit`.",
+    "`edit` defaults `key` to the agent's current ticket — omit `key` to act on your own work.",
+    "`create` stamps `reporter` from the calling agent automatically; there is no `reporter` parameter."
   ],
   "anti_patterns": [
     "To look up, list, or search tickets — use `read_tickets_tool`.",
     "When the agent needs read AND write in the same flow — use `manage_tickets_tool` instead of registering both.",
-    "To delegate work to another agent — use `create` with `assign` set to that agent's name; the loop's Path A picks it up next iteration."
+    "To finish the agent's current ticket — call `write_result_tool`.",
+    "To delegate work to another agent — use `create` with `assignee` set to that agent's name; the loop's Path A picks it up next iteration."
   ],
   "cautions": [
-    "IMPORTANT: `done` is the only legal status transition from a tool. `Failed` is reserved for ticket-system-driven outcomes (schema-retry trip, policy violations).",
-    "IMPORTANT: `Done` and `Failed` are terminal — once settled a ticket cannot be re-opened.",
-    "ALWAYS settle your current ticket with `done` before the response ends. Returning text without `done` leaves the ticket `InProgress` and the loop will re-pick it next iteration."
+    "IMPORTANT: this tool cannot transition status. Use `write_result_tool` to finish; `Failed` is reserved for ticket-system-driven outcomes (schema-retry trip, policy violations).",
+    "ALWAYS finish the current ticket with `write_result_tool` before the response ends. Returning text without a result leaves the ticket `InProgress` and the loop will re-pick it next iteration."
   ],
   "output": [
-    "Plain text confirmation: `Created ticket KEY`, `Edited ticket KEY`, or `Ticket KEY marked done`.",
-    "On rejection: an error describing the failed action (missing field, unknown ticket, schema-validation failure with violation list)."
+    "Plain text confirmation: `Created ticket KEY` or `Edited ticket KEY`.",
+    "On rejection: an error describing the failed action (missing field, unknown ticket)."
   ],
   "read_only": false,
   "input_schema": {
@@ -31,11 +30,11 @@
     "properties": {
       "action": {
         "type": "string",
-        "description": "Write mode: `create`, `edit`, or `done`."
+        "description": "Write mode: `create` or `edit`."
       },
       "key": {
         "type": "string",
-        "description": "Ticket key (e.g. `TICKET-3`). Required for `edit` and `done` (defaults to current ticket); ignored by `create`."
+        "description": "Ticket key (e.g. `TICKET-3`). Required for `edit` (defaults to current ticket); ignored by `create`."
       },
       "task": {
         "description": "For `create` (required): the task body — any JSON value (string, object, array, scalar). For `edit` (optional): replace the task body."
@@ -51,11 +50,7 @@
       },
       "schema": {
         "type": "object",
-        "description": "For `create` or `edit` (optional): a JSON Schema document. When set, the agent's `done` result must validate against it; failures count toward `max_schema_retries`."
-      },
-      "result": {
-        "type": "string",
-        "description": "For `done` (optional): the agent's final answer. When the ticket carries a `schema`, this string must parse as JSON and validate. Defaults to the empty string."
+        "description": "For `create` or `edit` (optional): a JSON Schema document. When set, the agent's final result (written via `write_result_tool`) must validate against it; failures count toward `max_schema_retries`."
       }
     },
     "required": ["action"]

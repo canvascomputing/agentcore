@@ -1,33 +1,37 @@
 //! Ticket tools — give an agent a call surface for reading and mutating
-//! the surrounding `TicketSystem`. Three tools share one dispatch
-//! helper: `ReadTicketsTool` (read-only), `WriteTicketsTool` (mutating),
-//! `ManageTicketsTool` (both).
+//! the surrounding `TicketSystem`. Three multi-action tools share one
+//! dispatch helper: `ReadTicketsTool` (read-only), `WriteTicketsTool`
+//! (mutating), `ManageTicketsTool` (both). `WriteResultTool` is the
+//! sole way for an agent to finish its current ticket.
+
+use std::fs::OpenOptions;
+use std::io::Write as _;
 
 use serde_json::Value;
 
 use crate::agents::tickets::{
-    insert_ticket, tickets_edit, tickets_get, tickets_search, tickets_set_result,
-    tickets_update_status, Status, Ticket, TicketError, TicketSystem,
+    insert_ticket, tickets_edit, tickets_get, tickets_search, tickets_set_result_record,
+    tickets_update_status, ResultRecord, Status, Ticket, TicketError, TicketSystem,
 };
 use crate::schemas::{format_violations, Schema};
 
 use super::tool::{ToolContext, ToolResult};
 
 mod manage_tickets;
-mod mark_ticket_done;
 mod read_tickets;
+mod write_result;
 mod write_tickets;
 
 pub use manage_tickets::ManageTicketsTool;
-pub use mark_ticket_done::MarkTicketDoneTool;
 pub use read_tickets::ReadTicketsTool;
+pub use write_result::WriteResultTool;
 pub use write_tickets::WriteTicketsTool;
 
-/// Action sets each tool exposes. Keeps the dispatch logic in one place
-/// and lets each tool reject actions outside its allow-list with a
-/// uniform error message.
+/// Action sets each multi-action tool exposes. Keeps the dispatch logic
+/// in one place and lets each tool reject actions outside its
+/// allow-list with a uniform error message.
 pub(super) const READ_ACTIONS: &[&str] = &["get", "list", "search"];
-pub(super) const WRITE_ACTIONS: &[&str] = &["create", "edit", "done"];
+pub(super) const WRITE_ACTIONS: &[&str] = &["create", "edit"];
 
 pub(super) fn dispatch(input: Value, ctx: &ToolContext, allowed: &[&str]) -> ToolResult {
     let action = match input["action"].as_str() {
@@ -50,7 +54,6 @@ pub(super) fn dispatch(input: Value, ctx: &ToolContext, allowed: &[&str]) -> Too
         "search" => action_search(&ticket_system, &input),
         "create" => action_create(&ticket_system, &input, ctx),
         "edit" => action_edit(&ticket_system, &input, ctx),
-        "done" => action_done(&ticket_system, &input, ctx),
         other => ToolResult::error(format!("Unknown action `{other}`")),
     }
 }
@@ -113,7 +116,10 @@ fn render_ticket(t: &Ticket) -> String {
         }
     }
     out.push_str("\n## Result\n");
-    out.push_str(t.result().unwrap_or("(no result)"));
+    match t.result_string() {
+        Some(s) => out.push_str(&s),
+        None => out.push_str("(no result)"),
+    }
     out.push('\n');
     out
 }
@@ -352,41 +358,77 @@ fn action_edit(ticket_system: &TicketSystem, input: &Value, ctx: &ToolContext) -
     }
 }
 
-fn action_done(ticket_system: &TicketSystem, input: &Value, ctx: &ToolContext) -> ToolResult {
-    let key = match resolve_key(ticket_system, input, ctx) {
-        Ok(k) => k,
-        Err(e) => return e,
+/// Validate `result` against the ticket's schema (or against the
+/// "non-empty string" rule when there is no schema), append an NDJSON
+/// record to the configured results directory, attach the record to
+/// the ticket, and transition the ticket to `Done`. The `agent` field
+/// on the record is taken from the calling context; the `ticket` field
+/// is the resolved key. Shared by `WriteResultTool` and the loop's
+/// terminal-reply path.
+pub(super) fn write_result(
+    ticket_system: &TicketSystem,
+    ctx: &ToolContext,
+    key: &str,
+    result: Value,
+) -> ToolResult {
+    let agent = match ctx.agent_name_str() {
+        Some(a) => a.to_string(),
+        None => {
+            return ToolResult::error("No agent_name set on this tool context");
+        }
     };
-    let result = input
-        .get("result")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    mark_done(ticket_system, &key, result)
-}
 
-pub(super) fn mark_done(ticket_system: &TicketSystem, key: &str, result: String) -> ToolResult {
     let schema = tickets_get(ticket_system, key).and_then(|t| t.schema.clone());
-
     if let Some(schema) = schema.as_ref() {
-        let parsed: serde_json::Value = match serde_json::from_str(&result) {
-            Ok(v) => v,
-            Err(e) => {
-                return ToolResult::schema_error(format!("Result is not valid JSON: {e}"));
-            }
-        };
-        if let Err(violations) = schema.validate(&parsed) {
+        if let Err(violations) = schema.validate(&result) {
             return ToolResult::schema_error(format_violations(&violations));
+        }
+    } else {
+        match &result {
+            Value::Null => return ToolResult::error("`result` must not be null"),
+            Value::String(s) if s.is_empty() => {
+                return ToolResult::error("`result` must not be an empty string");
+            }
+            _ => {}
         }
     }
 
-    if let Err(e) = tickets_set_result(ticket_system, key, result) {
+    let record = ResultRecord {
+        agent,
+        ticket: key.to_string(),
+        result,
+    };
+
+    let target_dir = ticket_system
+        .results_dir_value()
+        .unwrap_or_else(|| ctx.working_dir.clone());
+    if let Err(e) = append_ndjson(&target_dir, &record) {
+        return ToolResult::error(format!(
+            "Cannot write result to {}: {e}",
+            target_dir.display()
+        ));
+    }
+
+    if let Err(e) = tickets_set_result_record(ticket_system, key, record) {
         return ToolResult::error(ticket_error_message(e));
     }
     match tickets_update_status(ticket_system, key, Status::Done) {
         Ok(()) => ToolResult::success(format!("Ticket {key} marked done")),
         Err(e) => ToolResult::error(ticket_error_message(e)),
     }
+}
+
+const RESULTS_FILE: &str = "results.jsonl";
+
+fn append_ndjson(dir: &std::path::Path, record: &ResultRecord) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let mut line = serde_json::to_string(record).map_err(std::io::Error::other)?;
+    line.push('\n');
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(RESULTS_FILE))?;
+    file.write_all(line.as_bytes())
 }
 
 #[cfg(test)]
@@ -532,81 +574,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_done_without_schema_sets_result_and_status() {
-        let (sys, key) = shared_with_one_ticket("alice");
-        let ctx = ctx_with(Arc::clone(&sys), "alice");
-        let result = call(
-            &WriteTicketsTool,
-            serde_json::json!({"action": "done", "result": "answer text"}),
-            &ctx,
-        )
-        .await;
-        assert!(matches!(result, ToolResult::Success(_)));
-        let t = tickets_get(&sys, &key).unwrap();
-        assert_eq!(t.status(), Status::Done);
-        assert_eq!(t.result(), Some("answer text"));
-    }
-
-    #[tokio::test]
-    async fn write_done_with_schema_returns_schema_error_on_mismatch() {
-        let sys = TicketSystem::new();
-        let schema = Schema::parse(serde_json::json!({
-            "type": "object",
-            "properties": {"x": {"type": "string"}},
-            "required": ["x"]
-        }))
-        .unwrap();
-        let key = insert_ticket(&sys, Ticket::new("hi").schema(schema), "tester".into());
-        tickets_update_status(&sys, &key, Status::InProgress).unwrap();
-        tickets_assign_to(&sys, &key, "alice").unwrap();
-        let ctx = ctx_with(Arc::clone(&sys), "alice");
-        let result = call(
-            &WriteTicketsTool,
-            serde_json::json!({
-                "action": "done",
-                "result": "{\"x\": 7}"
-            }),
-            &ctx,
-        )
-        .await;
-        let ToolResult::SchemaError(message) = &result else {
-            panic!("expected SchemaError, got {result:?}");
-        };
-        assert!(message.contains("Schema validation failed"));
-        let t = tickets_get(&sys, &key).unwrap();
-        assert_eq!(t.status(), Status::InProgress);
-        assert!(t.result().is_none());
-    }
-
-    #[tokio::test]
-    async fn write_done_with_schema_passes_when_result_is_valid_json() {
-        let sys = TicketSystem::new();
-        let schema = Schema::parse(serde_json::json!({
-            "type": "object",
-            "properties": {"x": {"type": "string"}},
-            "required": ["x"]
-        }))
-        .unwrap();
-        let key = insert_ticket(&sys, Ticket::new("hi").schema(schema), "tester".into());
-        tickets_update_status(&sys, &key, Status::InProgress).unwrap();
-        tickets_assign_to(&sys, &key, "alice").unwrap();
-        let ctx = ctx_with(Arc::clone(&sys), "alice");
-        let result = call(
-            &WriteTicketsTool,
-            serde_json::json!({
-                "action": "done",
-                "result": "{\"x\": \"answer\"}"
-            }),
-            &ctx,
-        )
-        .await;
-        assert!(matches!(result, ToolResult::Success(_)));
-        let t = tickets_get(&sys, &key).unwrap();
-        assert_eq!(t.status(), Status::Done);
-        assert_eq!(t.result(), Some("{\"x\": \"answer\"}"));
-    }
-
-    #[tokio::test]
     async fn write_edit_updates_task_and_labels() {
         let (sys, key) = shared_with_one_ticket("alice");
         let ctx = ctx_with(Arc::clone(&sys), "alice");
@@ -630,7 +597,7 @@ mod tests {
     async fn write_rejects_unsupported_actions() {
         let (sys, _key) = shared_with_one_ticket("alice");
         let ctx = ctx_with(Arc::clone(&sys), "alice");
-        for action in ["transition", "comment", "assign", "attach"] {
+        for action in ["done", "transition", "comment", "assign", "attach"] {
             let result = call(
                 &WriteTicketsTool,
                 serde_json::json!({"action": action}),
@@ -642,19 +609,5 @@ mod tests {
                 "{action}: {result:?}"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn manage_supports_done_action() {
-        let (sys, key) = shared_with_one_ticket("alice");
-        let ctx = ctx_with(Arc::clone(&sys), "alice");
-        let result = call(
-            &ManageTicketsTool,
-            serde_json::json!({"action": "done", "result": "fine"}),
-            &ctx,
-        )
-        .await;
-        assert!(matches!(result, ToolResult::Success(_)));
-        assert_eq!(tickets_get(&sys, &key).unwrap().status(), Status::Done);
     }
 }

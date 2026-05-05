@@ -2,25 +2,24 @@
   "name": "manage_tickets_tool",
   "summary": [
     "Read and mutate the ticket queue from one tool: union of `read_tickets_tool` and `write_tickets_tool`.",
-    "Use `get` / `list` / `search` to read, and `create` / `edit` / `done` to write.",
-    "`done` is the only way to settle a ticket; `Failed` is reserved for ticket-system-driven transitions."
+    "Use `get` / `list` / `search` to read, and `create` / `edit` to write.",
+    "Finishing a ticket is done with `write_result_tool`, not this tool."
   ],
   "constraints": [
-    "One `action` per call. Six actions total — see the `action` parameter.",
+    "One `action` per call. Five actions total — see the `action` parameter.",
     "Every action that takes a `key` defaults to the agent's current ticket when `key` is omitted.",
     "`create` stamps `reporter` from the calling agent automatically.",
-    "`list` and `search` cap at 50 tickets per call.",
-    "`done` validates `result` against the ticket's `schema` (when set). Validation failures count toward `max_schema_retries`; consecutive failures terminate ticket processing."
+    "`list` and `search` cap at 50 tickets per call."
   ],
   "anti_patterns": [
     "When the agent only needs reads — register `read_tickets_tool` instead. Smaller surface = fewer mistakes.",
     "When the agent should never read tickets it does not own — register `write_tickets_tool` to block listing/searching.",
+    "To finish the agent's current ticket — call `write_result_tool`.",
     "To find code or files in the working directory — use `grep_tool` / `glob_tool`."
   ],
   "cautions": [
-    "IMPORTANT: `done` is the only agent-callable status transition. `Failed` is reserved for ticket-system-driven outcomes (schema-retry trip, policy violations).",
-    "IMPORTANT: `Done` and `Failed` are terminal — once settled a ticket cannot be re-opened.",
-    "ALWAYS settle your current ticket with `done` before the response ends. Returning text without `done` leaves the ticket `InProgress` and the loop will re-pick it."
+    "IMPORTANT: this tool cannot transition status. Use `write_result_tool` to finish; `Failed` is reserved for ticket-system-driven outcomes (schema-retry trip, policy violations).",
+    "ALWAYS finish the current ticket with `write_result_tool` before the response ends. Returning text without a result leaves the ticket `InProgress` and the loop will re-pick it."
   ],
   "output": [
     "Reads (`get`): markdown ticket block with key, status, reporter, assignee, labels, task body, result.",
@@ -33,11 +32,11 @@
     "properties": {
       "action": {
         "type": "string",
-        "description": "Read: `get`, `list`, `search`. Write: `create`, `edit`, `done`."
+        "description": "Read: `get`, `list`, `search`. Write: `create`, `edit`."
       },
       "key": {
         "type": "string",
-        "description": "Ticket key (e.g. `TICKET-3`). Used by `get`, `edit`, `done`. Defaults to the agent's current ticket. Ignored by `create`, `list`, `search`."
+        "description": "Ticket key (e.g. `TICKET-3`). Used by `get`, `edit`. Defaults to the agent's current ticket. Ignored by `create`, `list`, `search`."
       },
       "status": {
         "type": "string",
@@ -61,11 +60,7 @@
       },
       "schema": {
         "type": "object",
-        "description": "For `create` or `edit` (optional): a JSON Schema document. When set, the agent's `done` result must validate against it; failures count toward `max_schema_retries`."
-      },
-      "result": {
-        "type": "string",
-        "description": "For `done` (optional): the agent's final answer. When the ticket carries a `schema`, this string must parse as JSON and validate. Defaults to the empty string."
+        "description": "For `create` or `edit` (optional): a JSON Schema document. When set, the agent's final result (written via `write_result_tool`) must validate against it; failures count toward `max_schema_retries`."
       }
     },
     "required": ["action"]

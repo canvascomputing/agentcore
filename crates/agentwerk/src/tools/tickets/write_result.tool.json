@@ -1,0 +1,38 @@
+{
+  "name": "write_result_tool",
+  "summary": [
+    "Finish the agent's current ticket by writing its `result`. Marks the ticket `Done` on success.",
+    "`result` is a JSON value of its natural type: string for plain text, object/array/number/boolean for structured payloads. The tool stores it verbatim, so structured payloads must be passed as JSON values, not as JSON-encoded strings."
+  ],
+  "constraints": [
+    "Operates on the agent's current ticket. No `key` parameter; the loop resolves it from the calling agent's identity.",
+    "Call exactly once per ticket, when the work is complete.",
+    "MUST pass `result` as a JSON value of its natural type. Stringifying an object (passing `\"{\\\"x\\\": 1}\"` instead of `{\"x\": 1}`) double-encodes the on-disk record.",
+    "MUST NOT pass `null` or an empty string. Both mean 'no result' and are rejected.",
+    "When the ticket carries a `schema`, `result` must validate against it. Failures count toward `max_schema_retries`."
+  ],
+  "anti_patterns": [
+    "Calling this tool mid-task to 'check in' or 'save progress'. `Done` is terminal: finish the work first, then call.",
+    "Skipping this call. Returning text without `write_result_tool` leaves the ticket `InProgress` and the loop re-picks it next iteration.",
+    "To create or edit other tickets: use `write_tickets_tool`. This tool finishes the current ticket only."
+  ],
+  "cautions": [
+    "IMPORTANT: `Done` is terminal. Once the call succeeds, the ticket cannot be re-opened or amended.",
+    "IMPORTANT: a schema validation failure counts toward `max_schema_retries`. Read the violation message, correct the shape, and retry; do not loop blindly."
+  ],
+  "output": [
+    "Success: `Ticket TICKET-N marked done`.",
+    "Schema error: a JSON Schema violation message; counted toward `max_schema_retries`.",
+    "Input error: `result` was missing, `null`, or empty, or no `InProgress` ticket is assigned to this agent."
+  ],
+  "read_only": false,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "result": {
+        "description": "The agent's final answer as a JSON value: string, object, array, number, or boolean. Pass structured payloads as JSON values, not as JSON-encoded strings. MUST NOT be `null` or an empty string. When the ticket has a `schema`, the value is validated against it. Examples: `\"forwarded 3 findings\"`, `{\"status\": \"ok\", \"items\": [...]}`, `[1, 2, 3]`, `42`."
+      }
+    },
+    "required": ["result"]
+  }
+}

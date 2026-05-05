@@ -3,13 +3,12 @@
 //! Two phases run against separate `TicketSystem`s:
 //!   1. Three `researcher` agents drain three research tickets in
 //!      parallel via Path B label pickup. Each researcher calls
-//!      `brave_search` and settles its ticket by calling
-//!      `manage_tickets_tool` with `action: "done"` and the findings
-//!      string as `result`.
+//!      `brave_search` and finishes its ticket by calling
+//!      `write_result_tool` with the findings string as `result`.
 //!   2. The driver assembles those findings into a single
 //!      schema-checked ticket and hands it to the `report_writer`
-//!      agent. The report writer calls `done` with a JSON string the
-//!      framework validates against the ticket's schema.
+//!      agent. The report writer calls `write_result_tool` with a JSON
+//!      value the framework validates against the ticket's schema.
 //!
 //! Usage: deep-research-v2 <QUESTION>
 //!
@@ -84,7 +83,9 @@ async fn main() {
         .iter()
         .filter_map(|k| {
             let t = tickets.get(k)?;
-            let body = t.result().unwrap_or("(no findings)");
+            let body = t
+                .result_string()
+                .unwrap_or_else(|| "(no findings)".to_string());
             Some(format!("### {} ({:?})\n{body}", t.key(), t.status()))
         })
         .collect();
@@ -308,19 +309,17 @@ fn tool_call_summary(tool_name: &str, input: &serde_json::Value) -> String {
                 q.into()
             }
         }
-        "manage_tickets_tool" => {
-            let action = input["action"].as_str().unwrap_or("?");
-            match action {
-                "done" => {
-                    let result = input["result"].as_str().unwrap_or("");
-                    if result.chars().count() > 50 {
-                        let cut: String = result.chars().take(50).collect();
-                        format!("done: {cut}…")
-                    } else {
-                        format!("done: {result}")
-                    }
-                }
-                other => other.into(),
+        "manage_tickets_tool" => input["action"].as_str().unwrap_or("?").into(),
+        "write_result_tool" => {
+            let result = match &input["result"] {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            if result.chars().count() > 50 {
+                let cut: String = result.chars().take(50).collect();
+                format!("done: {cut}…")
+            } else {
+                format!("done: {result}")
             }
         }
         _ => serde_json::to_string(input).unwrap_or_default(),

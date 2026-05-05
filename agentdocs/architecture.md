@@ -28,13 +28,13 @@ The invariants that shape how code fits together. Layout says where code lives; 
 - An agent with empty labels handles only tickets with no labels; that is the "default scope".
 - The system never auto-resolves a name against the registered-agent set: callers know which routing path they want.
 
-## Settlement is a tool call
+## Finishing is a tool call
 
-**Agents settle tickets by calling `manage_tickets_tool` with `action: "done"` or `action: "failed"` and a `result`. The framework owns the lifecycle stamps.**
+**Agents finish tickets by calling `write_result_tool` with a `result` (a non-empty string for tickets without a schema, or a JSON value for schema-bound tickets). The framework owns the lifecycle stamps and transitions the ticket to `Done`.**
 
-- `Status` transitions go through tickets-side helpers; the agent never writes status directly.
-- `task_schema*` attaches a `Schema` to the ticket; on `done` the loop validates the result and applies `max_schema_retries` on mismatch.
-- A `done` result is the ticket's final payload, surfaced through `Ticket::result()` and (for the most recent `Done` ticket) through `run_dry`'s return value.
+- `Status` transitions go through tickets-side helpers; the agent never writes status directly. `Failed` is reserved for system-driven outcomes (schema-retry trip, policy violations).
+- `task_schema*` attaches a `Schema` to the ticket; the tool validates the result and the loop applies `max_schema_retries` on mismatch.
+- A successful call appends one NDJSON record `{agent, ticket, result}` to `<results_dir>/results.jsonl` (configured on `TicketSystem`; falls back to the agent's working directory) and attaches the same `ResultRecord` to the ticket. The record is surfaced through `Ticket::result()`; `run_dry` returns its serialized form for the most recent `Done` ticket.
 
 ## Conversation history is opt-in and per-agent
 
@@ -44,7 +44,7 @@ Two layers of memory exist. The intra-ticket message vector inside `process_tick
 
 - The cross-ticket transcript lives on the agent behind an `Arc<Mutex<Vec<Message>>>`; shared by every clone of the agent (including the `bind_agent` clone in `TicketSystem.agents`); survives across separate `run` / `run_dry` calls and is dropped when the last clone of the agent goes away.
 - It is flushed only at the two terminal-status sites in `process_ticket` (the terminal-reply branch and the schema-retry-exhausted branch). Mid-cycle aborts (cancel, request failure that does not force a status) are not persisted, so an unpaired `Assistant{ToolUse}` never lands in stored history.
-- A terminal `mark_ticket_done_tool` call is paired with a synthesised `User{ToolResult}` before flush, keeping the persisted log valid for replay against providers that require tool-use/tool-result pairing.
+- A terminal text-only assistant turn whose preceding `Assistant{ToolUse}` blocks lack `ToolResult` pairs is repaired with synthesised empty `ToolResult`s before flush, keeping the persisted log valid for replay against providers that require tool-use/tool-result pairing.
 - Callers can read the slot via `Agent::history()` (returns a clone) and reset it via `Agent::clear_history()`. Disk persistence is a separate concern, covered by `specs/2026-04-16-session-resumption.md`.
 
 ## One observer, one error path

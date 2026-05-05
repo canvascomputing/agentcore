@@ -3,8 +3,8 @@
 //! `run_dry` once. The agent has `remember_history` set, so prior
 //! turns are replayed as context for the next one. The model's
 //! response streams to stdout via `EventKind::TextChunkReceived`,
-//! and the agent settles its ticket via the auto-registered
-//! `mark_ticket_done_tool`. Slash commands: `/exit` quits, `/history`
+//! and the agent finishes its ticket via the auto-registered
+//! `write_result_tool`. Slash commands: `/exit` quits, `/history`
 //! prints the stored transcript, `/clear` resets it. Ctrl-C at the
 //! prompt exits with code 130; Ctrl-C during a turn cancels that
 //! turn (a second Ctrl-C while the cancel is still draining

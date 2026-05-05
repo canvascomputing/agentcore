@@ -3,8 +3,8 @@
 //! Partitions `[1, N]` into K subranges, registers C worker agents on a
 //! shared `TicketSystem`, and enqueues K tickets. Workers pick tickets
 //! from the shared queue (Path B label routing), compute their partial
-//! sum via the `python` tool, and settle the ticket via
-//! `manage_tickets_tool` with a JSON result `{"idx", "partial_sum"}`
+//! sum via the `python` tool, and finish the ticket via
+//! `write_result_tool` with a JSON result `{"idx", "partial_sum"}`
 //! validated against the ticket's schema. The driver aggregates after
 //! `run_dry().await` returns.
 //!
@@ -101,17 +101,19 @@ async fn main() {
     let mut failures = 0usize;
     for ticket in tickets.tickets() {
         let idx_from_body = parse_idx_from_body(&ticket.task);
-        let parsed = ticket
-            .result()
-            .and_then(|r| serde_json::from_str::<Value>(r).ok())
-            .and_then(|v| {
-                let idx = v.get("idx").and_then(|x| x.as_u64()).map(|n| n as usize)?;
-                let sum = v
-                    .get("partial_sum")
-                    .and_then(|x| x.as_i64())
-                    .map(i128::from)?;
-                Some((idx, sum))
-            });
+        let parsed = ticket.result().and_then(|record| {
+            let idx = record
+                .result
+                .get("idx")
+                .and_then(|x| x.as_u64())
+                .map(|n| n as usize)?;
+            let sum = record
+                .result
+                .get("partial_sum")
+                .and_then(|x| x.as_i64())
+                .map(i128::from)?;
+            Some((idx, sum))
+        });
 
         match (ticket.status(), parsed) {
             (Status::Done, Some((idx, sum))) if Some(idx) == idx_from_body && idx < total => {
@@ -200,8 +202,8 @@ fn print_intro(args: &CliArgs, total_chunks: usize, style: &Style) {
     eprintln!("divide-and-conquer   sum_{{k=1}}^{{{n}}} k^2   (verified via N(N+1)(2N+1)/6)\n",);
     eprintln!("  Split [1, {n}] into {k} contiguous subranges and enqueue one ticket per");
     eprintln!("  subrange. {c} worker agent(s) share the queue, each calling a `python` tool");
-    eprintln!("  to compute its partial sum exactly. Workers settle their tickets via");
-    eprintln!("  `manage_tickets_tool` with `{{\"idx\", \"partial_sum\"}}`; the driver aggregates");
+    eprintln!("  to compute its partial sum exactly. Workers finish their tickets via");
+    eprintln!("  `write_result_tool` with `{{\"idx\", \"partial_sum\"}}`; the driver aggregates");
     eprintln!("  after the queue settles and verifies against the closed-form total.\n");
     eprintln!(
         "{dim}┌ {k} partitions · {c} worker(s) sharing the queue{reset}",

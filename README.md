@@ -139,7 +139,7 @@ Builder methods (each returns the `Agent` for chaining):
 | `role(text)` | Sets the agent's role prompt. |
 | `context(text)` | Sets a context block prepended to the first message of every ticket. |
 | `label(l)` / `labels([..])` | Restricts the agent to tickets carrying matching labels. |
-| `tool(t)` / `tools([..])` | Registers tools the agent may call. `MarkTicketDoneTool` is registered automatically. |
+| `tool(t)` / `tools([..])` | Registers tools the agent may call. `WriteResultTool` is registered automatically. |
 | `working_dir(p)` | Sets the directory tools resolve paths against. |
 | `event_handler(fn)` | Sets a custom observer for the agent's events. |
 | `silent()` | Drops every event instead of using the default logger. |
@@ -249,14 +249,14 @@ let greet = Tool::new("greet", "Say hello")
 | | `ListDirectoryTool` | Lists files and folders. |
 | **Shell** | `BashTool` | Runs shell commands matching an allowed pattern; `BashTool::unrestricted()` allows any command. |
 | **Web** | `WebFetchTool` | Fetches a URL and returns its body. |
-| **Tickets** | `MarkTicketDoneTool` | Marks the current ticket done. Auto-registered on every agent; the optional `result` is validated against the ticket's `schema`. |
-| | `ManageTicketsTool` | Creates, claims, and finishes tickets. |
+| **Tickets** | `WriteResultTool` | Writes the agent's result for the current ticket. Validates against the ticket's `schema` (when set), appends an NDJSON record to `<results_dir>/results.jsonl`, attaches the record to the ticket, and transitions it to `Done`. Auto-registered on every agent. |
+| | `ManageTicketsTool` | Reads the ticket queue and creates or edits tickets. |
 | | `ReadTicketsTool` / `WriteTicketsTool` | Read-only and write-only halves of `ManageTicketsTool`. |
 | **Discovery** | `ToolSearchTool` | Discovers tools registered with `Tool::defer(true)`. |
 
 ### Schemas
 
-`Schema::parse` accepts a JSON-Schema document. Attach it to a ticket so the agent's `done` result must validate against it.
+`Schema::parse` accepts a JSON-Schema document. Attach it to a ticket so the agent's result (written via `write_result_tool`) must validate against it.
 
 ```rust
 use agentwerk::Schema;

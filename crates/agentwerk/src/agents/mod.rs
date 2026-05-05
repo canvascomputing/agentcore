@@ -11,4 +11,4 @@ pub use agent::Agent;
 pub use policy::Policies;
 pub use r#loop::Runnable;
 pub use stats::{LoopStats, Stats};
-pub use tickets::{Status, Ticket, TicketError, TicketSystem};
+pub use tickets::{ResultRecord, Status, Ticket, TicketError, TicketSystem};

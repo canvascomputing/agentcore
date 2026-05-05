@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -42,7 +43,30 @@ pub struct Ticket {
     /// Set when the ticket reaches `Status::Failed`. Millis since
     /// epoch. Mutually exclusive with `finished_at`.
     pub(crate) failed_at: Option<u64>,
-    pub(crate) result: Option<String>,
+    pub(crate) result: Option<ResultRecord>,
+}
+
+/// Record an agent writes when it finishes a ticket. Carries the source
+/// agent name, the ticket key, and the agent's result payload (a string
+/// for tickets without a schema, otherwise the validated JSON value).
+/// Same shape as the line `WriteResultTool` appends to `results.jsonl`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ResultRecord {
+    pub agent: String,
+    pub ticket: String,
+    pub result: serde_json::Value,
+}
+
+impl ResultRecord {
+    /// Result rendered as a String: the raw text for string payloads,
+    /// canonical JSON for everything else. Lossless re-parsing is not
+    /// required.
+    pub fn result_string(&self) -> String {
+        match &self.result {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        }
+    }
 }
 
 impl Ticket {
@@ -142,8 +166,15 @@ impl Ticket {
         ))
     }
 
-    pub fn result(&self) -> Option<&str> {
-        self.result.as_deref()
+    pub fn result(&self) -> Option<&ResultRecord> {
+        self.result.as_ref()
+    }
+
+    /// Result payload rendered as a String, or `None` when the ticket has
+    /// no recorded result. Convenience for callers that want a flat
+    /// string view of the result regardless of the underlying JSON shape.
+    pub fn result_string(&self) -> Option<String> {
+        self.result.as_ref().map(ResultRecord::result_string)
     }
 
     // ---- predicate helpers (compose with TicketSystem::filter / find / count) ----
@@ -222,6 +253,7 @@ pub struct TicketSystem {
     policies: Mutex<Policies>,
     pub(crate) interrupt_signal: Mutex<Arc<AtomicBool>>,
     pub(crate) stats: Stats,
+    results_dir: Mutex<Option<PathBuf>>,
 }
 
 impl TicketSystem {
@@ -237,6 +269,7 @@ impl TicketSystem {
             policies: Mutex::new(Policies::default()),
             interrupt_signal: Mutex::new(Arc::new(AtomicBool::new(false))),
             stats: Stats::new(),
+            results_dir: Mutex::new(None),
         })
     }
 
@@ -295,6 +328,18 @@ impl TicketSystem {
     pub fn interrupt_signal(self: Arc<Self>, signal: Arc<AtomicBool>) -> Arc<Self> {
         *self.interrupt_signal.lock().unwrap() = signal;
         self
+    }
+
+    /// Directory where `WriteResultTool` appends `results.jsonl`. When
+    /// unset, the tool falls back to the calling agent's working
+    /// directory.
+    pub fn results_dir(self: Arc<Self>, dir: impl Into<PathBuf>) -> Arc<Self> {
+        *self.results_dir.lock().unwrap() = Some(dir.into());
+        self
+    }
+
+    pub(crate) fn results_dir_value(&self) -> Option<PathBuf> {
+        self.results_dir.lock().unwrap().clone()
     }
 
     // ---- ticket-creation API mirrored on Agent ----
@@ -613,11 +658,11 @@ pub(crate) fn tickets_edit(
     Ok(())
 }
 
-/// Free helper: write the result string.
-pub(crate) fn tickets_set_result(
+/// Free helper: attach a result record to the ticket.
+pub(crate) fn tickets_set_result_record(
     ticket_system: &TicketSystem,
     key: &str,
-    result: String,
+    record: ResultRecord,
 ) -> Result<(), TicketError> {
     let mut store = ticket_system.tickets.lock().unwrap();
     let ticket = store
@@ -625,7 +670,7 @@ pub(crate) fn tickets_set_result(
         .ok_or_else(|| TicketError::TicketMissing {
             key: key.to_string(),
         })?;
-    ticket.result = Some(result);
+    ticket.result = Some(record);
     Ok(())
 }
 
@@ -718,11 +763,12 @@ impl Runnable for TicketSystem {
 impl TicketSystem {
     /// Result of the most recently created `Status::Done` ticket, or
     /// an empty string when no ticket has reached `Done` (or its
-    /// `result` is unset).
+    /// `result` is unset). Strings are returned as-is; structured
+    /// payloads are rendered as canonical JSON.
     fn last_done_result(&self) -> String {
         self.filter(Ticket::is_done)
             .last()
-            .and_then(|t| t.result().map(String::from))
+            .and_then(|t| t.result_string())
             .unwrap_or_default()
     }
 }
@@ -969,8 +1015,21 @@ mod tests {
     fn set_result_updates_ticket() {
         let sys = TicketSystem::new();
         sys.task("hi");
-        tickets_set_result(&sys, "TICKET-1", "answer".into()).unwrap();
-        assert_eq!(sys.get("TICKET-1").unwrap().result(), Some("answer"));
+        tickets_set_result_record(
+            &sys,
+            "TICKET-1",
+            ResultRecord {
+                agent: "tester".into(),
+                ticket: "TICKET-1".into(),
+                result: serde_json::Value::String("answer".into()),
+            },
+        )
+        .unwrap();
+        let stored = sys.get("TICKET-1").unwrap();
+        let record = stored.result().unwrap();
+        assert_eq!(record.agent, "tester");
+        assert_eq!(record.ticket, "TICKET-1");
+        assert_eq!(record.result, serde_json::Value::String("answer".into()));
     }
 
     #[test]

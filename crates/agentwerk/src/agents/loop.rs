@@ -18,7 +18,7 @@ use super::retry::ExponentialRetry;
 use super::stats::LoopStats;
 use super::tickets::{
     policy_violated_kind, tickets_assign_to, tickets_find, tickets_force_status, tickets_get,
-    tickets_set_result, tickets_update_status, Status,
+    tickets_update_status, Status,
 };
 use crate::prompts::schema_retry;
 
@@ -256,6 +256,9 @@ async fn process_ticket(
         }
         match tickets_get(ticket_system, key) {
             Some(t) if matches!(t.status(), Status::Done | Status::Failed) => {
+                if history_on {
+                    agent.replace_history(messages);
+                }
                 emit(terminal_event(t.status(), key));
                 return;
             }
@@ -323,33 +326,20 @@ async fn process_ticket(
             })
             .collect();
 
-        // ---- terminal reply: no tool calls, or only `mark_ticket_done_tool` ----
-        // Both shapes finish the turn. Lift any `result` arg onto the
-        // ticket first so the (schema, result) inspection below matches
-        // the state the tool-execution path would have produced.
-        let terminal_call = match calls.as_slice() {
-            [c] if c.name == "mark_ticket_done_tool" => Some(c),
-            _ => None,
-        };
-        if response.status != ResponseStatus::ToolUse || calls.is_empty() || terminal_call.is_some()
-        {
-            if let Some(call) = terminal_call {
-                emit(EventKind::ToolCallStarted {
-                    tool_name: call.name.clone(),
-                    call_id: call.id.clone(),
-                    input: call.input.clone(),
-                });
-                if let Some(r) = call.input.get("result").and_then(|v| v.as_str()) {
-                    let _ = tickets_set_result(ticket_system, key, r.to_string());
-                }
-            }
+        // ---- terminal reply: model produced no tool calls ----
+        // Classify the ticket against any schema using the result the
+        // tool path may have already attached. No-schema tickets settle
+        // Done by default; schema-bound tickets without a valid result
+        // force-fail.
+        if response.status != ResponseStatus::ToolUse || calls.is_empty() {
             let final_status = match tickets_get(ticket_system, key) {
                 None => return,
                 Some(ticket) => match (&ticket.schema, ticket.result()) {
-                    (Some(schema), Some(raw)) => {
-                        match serde_json::from_str::<serde_json::Value>(raw) {
-                            Ok(parsed) if schema.validate(&parsed).is_ok() => Status::Done,
-                            _ => Status::Failed,
+                    (Some(schema), Some(record)) => {
+                        if schema.validate(&record.result).is_ok() {
+                            Status::Done
+                        } else {
+                            Status::Failed
                         }
                     }
                     (Some(_), None) => Status::Failed,
@@ -387,10 +377,8 @@ async fn process_ticket(
                 let tool_name = call.map(|c| c.name.clone()).unwrap_or_default();
                 match verdict {
                     Ok(output) => {
-                        if let Some(call) = call {
-                            if is_done_call(call) {
-                                consecutive_schema_failures = 0;
-                            }
+                        if call.is_some_and(|c| c.name == "write_result_tool") {
+                            consecutive_schema_failures = 0;
                         }
                         emit(EventKind::ToolCallFinished {
                             tool_name,
@@ -492,18 +480,6 @@ fn pair_unpaired_tool_uses(messages: &mut Vec<Message>) {
     messages.push(Message::User { content: blocks });
 }
 
-/// True if the call settles via `done`-side schema validation. Used
-/// to reset the schema-retry counter on a successful settle.
-fn is_done_call(call: &ToolCall) -> bool {
-    if call.name == "mark_ticket_done_tool" {
-        return true;
-    }
-    matches!(
-        call.name.as_str(),
-        "manage_tickets_tool" | "write_tickets_tool"
-    ) && call.input.get("action").and_then(|v| v.as_str()) == Some("done")
-}
-
 fn terminal_event(status: Status, key: &str) -> EventKind {
     match status {
         Status::Done => EventKind::TicketDone {
@@ -598,12 +574,15 @@ mod tests {
 
     // ---- response builders ----
 
-    fn mark_done_response() -> ModelResponse {
+    /// `write_result_tool` call carrying a string `result`. For
+    /// no-schema tickets this settles the ticket Done; for schema-bound
+    /// tickets it relies on the schema accepting strings.
+    fn write_result_response(result: &str) -> ModelResponse {
         ModelResponse {
             content: vec![ContentBlock::ToolUse {
                 id: "call-1".into(),
-                name: "mark_ticket_done_tool".into(),
-                input: serde_json::json!({}),
+                name: "write_result_tool".into(),
+                input: serde_json::json!({ "result": result }),
             }],
             status: ResponseStatus::ToolUse,
             usage: TokenUsage::default(),
@@ -611,11 +590,13 @@ mod tests {
         }
     }
 
-    fn mark_done_with_result(result: &str) -> ModelResponse {
+    /// `write_result_tool` call carrying a structured `result` value.
+    /// Used by schema-bound ticket tests.
+    fn write_result_value(result: serde_json::Value) -> ModelResponse {
         ModelResponse {
             content: vec![ContentBlock::ToolUse {
                 id: "call-1".into(),
-                name: "mark_ticket_done_tool".into(),
+                name: "write_result_tool".into(),
                 input: serde_json::json!({ "result": result }),
             }],
             status: ResponseStatus::ToolUse,
@@ -628,21 +609,6 @@ mod tests {
         ModelResponse {
             content: vec![ContentBlock::Text { text: text.into() }],
             status: ResponseStatus::EndTurn,
-            usage: TokenUsage::default(),
-            model: "mock".into(),
-        }
-    }
-
-    /// `manage_tickets_tool` `done` action — goes through the
-    /// schema-retry path (the mark-done shortcut bypasses it).
-    fn manage_done_with_result(result: &str) -> ModelResponse {
-        ModelResponse {
-            content: vec![ContentBlock::ToolUse {
-                id: "call-1".into(),
-                name: "manage_tickets_tool".into(),
-                input: serde_json::json!({ "action": "done", "result": result }),
-            }],
-            status: ResponseStatus::ToolUse,
             usage: TokenUsage::default(),
             model: "mock".into(),
         }
@@ -720,7 +686,9 @@ mod tests {
             Arc::new(move |e| c.lock().unwrap().push(e))
         };
 
+        let results_dir = tempfile::tempdir().unwrap();
         let tickets = TicketSystem::new()
+            .results_dir(results_dir.path().to_path_buf())
             .max_request_retries(max_request_retries)
             .request_retry_delay(Duration::from_millis(1))
             .max_schema_retries(max_schema_retries)
@@ -733,9 +701,9 @@ mod tests {
             .provider(provider.clone() as Arc<dyn Provider>)
             .model("mock")
             .role("test")
-            // ManageTicketsTool drives the schema-retry path; the
-            // mark-done shortcut bypasses it and uses the auto-
-            // registered MarkTicketDoneTool instead.
+            // ManageTicketsTool drives create/edit. WriteResultTool is
+            // auto-registered on every Agent and is the only path to
+            // settle a ticket.
             .tool(ManageTicketsTool)
             .event_handler(handler);
         tickets.add(agent);
@@ -761,7 +729,7 @@ mod tests {
         let provider = MockProvider::with_results(vec![
             Err(rate_limit()),
             Err(rate_limit()),
-            Ok(mark_done_response()),
+            Ok(write_result_response("ok")),
         ]);
         let (events, provider, settled) = run_one(provider, 3, 10, None).await;
 
@@ -812,7 +780,7 @@ mod tests {
 
     #[tokio::test]
     async fn happy_path_emits_no_request_failed() {
-        let provider = MockProvider::with_results(vec![Ok(mark_done_response())]);
+        let provider = MockProvider::with_results(vec![Ok(write_result_response("ok"))]);
         let (events, _, settled) = run_one(provider, 3, 10, None).await;
 
         assert!(retries_in(&events).is_empty());
@@ -860,7 +828,7 @@ mod tests {
         let provider = MockProvider::with_results(vec![
             Err(rate_limit()),
             Err(rate_limit()),
-            Ok(mark_done_response()),
+            Ok(write_result_response("ok")),
         ]);
         let (events, _, _) = run_one(provider, 4, 10, None).await;
 
@@ -872,7 +840,7 @@ mod tests {
     async fn request_retried_carries_provider_error_display() {
         let provider = MockProvider::with_results(vec![
             Err(connection_failed("dns lookup failed: no such host")),
-            Ok(mark_done_response()),
+            Ok(write_result_response("ok")),
         ]);
         let (events, _, _) = run_one(provider, 3, 10, None).await;
 
@@ -943,7 +911,7 @@ mod tests {
                 status: 429,
                 retry_delay: Some(Duration::from_millis(1_000)),
             }),
-            Ok(mark_done_response()),
+            Ok(write_result_response("ok")),
         ]);
         let collected: Arc<StdMutex<Vec<Event>>> = Arc::new(StdMutex::new(Vec::new()));
         let handler: Arc<dyn Fn(Event) + Send + Sync> = {
@@ -951,7 +919,9 @@ mod tests {
             Arc::new(move |e| c.lock().unwrap().push(e))
         };
 
+        let results_dir = tempfile::tempdir().unwrap();
         let tickets = TicketSystem::new()
+            .results_dir(results_dir.path().to_path_buf())
             .max_request_retries(3)
             .request_retry_delay(Duration::from_millis(1));
         let agent = Agent::new()
@@ -1038,9 +1008,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mark_ticket_done_tool_call_settles_via_loop_shortcut() {
-        let provider =
-            MockProvider::with_results(vec![Ok(mark_done_with_result(r#"{"partial_sum": 42}"#))]);
+    async fn write_result_settles_ticket_done_with_valid_json() {
+        let provider = MockProvider::with_results(vec![Ok(write_result_value(
+            serde_json::json!({"partial_sum": 42}),
+        ))]);
         let (events, provider, settled) =
             run_one(provider, 3, 10, Some(schema_for_partial_sum())).await;
 
@@ -1057,31 +1028,7 @@ mod tests {
         assert_eq!(failed, 0);
         let settled = settled.unwrap();
         assert_eq!(settled.status(), Status::Done);
-        assert_eq!(settled.result(), Some(r#"{"partial_sum": 42}"#));
-    }
-
-    #[tokio::test]
-    async fn mark_ticket_done_tool_call_with_invalid_result_force_fails() {
-        let provider = MockProvider::with_results(vec![Ok(mark_done_with_result("not json"))]);
-        let (events, provider, settled) =
-            run_one(provider, 3, 10, Some(schema_for_partial_sum())).await;
-
-        // The shortcut writes the bad result, the schema check fails,
-        // ticket force-fails. There's no tool-execution path here, so
-        // schema-retry doesn't fire — this is the terminal classifier
-        // for the mark-done shortcut.
-        assert_eq!(provider.requests(), 1);
-        let failed = events
-            .iter()
-            .filter(|e| matches!(e.kind, EventKind::TicketFailed { .. }))
-            .count();
-        let done = events
-            .iter()
-            .filter(|e| matches!(e.kind, EventKind::TicketDone { .. }))
-            .count();
-        assert_eq!(failed, 1);
-        assert_eq!(done, 0);
-        assert_eq!(settled.unwrap().status(), Status::Failed);
+        assert_eq!(settled.result().unwrap().result["partial_sum"], 42);
     }
 
     // =====================================================================
@@ -1102,9 +1049,9 @@ mod tests {
     #[tokio::test]
     async fn schema_violation_emits_schema_retried_with_attempt_numbers() {
         let provider = MockProvider::with_results(vec![
-            Ok(manage_done_with_result("not json")),
-            Ok(manage_done_with_result("not json again")),
-            Ok(manage_done_with_result(r#"{"partial_sum": 42}"#)),
+            Ok(write_result_response("not json")),
+            Ok(write_result_response("not json again")),
+            Ok(write_result_value(serde_json::json!({"partial_sum": 42}))),
         ]);
         let (events, _, settled) = run_one(provider, 3, 10, Some(schema_for_partial_sum())).await;
 
@@ -1120,8 +1067,8 @@ mod tests {
     #[tokio::test]
     async fn schema_retry_appends_directive_to_user_message() {
         let provider = MockProvider::with_results(vec![
-            Ok(manage_done_with_result("not json")),
-            Ok(manage_done_with_result(r#"{"partial_sum": 1}"#)),
+            Ok(write_result_response("not json")),
+            Ok(write_result_value(serde_json::json!({"partial_sum": 1}))),
         ]);
         let (events, _, _) = run_one(provider, 3, 10, Some(schema_for_partial_sum())).await;
         // We can't peek at the second request directly without a richer
@@ -1139,9 +1086,9 @@ mod tests {
     #[tokio::test]
     async fn schema_retry_exhausted_emits_policy_violated_and_force_fails_ticket() {
         let provider = MockProvider::with_results(vec![
-            Ok(manage_done_with_result("nope")),
-            Ok(manage_done_with_result("still nope")),
-            Ok(manage_done_with_result("never")),
+            Ok(write_result_response("nope")),
+            Ok(write_result_response("still nope")),
+            Ok(write_result_response("never")),
         ]);
         let (events, _, settled) = run_one(provider, 3, 2, Some(schema_for_partial_sum())).await;
 
@@ -1237,7 +1184,9 @@ mod tests {
         provider: Arc<MockProvider>,
         remember_history: bool,
     ) -> Arc<MockProvider> {
+        let results_dir = tempfile::tempdir().unwrap();
         let tickets = TicketSystem::new()
+            .results_dir(results_dir.path().to_path_buf())
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1))
             .max_schema_retries(10)
@@ -1264,7 +1213,7 @@ mod tests {
     #[tokio::test]
     async fn history_off_by_default_each_ticket_starts_cold() {
         let provider =
-            MockProvider::with_results(vec![Ok(mark_done_response()), Ok(mark_done_response())]);
+            MockProvider::with_results(vec![Ok(write_result_response("ok")), Ok(write_result_response("ok"))]);
         let provider = run_two_tickets(provider, false).await;
 
         let calls = provider.received();
@@ -1276,7 +1225,7 @@ mod tests {
     #[tokio::test]
     async fn remember_history_seeds_next_ticket_with_prior_transcript() {
         let provider =
-            MockProvider::with_results(vec![Ok(mark_done_response()), Ok(mark_done_response())]);
+            MockProvider::with_results(vec![Ok(write_result_response("ok")), Ok(write_result_response("ok"))]);
         let provider = run_two_tickets(provider, true).await;
 
         let calls = provider.received();
@@ -1304,10 +1253,12 @@ mod tests {
     #[tokio::test]
     async fn remember_history_flushes_on_failed_terminal_status() {
         let provider = MockProvider::with_results(vec![
-            Ok(manage_done_with_result("nope")),
-            Ok(mark_done_response()),
+            Ok(write_result_response("nope")),
+            Ok(write_result_response("ok")),
         ]);
+        let results_dir = tempfile::tempdir().unwrap();
         let tickets = TicketSystem::new()
+            .results_dir(results_dir.path().to_path_buf())
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1))
             .max_schema_retries(1)
@@ -1346,11 +1297,13 @@ mod tests {
     #[tokio::test]
     async fn two_agents_one_remembers_one_does_not_have_independent_history() {
         let p_a =
-            MockProvider::with_results(vec![Ok(mark_done_response()), Ok(mark_done_response())]);
+            MockProvider::with_results(vec![Ok(write_result_response("ok")), Ok(write_result_response("ok"))]);
         let p_b =
-            MockProvider::with_results(vec![Ok(mark_done_response()), Ok(mark_done_response())]);
+            MockProvider::with_results(vec![Ok(write_result_response("ok")), Ok(write_result_response("ok"))]);
 
+        let results_dir = tempfile::tempdir().unwrap();
         let tickets = TicketSystem::new()
+            .results_dir(results_dir.path().to_path_buf())
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1))
             .max_time(Duration::from_millis(500));
@@ -1404,10 +1357,12 @@ mod tests {
     #[tokio::test]
     async fn remember_history_survives_across_run_dry_calls() {
         let provider =
-            MockProvider::with_results(vec![Ok(mark_done_response()), Ok(mark_done_response())]);
+            MockProvider::with_results(vec![Ok(write_result_response("ok")), Ok(write_result_response("ok"))]);
 
+        let results_dir = tempfile::tempdir().unwrap();
         let cancel = Arc::new(AtomicBool::new(false));
         let tickets = TicketSystem::new()
+            .results_dir(results_dir.path().to_path_buf())
             .interrupt_signal(Arc::clone(&cancel))
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1))
@@ -1445,12 +1400,14 @@ mod tests {
     #[tokio::test]
     async fn history_holds_full_transcript_after_two_tickets() {
         let provider = MockProvider::with_results(vec![
-            Ok(mark_done_with_result("answered first")),
-            Ok(mark_done_with_result("answered second")),
+            Ok(write_result_response("answered first")),
+            Ok(write_result_response("answered second")),
         ]);
 
+        let results_dir = tempfile::tempdir().unwrap();
         let cancel = Arc::new(AtomicBool::new(false));
         let tickets = TicketSystem::new()
+            .results_dir(results_dir.path().to_path_buf())
             .interrupt_signal(Arc::clone(&cancel))
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1))
@@ -1503,7 +1460,7 @@ mod tests {
       {
         "type": "tool_use",
         "id": "call-1",
-        "name": "mark_ticket_done_tool",
+        "name": "write_result_tool",
         "input": {
           "result": "answered first"
         }
@@ -1516,7 +1473,7 @@ mod tests {
       {
         "type": "tool_result",
         "tool_use_id": "call-1",
-        "content": "",
+        "content": "Ticket TICKET-1 marked done",
         "is_error": false
       }
     ]
@@ -1536,7 +1493,7 @@ mod tests {
       {
         "type": "tool_use",
         "id": "call-1",
-        "name": "mark_ticket_done_tool",
+        "name": "write_result_tool",
         "input": {
           "result": "answered second"
         }
@@ -1549,7 +1506,7 @@ mod tests {
       {
         "type": "tool_result",
         "tool_use_id": "call-1",
-        "content": "",
+        "content": "Ticket TICKET-2 marked done",
         "is_error": false
       }
     ]
@@ -1569,8 +1526,10 @@ mod tests {
 
     #[tokio::test]
     async fn add_after_run_spawns_new_agent() {
+        let results_dir = tempfile::tempdir().unwrap();
         let cancel = Arc::new(AtomicBool::new(false));
         let tickets = TicketSystem::new()
+            .results_dir(results_dir.path().to_path_buf())
             .interrupt_signal(Arc::clone(&cancel))
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1));
@@ -1583,7 +1542,7 @@ mod tests {
         // Let the supervisor's first scan run (no agents registered yet).
         tokio::time::sleep(Duration::from_millis(150)).await;
 
-        let provider = MockProvider::with_results(vec![Ok(mark_done_response())]);
+        let provider = MockProvider::with_results(vec![Ok(write_result_response("ok"))]);
         tickets.add(
             Agent::new()
                 .name("late")
@@ -1620,8 +1579,10 @@ mod tests {
 
     #[tokio::test]
     async fn late_added_agent_joined_on_shutdown() {
+        let results_dir = tempfile::tempdir().unwrap();
         let cancel = Arc::new(AtomicBool::new(false));
         let tickets = TicketSystem::new()
+            .results_dir(results_dir.path().to_path_buf())
             .interrupt_signal(Arc::clone(&cancel))
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1));
@@ -1633,7 +1594,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(150)).await;
 
-        let provider = MockProvider::with_results(vec![Ok(mark_done_response())]);
+        let provider = MockProvider::with_results(vec![Ok(write_result_response("ok"))]);
         tickets.add(
             Agent::new()
                 .name("late")

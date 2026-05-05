@@ -15,7 +15,7 @@ use serde::Serialize;
 use crate::event::{default_logger, Event};
 use crate::prompts::{default_context, PromptBuilder, Section};
 use crate::providers::{Message, Provider, ProviderToolDefinition};
-use crate::tools::{MarkTicketDoneTool, ToolLike, ToolRegistry};
+use crate::tools::{ToolLike, ToolRegistry, WriteResultTool};
 
 use super::r#loop::Runnable;
 use super::tickets::{insert_ticket, Ticket, TicketSystem};
@@ -46,7 +46,7 @@ pub struct Agent {
 impl Default for Agent {
     fn default() -> Self {
         let mut tools = ToolRegistry::default();
-        tools.register(MarkTicketDoneTool);
+        tools.register(WriteResultTool);
         Self {
             name: default_agent_name(),
             provider: None,
@@ -452,14 +452,14 @@ mod tests {
     }
 
     #[test]
-    fn new_agent_has_mark_ticket_done_registered() {
+    fn new_agent_has_write_result_registered() {
         let agent = Agent::new();
         let names: Vec<String> = agent
             .tool_definitions()
             .into_iter()
             .map(|d| d.name)
             .collect();
-        assert!(names.iter().any(|n| n == "mark_ticket_done_tool"));
+        assert!(names.iter().any(|n| n == "write_result_tool"));
     }
 
     #[test]

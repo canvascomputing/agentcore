@@ -48,12 +48,12 @@ async fn separates_files_and_directories() -> std::result::Result<(), Box<dyn st
         .role(
             "Step 1: call `list_directory_tool` with `path: \".\"` to see the \
              working directory's top level. \
-             Step 2: immediately call `mark_ticket_done_tool` with `result` set \
-             to a JSON string in exactly this shape: \
+             Step 2: immediately call `write_result_tool` with `result` set \
+             to a JSON object in exactly this shape: \
              {\"files\": [\"<basename>\", ...], \"directories\": [\"<basename>\", ...]}. \
-             The `result` argument MUST be valid JSON, never prose, never a \
-             bullet list, never a sentence. Do not output any text outside of \
-             tool calls.",
+             Pass the result as a JSON value, not a JSON-encoded string. \
+             Never prose, never a bullet list, never a sentence. Do not output \
+             any text outside of tool calls.",
         )
         .tool(ListDirectoryTool);
     tickets.add(agent);
