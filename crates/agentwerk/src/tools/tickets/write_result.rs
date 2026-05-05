@@ -5,9 +5,15 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use serde_json::Value;
+
+static RESULTS_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+pub(super) fn results_write_lock() -> &'static Mutex<()> {
+    &RESULTS_WRITE_LOCK
+}
 
 use crate::providers::ProviderResult;
 
@@ -278,5 +284,53 @@ mod tests {
         assert_eq!(second["agent"], "bob");
         assert_eq!(second["ticket"], key2.as_str());
         assert_eq!(second["result"], "from bob");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_writes_produce_one_intact_line_per_ticket() {
+        const N: usize = 32;
+        let dir = tempfile::tempdir().unwrap();
+        let sys = TicketSystem::new().results_dir(dir.path().to_path_buf());
+
+        let mut expected = Vec::with_capacity(N);
+        for i in 0..N {
+            let agent = format!("agent_{i}");
+            let key = insert_ticket(&sys, Ticket::new(format!("body_{i}")), "tester".into());
+            tickets_force_status(&sys, &key, Status::InProgress).unwrap();
+            tickets_assign_to(&sys, &key, &agent).unwrap();
+            expected.push((agent, key));
+        }
+
+        let mut handles = Vec::with_capacity(N);
+        for (i, (agent, _)) in expected.iter().enumerate() {
+            let sys = Arc::clone(&sys);
+            let dir_path = dir.path().to_path_buf();
+            let agent = agent.clone();
+            handles.push(tokio::spawn(async move {
+                let ctx = ctx_with(sys, &agent, dir_path);
+                WriteResultTool
+                    .call(serde_json::json!({"result": format!("payload_{i}")}), &ctx)
+                    .await
+                    .unwrap()
+            }));
+        }
+        for h in handles {
+            assert!(matches!(h.await.unwrap(), ToolResult::Success(_)));
+        }
+
+        let log = std::fs::read_to_string(dir.path().join("results.jsonl")).unwrap();
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), N, "expected {N} lines, got {}", lines.len());
+
+        let mut seen_tickets = std::collections::HashSet::new();
+        for line in &lines {
+            let parsed: serde_json::Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("corrupt line {line:?}: {e}"));
+            let ticket = parsed["ticket"].as_str().unwrap().to_string();
+            assert!(seen_tickets.insert(ticket), "duplicate ticket in log");
+        }
+        let expected_keys: std::collections::HashSet<String> =
+            expected.iter().map(|(_, k)| k.clone()).collect();
+        assert_eq!(seen_tickets, expected_keys);
     }
 }

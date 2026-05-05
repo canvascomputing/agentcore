@@ -402,11 +402,14 @@ pub(super) fn write_result(
     let target_dir = ticket_system
         .results_dir_value()
         .unwrap_or_else(|| ctx.working_dir.clone());
-    if let Err(e) = append_ndjson(&target_dir, &record) {
-        return ToolResult::error(format!(
-            "Cannot write result to {}: {e}",
-            target_dir.display()
-        ));
+    {
+        let _guard = write_result::results_write_lock().lock().unwrap();
+        if let Err(e) = append_ndjson(&target_dir, &record) {
+            return ToolResult::error(format!(
+                "Cannot write result to {}: {e}",
+                target_dir.display()
+            ));
+        }
     }
 
     if let Err(e) = tickets_set_result_record(ticket_system, key, record) {
