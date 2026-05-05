@@ -428,6 +428,24 @@ impl TicketSystem {
         self.tickets().into_iter().next()
     }
 
+    /// Every `Done` ticket's `ResultRecord`, in ticket creation order.
+    /// Tickets that finished without a recorded result are skipped.
+    pub fn results(&self) -> Vec<ResultRecord> {
+        self.filter(Ticket::is_done)
+            .into_iter()
+            .filter_map(|t| t.result)
+            .collect()
+    }
+
+    /// Most recently created `Done` ticket's `ResultRecord`, or `None`.
+    /// Structured analogue of `run_dry`'s String return.
+    pub fn last_result(&self) -> Option<ResultRecord> {
+        self.filter(Ticket::is_done)
+            .into_iter()
+            .rev()
+            .find_map(|t| t.result)
+    }
+
     /// Substring search over the task body, case-insensitive.
     pub fn search(&self, query: &str) -> Vec<Ticket> {
         tickets_search(self, query)
@@ -944,6 +962,20 @@ mod tests {
         Ticket::new(format!("body-{label}")).label(label)
     }
 
+    fn attach_done_record(sys: &TicketSystem, key: &str, agent: &str, result: &str) {
+        tickets_set_result_record(
+            sys,
+            key,
+            ResultRecord {
+                agent: agent.into(),
+                ticket: key.into(),
+                result: serde_json::Value::String(result.into()),
+            },
+        )
+        .unwrap();
+        sys.force_status(key, Status::Done).unwrap();
+    }
+
     #[test]
     fn task_creates_ticket_with_user_reporter() {
         let sys = TicketSystem::new();
@@ -1088,6 +1120,39 @@ mod tests {
         assert_eq!(all[0].key(), "TICKET-1");
         assert_eq!(all[1].key(), "TICKET-2");
         assert_eq!(all[2].key(), "TICKET-3");
+    }
+
+    #[test]
+    fn results_returns_done_records_in_creation_order() {
+        let sys = TicketSystem::new();
+        sys.task("a").task("b").task("c");
+        attach_done_record(&sys, "TICKET-1", "alice", "first");
+        attach_done_record(&sys, "TICKET-3", "alice", "third");
+        let results = sys.results();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].ticket, "TICKET-1");
+        assert_eq!(results[0].result, serde_json::Value::String("first".into()));
+        assert_eq!(results[1].ticket, "TICKET-3");
+        assert_eq!(results[1].result, serde_json::Value::String("third".into()));
+    }
+
+    #[test]
+    fn last_result_returns_most_recently_created_done_record() {
+        let sys = TicketSystem::new();
+        sys.task("a").task("b");
+        attach_done_record(&sys, "TICKET-2", "alice", "second");
+        attach_done_record(&sys, "TICKET-1", "alice", "first");
+        let last = sys.last_result().expect("expected last_result");
+        assert_eq!(last.ticket, "TICKET-2");
+        assert_eq!(last.result, serde_json::Value::String("second".into()));
+    }
+
+    #[test]
+    fn results_and_last_result_are_empty_when_nothing_done() {
+        let sys = TicketSystem::new();
+        sys.task("pending");
+        assert!(sys.results().is_empty());
+        assert!(sys.last_result().is_none());
     }
 
     #[test]

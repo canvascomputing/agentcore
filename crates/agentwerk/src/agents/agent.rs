@@ -18,7 +18,7 @@ use crate::providers::{Message, Provider, ProviderToolDefinition};
 use crate::tools::{ToolLike, ToolRegistry, WriteResultTool};
 
 use super::r#loop::Runnable;
-use super::tickets::{insert_ticket, Ticket, TicketSystem};
+use super::tickets::{insert_ticket, ResultRecord, Ticket, TicketSystem};
 
 static AGENT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -373,6 +373,28 @@ impl Agent {
             .expect("Agent::run requires a bound TicketSystem");
         Runnable::run_dry(&*sys).await
     }
+
+    /// Forwarded from the bound `TicketSystem`. Every `Done` ticket's
+    /// `ResultRecord`, in ticket creation order. An agent can drive
+    /// multiple tickets via repeated `task(...)` calls, so callers
+    /// often want the full list rather than just the last entry.
+    pub fn results(&self) -> Vec<ResultRecord> {
+        let sys = self
+            .ticket_system
+            .upgrade()
+            .expect("Agent::results requires a bound TicketSystem");
+        sys.results()
+    }
+
+    /// Forwarded from the bound `TicketSystem`. Structured analogue of
+    /// `Agent::run`'s String return.
+    pub fn last_result(&self) -> Option<ResultRecord> {
+        let sys = self
+            .ticket_system
+            .upgrade()
+            .expect("Agent::last_result requires a bound TicketSystem");
+        sys.last_result()
+    }
 }
 
 #[cfg(test)]
@@ -519,6 +541,34 @@ mod tests {
             stored.task,
             serde_json::Value::String("Search rust forums.".into()),
         );
+    }
+
+    #[tokio::test]
+    async fn results_and_last_result_forward_to_bound_ticket_system() {
+        use super::super::tickets::{tickets_set_result_record, Status};
+
+        let sys = crate::agents::TicketSystem::new();
+        let agent = Agent::new().ticket_system(&sys);
+        sys.task("a").task("b");
+        for (key, payload) in [("TICKET-1", "first"), ("TICKET-2", "second")] {
+            tickets_set_result_record(
+                &sys,
+                key,
+                ResultRecord {
+                    agent: "tester".into(),
+                    ticket: key.into(),
+                    result: serde_json::Value::String(payload.into()),
+                },
+            )
+            .unwrap();
+            sys.force_status(key, Status::Done).unwrap();
+        }
+
+        let all = agent.results();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].ticket, "TICKET-1");
+        assert_eq!(all[1].ticket, "TICKET-2");
+        assert_eq!(agent.last_result().unwrap().ticket, "TICKET-2");
     }
 
     #[tokio::test]

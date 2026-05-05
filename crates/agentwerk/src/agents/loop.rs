@@ -95,6 +95,7 @@ pub(super) async fn wait_for_signal(signal: &Arc<AtomicBool>) {
 /// `Some(r)` on success. `None` on cancellation (no events emitted)
 /// or terminal failure (helper has already emitted `RequestFailed` +
 /// `TicketFailed` and recorded the error stat). Caller bails on `None`.
+#[allow(clippy::too_many_arguments)]
 async fn respond_with_retry<F: Fn(EventKind)>(
     provider: Arc<dyn crate::providers::Provider>,
     request: ModelRequest,

@@ -155,7 +155,9 @@ fn truncate_for_preview(s: &str, max: usize) -> String {
     }
 }
 
-fn render_summary_list(tickets: &[(&str, &str, Status, Option<&str>, &[String])]) -> String {
+type SummaryRow<'a> = (&'a str, &'a str, Status, Option<&'a str>, &'a [String]);
+
+fn render_summary_list(tickets: &[SummaryRow<'_>]) -> String {
     let mut out = String::new();
     for (key, task_preview, status, assignee, labels) in tickets {
         let labels_label = if labels.is_empty() {
@@ -223,7 +225,7 @@ fn action_list(ticket_system: &TicketSystem, input: &Value) -> ToolResult {
         .take(50)
         .map(|t| task_preview(&t.task))
         .collect();
-    let rows: Vec<(&str, &str, Status, Option<&str>, &[String])> = pool
+    let rows: Vec<SummaryRow<'_>> = pool
         .iter()
         .take(50)
         .zip(previews.iter())
@@ -254,7 +256,7 @@ fn action_search(ticket_system: &TicketSystem, input: &Value) -> ToolResult {
         .take(50)
         .map(|t| task_preview(&t.task))
         .collect();
-    let rows: Vec<(&str, &str, Status, Option<&str>, &[String])> = hits
+    let rows: Vec<SummaryRow<'_>> = hits
         .iter()
         .take(50)
         .zip(previews.iter())

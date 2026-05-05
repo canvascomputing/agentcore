@@ -59,7 +59,7 @@ pub fn provider_from_env() -> ProviderResult<Arc<dyn Provider>> {
 /// Priority:
 ///   1. `MODEL`        — generic override, wins regardless of provider.
 ///   2. `*_MODEL`      — provider-prefixed, selected by the same detection
-///                       matrix as [`provider_from_env`] (e.g. `OPENAI_MODEL`).
+///      matrix as [`provider_from_env`] (e.g. `OPENAI_MODEL`).
 ///   3. hosted default — the vendor's canonical model for the detected provider.
 pub fn model_from_env() -> ProviderResult<String> {
     model_from_env_with(|name| std::env::var(name).ok())
@@ -75,7 +75,7 @@ where
         return Ok(m);
     }
 
-    let detected = detect_provider_name(&filtered)?;
+    let detected = detect_provider_name(filtered)?;
     let (model_var, default_model) = match detected {
         DetectedProvider::Anthropic => ("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
         DetectedProvider::Mistral => ("MISTRAL_MODEL", "mistral-medium-2508"),
