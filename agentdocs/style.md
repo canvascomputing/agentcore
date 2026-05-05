@@ -262,6 +262,25 @@ counter += 1;
 - Method tables, policy descriptions, and built-in I/O tools stay direct.
 - Code, doc comments, and agentdocs do not use the analogy.
 
+## README table shape
+
+**Each table picks one cell shape and holds it. Mixing shapes inside one table is a defect.**
+
+- Builder rows lead with an imperative verb describing the configuration effect: `Set the LLM provider.`, `Register a tool.`, `Restrict the agent to matching labels.`
+- Action rows lead with an imperative verb describing the effect: `Create a task.`, `Run until interrupted.`
+- Accessor rows lead with `Return ...`: `Return every finished ticket's result.`
+- Tool rows use third-person present: `Reads a file with line numbers.`
+- Event rows are past-tense state sentences: `A ticket finished successfully.`
+
+## README cell length
+
+**One sentence per cell. No semicolons stapling two facts together.**
+
+- Hard cap: roughly fifteen words per cell.
+- A second short sentence is allowed only when it carries information the first cannot.
+- A description that needs more than two sentences moves to prose under the table.
+- Em dashes are not used; colons or two sentences replace them.
+
 ## README descriptions
 
 **In README table cells, bullet descriptions, and inline `//` comments, describe what the caller gets, not how it works inside.**

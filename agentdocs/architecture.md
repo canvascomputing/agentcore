@@ -57,7 +57,7 @@ Two layers of state exist. The intra-ticket message vector inside `process_ticke
 
 ## New observables pick a channel
 
-**Each new signal lands on `Event`, on a typed error, or on both. Pick by what the signal describes.**
+**Each new signal goes on `Event`, on a typed error, or on both. Pick by what the signal describes.**
 
 - Reached a state: `Event` only.
 - Could not fulfil a contract: typed error in the matching domain.
@@ -89,7 +89,7 @@ Two layers of state exist. The intra-ticket message vector inside `process_ticke
 - `TicketStats` is what the ticket lifecycle sees: `record_created`, `record_started`, `record_done`, `record_failed`.
 - Reads happen on `Stats` directly through inherent accessors (`steps()`, `tickets_done()`, `run_duration()`, `success_rate()`, ...), never through the recorder traits.
 - Lock-free for increments; readers do one atomic load per call.
-- `Stats::stats_for_label(label)` returns a nested `Stats` slice scoped to one label. The loop and ticket lifecycle bump each slice alongside the global counters; `run_duration()` is `None` on a slice (run wall-clock stays global).
+- `Stats::stats_for_label(label)` returns a nested `Stats` slice scoped to one label. The loop and ticket lifecycle bump each slice alongside the global counters; `run_duration()` is `None` on a slice (elapsed run duration stays global).
 
 ## Policies are per-system, checked at step boundaries
 
@@ -97,4 +97,4 @@ Two layers of state exist. The intra-ticket message vector inside `process_ticke
 
 - The loop calls `policy_violated_kind` at each iteration; a non-`None` return walks the agent off the queue.
 - Token budgets read from `Stats`; `max_time` reads from `Policies` and is checked separately by the `run_dry` watcher (graceful stop, not a `PolicyViolated` event).
-- Schema-retry budget is applied per-ticket inside the settlement path, not at the top of the loop.
+- Schema-retry budget is applied per-ticket inside the result-writing path, not at the top of the loop.
