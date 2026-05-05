@@ -163,14 +163,14 @@ Methods called after the agent is built:
 
 ### Ticket Systems
 
-A `TicketSystem` is the shared form: one queue, several registered agents, run policies, timeout, interrupt signal, and the run-time `Stats`. Tickets carry the unit of work; agents pick them up by label scope (Path B) or direct assignment (Path A).
+A `TicketSystem` is the shared form: one queue, several registered agents, run policies, interrupt signal, and the run-time `Stats`. Tickets carry the unit of work; agents pick them up by label scope (Path B) or direct assignment (Path A).
 
 ```rust
 use agentwerk::{Runnable, TicketSystem};
 
 let tickets = TicketSystem::new()
     .max_steps(20)
-    .timeout(std::time::Duration::from_secs(60));
+    .max_time(std::time::Duration::from_secs(60));
 
 tickets.task("Summarise the Cargo.toml of this project.");
 tickets.add(agent);
@@ -200,7 +200,7 @@ let tickets = TicketSystem::new()
     .max_schema_retries(3)
     .max_request_retries(3)
     .request_retry_delay(std::time::Duration::from_millis(500))
-    .timeout(std::time::Duration::from_secs(300));
+    .max_time(std::time::Duration::from_secs(300));
 ```
 
 | Method | Description |
@@ -209,12 +209,12 @@ let tickets = TicketSystem::new()
 | `max_input_tokens(n)` | Caps total input tokens across the run. |
 | `max_output_tokens(n)` | Caps total output tokens across the run. |
 | `max_request_tokens(n)` | Caps the input tokens of any single request. |
-| `timeout(d)` | Caps the duration of the run. |
+| `max_time(d)` | Caps the elapsed duration of the run. |
 | `max_schema_retries(n)` | Caps schema-validation retry attempts. |
 | `max_request_retries(n)` | Caps recoverable provider-error retry attempts. |
 | `request_retry_delay(d)` | Sets the base delay between request retries. |
 
-A breach fires `EventKind::PolicyViolated` and stops the run.
+A breach fires `EventKind::PolicyViolated` and stops the run. `max_time` is the exception: hitting the cap is a graceful stop with no event.
 
 ### Tools
 

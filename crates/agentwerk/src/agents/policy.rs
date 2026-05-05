@@ -12,6 +12,7 @@ pub struct Policies {
     pub max_schema_retries: Option<u32>,
     pub max_request_retries: u32,
     pub request_retry_delay: Duration,
+    pub max_time: Option<Duration>,
 }
 
 impl Policies {
@@ -30,6 +31,7 @@ impl Default for Policies {
             max_schema_retries: Some(Self::DEFAULT_MAX_SCHEMA_RETRIES),
             max_request_retries: Self::DEFAULT_MAX_REQUEST_RETRIES,
             request_retry_delay: Self::DEFAULT_REQUEST_RETRY_DELAY,
+            max_time: None,
         }
     }
 }
@@ -48,5 +50,6 @@ mod tests {
         assert_eq!(p.max_schema_retries, Some(10));
         assert_eq!(p.max_request_retries, 10);
         assert_eq!(p.request_retry_delay, Duration::from_millis(500));
+        assert_eq!(p.max_time, None);
     }
 }

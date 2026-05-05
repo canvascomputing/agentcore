@@ -96,5 +96,5 @@ Two layers of memory exist. The intra-ticket message vector inside `process_tick
 **A run stops cleanly when any limit on `Policies` trips. The check fires `EventKind::PolicyViolated` and exits the per-agent task.**
 
 - The loop calls `policy_violated_kind` at each iteration; a non-`None` return walks the agent off the queue.
-- Token budgets read from `Stats`; the timeout reads from `TicketSystem::timeout`.
+- Token budgets read from `Stats`; `max_time` reads from `Policies` and is checked separately by the `run_dry` watcher (graceful stop, not a `PolicyViolated` event).
 - Schema-retry budget is applied per-ticket inside the settlement path, not at the top of the loop.

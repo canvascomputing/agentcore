@@ -42,7 +42,7 @@ pub trait Runnable: Sized {
     /// keep accepting work over time.
     fn run(&self) -> impl Future<Output = ()> + Send;
 
-    /// Run until the queue settles, a policy trips, or `.timeout(...)`
+    /// Run until the queue settles, a policy trips, or `.max_time(...)`
     /// elapses. Returns the most recently created `Done` ticket's
     /// `result`, or an empty string if none settled.
     fn run_dry(&self) -> impl Future<Output = String> + Send;
@@ -726,7 +726,7 @@ mod tests {
             .max_schema_retries(max_schema_retries)
             // Short timeout: tests where the loop bails leave the ticket
             // InProgress, so Path A would re-claim forever without it.
-            .timeout(Duration::from_millis(200));
+            .max_time(Duration::from_millis(200));
 
         let agent = Agent::new()
             .name("tester")
@@ -1241,7 +1241,7 @@ mod tests {
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1))
             .max_schema_retries(10)
-            .timeout(Duration::from_millis(500));
+            .max_time(Duration::from_millis(500));
 
         let mut builder = Agent::new()
             .name("tester")
@@ -1311,7 +1311,7 @@ mod tests {
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1))
             .max_schema_retries(1)
-            .timeout(Duration::from_millis(500));
+            .max_time(Duration::from_millis(500));
 
         let agent = Agent::new()
             .name("tester")
@@ -1353,7 +1353,7 @@ mod tests {
         let tickets = TicketSystem::new()
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1))
-            .timeout(Duration::from_millis(500));
+            .max_time(Duration::from_millis(500));
 
         let agent_a = Agent::new()
             .name("a")
@@ -1411,7 +1411,7 @@ mod tests {
             .interrupt_signal(Arc::clone(&cancel))
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1))
-            .timeout(Duration::from_millis(500));
+            .max_time(Duration::from_millis(500));
 
         let agent = Agent::new()
             .name("tester")
@@ -1454,7 +1454,7 @@ mod tests {
             .interrupt_signal(Arc::clone(&cancel))
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1))
-            .timeout(Duration::from_millis(500));
+            .max_time(Duration::from_millis(500));
 
         let agent = tickets.add(
             Agent::new()

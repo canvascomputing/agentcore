@@ -1,6 +1,6 @@
 //! Ticket queue and run orchestration. `TicketSystem` owns the shared
-//! ticket store, the registered agents, the active policies, the run
-//! timeout, the interrupt signal, and the run-time [`Stats`] object.
+//! ticket store, the registered agents, the active policies, the
+//! interrupt signal, and the run-time [`Stats`] object.
 //! `bind_agent` stamps the ticket Arc, policies, stats, and signal onto
 //! each agent at add time; `run` / `run_dry` then drive the bound
 //! agents.
@@ -211,8 +211,8 @@ impl fmt::Display for TicketError {
 impl std::error::Error for TicketError {}
 
 /// Public ticket system. Owns the shared ticket store, the registered
-/// agents, the policies, the timeout, the interrupt signal, and the run
-/// stats. Always lives behind `Arc<TicketSystem>` — `new()` returns
+/// agents, the policies, the interrupt signal, and the run stats.
+/// Always lives behind `Arc<TicketSystem>` — `new()` returns
 /// `Arc<Self>` so each bound `Agent` can hold a `Weak<TicketSystem>`
 /// without creating an Arc cycle through the system's `Vec<Agent>`.
 pub struct TicketSystem {
@@ -220,7 +220,6 @@ pub struct TicketSystem {
     pub(crate) tickets: Mutex<HashMap<String, Ticket>>,
     agents: Mutex<Vec<Agent>>,
     policies: Mutex<Policies>,
-    timeout: Mutex<Option<Duration>>,
     pub(crate) interrupt_signal: Mutex<Arc<AtomicBool>>,
     pub(crate) stats: Stats,
 }
@@ -236,7 +235,6 @@ impl TicketSystem {
             tickets: Mutex::new(HashMap::new()),
             agents: Mutex::new(Vec::new()),
             policies: Mutex::new(Policies::default()),
-            timeout: Mutex::new(None),
             interrupt_signal: Mutex::new(Arc::new(AtomicBool::new(false))),
             stats: Stats::new(),
         })
@@ -284,12 +282,11 @@ impl TicketSystem {
         self
     }
 
-    /// Maximum wall-clock duration `run_dry` will wait before tripping
-    /// the interrupt signal and returning. Independent of the
-    /// policy-violation cap surface — a timeout is a graceful stop, not
-    /// a `PolicyViolated` event.
-    pub fn timeout(self: Arc<Self>, d: Duration) -> Arc<Self> {
-        *self.timeout.lock().unwrap() = Some(d);
+    /// Maximum elapsed duration `run_dry` will wait before tripping
+    /// the interrupt signal and returning. Hitting the cap is a
+    /// graceful stop, not a `PolicyViolated` event.
+    pub fn max_time(self: Arc<Self>, d: Duration) -> Arc<Self> {
+        self.policies.lock().unwrap().max_time = Some(d);
         self
     }
 
@@ -671,7 +668,6 @@ impl Runnable for TicketSystem {
     }
 
     async fn run_dry(&self) -> String {
-        let timeout = *self.timeout.lock().unwrap();
         let signal = Arc::clone(&self.interrupt_signal.lock().unwrap());
 
         let watcher_system = self
@@ -698,7 +694,7 @@ impl Runnable for TicketSystem {
                     watcher_system.stats.mark_finished(now_millis());
                     return;
                 }
-                if let Some(limit) = timeout {
+                if let Some(limit) = watcher_policies.max_time {
                     if started.elapsed() >= limit {
                         watcher_signal.store(true, Ordering::Relaxed);
                         watcher_system.stats.mark_finished(now_millis());
