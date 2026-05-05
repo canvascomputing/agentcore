@@ -1,9 +1,10 @@
-//! End-to-end: a real LLM uses `BashTool` to run commands and settles
-//! its ticket with a JSON result validated against the ticket schema.
+//! End-to-end: a real LLM drives three pattern-restricted `BashTool`
+//! commands (`ls`, `cat`, `wc`) and settles its ticket with a
+//! JSON result validated against the ticket schema.
 
 use super::common;
 
-use agentwerk::tools::{BashTool, ManageTicketsTool};
+use agentwerk::tools::BashTool;
 use agentwerk::{Agent, Runnable, Schema, TicketSystem};
 
 #[tokio::test]
@@ -16,7 +17,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
             "files": {
                 "type": "array",
                 "items": { "type": "string" },
-                "description": "Files in the directory"
+                "description": "Files in the working directory"
             },
             "line_count": {
                 "type": "integer",
@@ -35,15 +36,17 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .provider(provider)
         .model(&model)
         .role(
-            "You have three shell tools (ls, cat, wc) and the ticket-management tool. \
-             No other tools are available. Settle the ticket via `manage_tickets_tool` \
-             with `action: \"done\"` and `result` set to a JSON string matching the \
-             ticket's schema.",
+            "Step 1: call `ls`, `cat Cargo.toml`, and `wc -l Cargo.toml` to \
+             gather the file list and Cargo.toml line count. \
+             Step 2: immediately call `mark_ticket_done_tool` with `result` \
+             set to a JSON string in exactly this shape: \
+             {\"files\": [\"<filename>\", ...], \"line_count\": <integer>}. \
+             The `result` argument MUST be valid JSON, never prose, never a \
+             sentence.",
         )
         .tool(ls)
         .tool(cat)
-        .tool(wc)
-        .tool(ManageTicketsTool);
+        .tool(wc);
     tickets.add(agent);
     tickets.task_schema(
         "List the files in the current directory, read the Cargo.toml file, \

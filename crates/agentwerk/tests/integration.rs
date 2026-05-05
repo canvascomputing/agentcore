@@ -7,5 +7,20 @@ mod common;
 #[path = "integration/bash_usage.rs"]
 mod bash_usage;
 
+#[path = "integration/edit_file_replaces_content.rs"]
+mod edit_file_replaces_content;
+
 #[path = "integration/file_exploration.rs"]
 mod file_exploration;
+
+#[path = "integration/glob_finds_nested_files.rs"]
+mod glob_finds_nested_files;
+
+#[path = "integration/grep_finds_code_pattern.rs"]
+mod grep_finds_code_pattern;
+
+#[path = "integration/list_directory_enumerates_entries.rs"]
+mod list_directory_enumerates_entries;
+
+#[path = "integration/write_file_creates_file.rs"]
+mod write_file_creates_file;
