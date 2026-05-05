@@ -27,6 +27,10 @@ pub trait Runnable: Sized {
     /// Bind `agent`: drain any tickets it queued in its default system
     /// into this one and push a clone onto this system's agents list.
     /// Returns the wired agent for chaining (`.task(...)` etc.).
+    ///
+    /// May be called before or after `run()` / `run_dry()`. When called
+    /// after `run()`, the new agent starts polling for tickets within
+    /// roughly one `IDLE_POLL_INTERVAL` (~100 ms).
     fn add(&self, agent: Agent) -> Agent;
 
     /// `add` with a label-scope pin in one call.
@@ -46,13 +50,29 @@ pub trait Runnable: Sized {
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Spawn one task per agent and join. Tasks read shared state through
-/// their own Arcs and never hold locks across `provider.respond`.
-pub(super) async fn run_main_loop(agents: Vec<Agent>) {
-    let mut handles = Vec::with_capacity(agents.len());
-    for agent in agents {
-        handles.push(tokio::spawn(handle_tickets(agent)));
+/// Supervise the agent set: poll the system's agent list every
+/// `IDLE_POLL_INTERVAL`, spawn one `handle_tickets` task per newly
+/// appended agent, and join all of them on shutdown. Detects late adds
+/// from `tickets.add()` calls that land after `run()` was spawned.
+/// Exits when the interrupt signal flips.
+pub(super) async fn run_main_loop(system: &crate::agents::tickets::TicketSystem) {
+    let signal = Arc::clone(&system.interrupt_signal.lock().unwrap());
+    let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let mut last_spawned: usize = 0;
+
+    loop {
+        if signal.load(Ordering::Relaxed) {
+            break;
+        }
+        let agents = system.clone_agents();
+        let total = agents.len();
+        for agent in agents.into_iter().skip(last_spawned) {
+            handles.push(tokio::spawn(handle_tickets(agent)));
+        }
+        last_spawned = total;
+        tokio::time::sleep(IDLE_POLL_INTERVAL).await;
     }
+
     for h in handles {
         let _ = h.await;
     }
@@ -1536,5 +1556,119 @@ mod tests {
   }
 ]"#;
         assert_eq!(actual, expected);
+    }
+
+    // ---- late-add tests ----
+    //
+    // (No companion test for "supervisor does not re-spawn the same agent on
+    //  every poll": with synchronous mock providers, observable side effects
+    //  collapse to one provider call regardless of whether the agent task is
+    //  spawned once or many times, because the only ticket transitions to
+    //  Done atomically before any second poll could race. The index-tracker
+    //  correctness is verified by inspection of `run_main_loop`.)
+
+    #[tokio::test]
+    async fn add_after_run_spawns_new_agent() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let tickets = TicketSystem::new()
+            .interrupt_signal(Arc::clone(&cancel))
+            .max_request_retries(0)
+            .request_retry_delay(Duration::from_millis(1));
+
+        let run_handle = {
+            let tickets = Arc::clone(&tickets);
+            tokio::spawn(async move { tickets.run().await })
+        };
+
+        // Let the supervisor's first scan run (no agents registered yet).
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let provider = MockProvider::with_results(vec![Ok(mark_done_response())]);
+        tickets.add(
+            Agent::new()
+                .name("late")
+                .provider(provider.clone() as Arc<dyn Provider>)
+                .model("mock")
+                .role("test")
+                .silent()
+                .tool(ManageTicketsTool),
+        );
+        tickets.create(Ticket::new("hello").assign_to("late"));
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let done = tickets
+                .tickets()
+                .iter()
+                .any(|t| t.is_done() && t.task.as_str() == Some("hello"));
+            if done {
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                cancel.store(true, Ordering::Relaxed);
+                let _ = run_handle.await;
+                panic!("late-added agent did not finish ticket within 5s");
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        cancel.store(true, Ordering::Relaxed);
+        run_handle.await.unwrap();
+
+        assert_eq!(provider.requests(), 1);
+    }
+
+    #[tokio::test]
+    async fn late_added_agent_joined_on_shutdown() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let tickets = TicketSystem::new()
+            .interrupt_signal(Arc::clone(&cancel))
+            .max_request_retries(0)
+            .request_retry_delay(Duration::from_millis(1));
+
+        let run_handle = {
+            let tickets = Arc::clone(&tickets);
+            tokio::spawn(async move { tickets.run().await })
+        };
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let provider = MockProvider::with_results(vec![Ok(mark_done_response())]);
+        tickets.add(
+            Agent::new()
+                .name("late")
+                .provider(provider as Arc<dyn Provider>)
+                .model("mock")
+                .role("test")
+                .silent()
+                .tool(ManageTicketsTool),
+        );
+        tickets.create(Ticket::new("x").assign_to("late"));
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let done = tickets
+                .tickets()
+                .iter()
+                .any(|t| t.is_done() && t.task.as_str() == Some("x"));
+            if done {
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                cancel.store(true, Ordering::Relaxed);
+                let _ = run_handle.await;
+                panic!("late-added agent did not finish ticket within 5s");
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // The supervisor must join the late-spawned task on shutdown rather
+        // than orphan it. If it did orphan it, run() would still return on
+        // signal flip, but the late task would dangle.
+        cancel.store(true, Ordering::Relaxed);
+        tokio::time::timeout(Duration::from_secs(2), run_handle)
+            .await
+            .expect("run() did not return within 2s of signal flip")
+            .unwrap();
     }
 }

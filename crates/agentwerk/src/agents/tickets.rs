@@ -648,6 +648,18 @@ pub(crate) fn tickets_search(ticket_system: &TicketSystem, query: &str) -> Vec<T
     out
 }
 
+impl TicketSystem {
+    /// Clone of the currently registered agent list. The list is
+    /// append-only by invariant: `bind_agent` is the sole mutator and
+    /// only calls `push`. `run_main_loop` relies on element indices
+    /// being stable across calls. Any new mutator that removes or
+    /// reorders entries would silently break late-add detection: route
+    /// additions through `bind_agent` only.
+    pub(super) fn clone_agents(&self) -> Vec<Agent> {
+        self.agents.lock().unwrap().clone()
+    }
+}
+
 impl Runnable for TicketSystem {
     fn add(&self, mut agent: Agent) -> Agent {
         self.bind_agent(&mut agent);
@@ -655,12 +667,10 @@ impl Runnable for TicketSystem {
     }
 
     async fn run(&self) {
-        let agents = self.agents.lock().unwrap().clone();
-        run_main_loop(agents).await;
+        run_main_loop(self).await;
     }
 
     async fn run_dry(&self) -> String {
-        let agents = self.agents.lock().unwrap().clone();
         let timeout = *self.timeout.lock().unwrap();
         let signal = Arc::clone(&self.interrupt_signal.lock().unwrap());
 
@@ -703,7 +713,7 @@ impl Runnable for TicketSystem {
                 }
             }
         });
-        run_main_loop(agents).await;
+        run_main_loop(self).await;
         let _ = watcher.await;
         self.last_done_result()
     }
