@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .role("Answer questions about this repository.")
         .tool(ReadFileTool)
         .task("What does Cargo.toml describe?")
-        .run()
+        .run_dry()
         .await;
 
     println!("{answer}");
@@ -155,25 +155,22 @@ Each ticket starts with a context block listing working directory, platform, OS 
 
 #### Run
 
-Enqueue tasks, run agents, and read the results.
+Start a run with `run`, queue tasks while it's in flight, finish with `run_dry` and read the results.
 
 ```rust
 let agent = Agent::new()
     .provider(provider)
-    .model(&model);
+    .model(&model)
+    .run();
 
 agent.task("Compute 2+2.");
-
-let runner = tokio::spawn({
-    let agent = agent.clone();
-    async move { agent.run().await }
-});
-
 agent.task_labeled("Compute 3+3.", "math");
 
-let last = runner.await.unwrap();
+let last = agent.run_dry().await;
 let all = agent.results();
 ```
+
+`agent` here is a `Running`: `task`, `task_labeled`, and `results` reach the bound ticket system through `Deref`. `run_dry` waits for the queue to drain, then stops and joins. `stop` and `join` are also available for abrupt cancellation.
 
 Methods called after the agent is built:
 
@@ -184,7 +181,8 @@ Methods called after the agent is built:
 | | `task_schema(value, schema)` | Create a task whose result must validate against `schema`. |
 | | `task_schema_labeled(value, schema, label)` | Create a labelled task whose result must validate against `schema`. |
 | | `create(ticket)` | Add a caller-built `Ticket` to the queue. |
-| **Run** | `run().await` | Process every queued task and return the last result. |
+| **Run** | `run()` | Start a background run and return a `Running` handle. |
+| | `run_dry().await` | Run until every queued task finishes and return the last result. |
 | **Results** | `results()` | Return every finished ticket's result, in creation order. |
 | | `last_result()` | Return the most recent finished ticket's result, or `None`. |
 | **Inspect** | `get_name()` | Return the configured name. |
@@ -219,8 +217,8 @@ let result = tickets.run_dry().await;
 | | `task_schema(value, schema)` | Create a task whose result must validate against `schema`. |
 | | `task_schema_labeled(value, schema, label)` | Create a labelled task whose result must validate against `schema`. |
 | | `create(ticket)` | Add a caller-built `Ticket` to the queue. |
-| **Run** | `run().await` | Run continuously until the interrupt signal fires. |
-| | `run_dry().await` | Process every queued ticket and return the last result. |
+| **Run** | `run()` | Start a background run and return a `Running` handle. |
+| | `run_dry().await` | Run until every queued task finishes and return the last result. |
 | **Results** | `results()` | Return every finished ticket's result, in creation order. |
 | | `last_result()` | Return the most recent finished ticket's result, or `None`. |
 | **Inspect** | `get(key)` / `tickets()` / `first()` | Look up finished tickets. |

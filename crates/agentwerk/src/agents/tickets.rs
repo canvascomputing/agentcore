@@ -10,7 +10,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
@@ -677,55 +677,25 @@ impl Runnable for TicketSystem {
         agent
     }
 
-    async fn run(&self) {
-        run_main_loop(self).await;
-    }
-
-    async fn run_dry(&self) -> String {
+    fn run(&self) -> super::running::Running {
         let signal = Arc::clone(&self.interrupt_signal.lock().unwrap());
-
-        let watcher_system = self
+        // Reset so a system can be re-run after a previous run_dry left
+        // the flag set.
+        signal.store(false, Ordering::Relaxed);
+        let system = self
             .weak_self
             .upgrade()
-            .expect("TicketSystem dropped during run_dry");
-        let watcher_signal = Arc::clone(&signal);
-        let watcher_policies = self.policies();
-        let started = Instant::now();
-        let watcher = tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                // External cancel: if the signal flipped (test or
-                // Ctrl-C), exit even when tickets are still
-                // InProgress. Without this, `run_dry` hangs because
-                // `pending_count` only drops when the loop settles
-                // tickets, which a cancelled run won't do.
-                if watcher_signal.load(Ordering::Relaxed) {
-                    watcher_system.stats.mark_finished(now_millis());
-                    return;
-                }
-                if policy_violated(&watcher_policies, &watcher_system.stats) {
-                    watcher_signal.store(true, Ordering::Relaxed);
-                    watcher_system.stats.mark_finished(now_millis());
-                    return;
-                }
-                if let Some(limit) = watcher_policies.max_time {
-                    if started.elapsed() >= limit {
-                        watcher_signal.store(true, Ordering::Relaxed);
-                        watcher_system.stats.mark_finished(now_millis());
-                        return;
-                    }
-                }
-                let pending = pending_count(&watcher_system);
-                if pending == 0 {
-                    watcher_signal.store(true, Ordering::Relaxed);
-                    watcher_system.stats.mark_finished(now_millis());
-                    return;
-                }
-            }
+            .expect("TicketSystem dropped during run");
+        let supervisor_system = Arc::clone(&system);
+        let join = tokio::spawn(async move {
+            run_main_loop(&supervisor_system).await;
+            supervisor_system.stats.mark_finished(now_millis());
         });
-        run_main_loop(self).await;
-        let _ = watcher.await;
-        self.last_done_result()
+        super::running::Running::new(system, signal, join)
+    }
+
+    fn run_dry(&self) -> impl std::future::Future<Output = String> + Send {
+        self.run().run_dry()
     }
 }
 
@@ -734,7 +704,7 @@ impl TicketSystem {
     /// an empty string when no ticket has reached `Done` (or its
     /// `result` is unset). Strings are returned as-is; structured
     /// payloads are rendered as canonical JSON.
-    fn last_done_result(&self) -> String {
+    pub(crate) fn last_done_result(&self) -> String {
         self.filter(Ticket::is_done)
             .last()
             .and_then(|t| t.result_string())
@@ -789,7 +759,7 @@ pub(crate) fn policy_violated_kind(
     None
 }
 
-fn pending_count(ticket_system: &TicketSystem) -> usize {
+pub(crate) fn pending_count(ticket_system: &TicketSystem) -> usize {
     ticket_system
         .tickets
         .lock()
@@ -882,7 +852,7 @@ fn is_allowed_transition(from: Status, to: Status) -> bool {
     )
 }
 
-fn now_millis() -> u64 {
+pub(crate) fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)

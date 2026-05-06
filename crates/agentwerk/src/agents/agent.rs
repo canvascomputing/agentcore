@@ -362,15 +362,28 @@ impl Agent {
     }
 
     /// Drive the agent's bound `TicketSystem` until the queue settles
-    /// (drain mode). Returns the most recent `Done` ticket's `result`,
-    /// or an empty string if no ticket reached `Done`. For runs where
-    /// tickets keep arriving over time, drop down to
-    /// `TicketSystem::run` directly.
-    pub async fn run(&self) -> String {
+    /// Start the agent loop on a background tokio task and return a
+    /// [`Running`] handle. Forwards to the bound `TicketSystem`.
+    /// Tickets queued afterwards are picked up within
+    /// ~`IDLE_POLL_INTERVAL`. Finish with [`Running::run_dry`] to wait
+    /// for the queue to drain.
+    pub fn run(&self) -> super::running::Running {
         let sys = self
             .ticket_system
             .upgrade()
             .expect("Agent::run requires a bound TicketSystem");
+        Runnable::run(&*sys)
+    }
+
+    /// Start the loop and wait for the queue to drain. Returns the
+    /// most recently created `Done` ticket's `result`, or an empty
+    /// string if none settled. Equivalent to
+    /// `self.run().run_dry().await`.
+    pub async fn run_dry(&self) -> String {
+        let sys = self
+            .ticket_system
+            .upgrade()
+            .expect("Agent::run_dry requires a bound TicketSystem");
         Runnable::run_dry(&*sys).await
     }
 

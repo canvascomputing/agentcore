@@ -35,13 +35,18 @@ pub trait Runnable: Sized {
         self.add(agent.label(assign))
     }
 
-    /// Run until the interrupt signal fires. For long-lived runs that
-    /// keep accepting work over time.
-    fn run(&self) -> impl Future<Output = ()> + Send;
+    /// Start the agent loop on a background tokio task and return a
+    /// [`Running`] handle. The handle owns the interrupt signal;
+    /// tickets queued afterwards are picked up within
+    /// ~`IDLE_POLL_INTERVAL`. Finish with [`Running::run_dry`] to wait
+    /// for the queue to drain, or [`Running::stop`] +
+    /// [`Running::join`] for an abrupt cancel.
+    fn run(&self) -> super::running::Running;
 
-    /// Run until the queue settles, a policy trips, or `.max_time(...)`
-    /// elapses. Returns the most recently created `Done` ticket's
-    /// `result`, or an empty string if none settled.
+    /// Start the loop and wait for the queue to drain. Returns the
+    /// most recently created `Done` ticket's `result`, or an empty
+    /// string if none settled. Equivalent to
+    /// `self.run().run_dry().await`.
     fn run_dry(&self) -> impl Future<Output = String> + Send;
 }
 
@@ -1388,19 +1393,14 @@ mod tests {
     #[tokio::test]
     async fn add_after_run_spawns_new_agent() {
         let results_dir = tempfile::tempdir().unwrap();
-        let cancel = Arc::new(AtomicBool::new(false));
         let tickets = TicketSystem::new()
             .results_dir(results_dir.path().to_path_buf())
-            .interrupt_signal(Arc::clone(&cancel))
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1));
 
-        let run_handle = {
-            let tickets = Arc::clone(&tickets);
-            tokio::spawn(async move { tickets.run().await })
-        };
+        let run_handle = tickets.run();
 
-        // Let the supervisor's first scan run (no agents registered yet).
+        // Let the first scan run (no agents registered yet).
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         let provider = MockProvider::with_results(vec![Ok(write_result_response("ok"))]);
@@ -1425,15 +1425,15 @@ mod tests {
                 break;
             }
             if tokio::time::Instant::now() > deadline {
-                cancel.store(true, Ordering::Relaxed);
-                let _ = run_handle.await;
+                run_handle.stop();
+                run_handle.join().await;
                 panic!("late-added agent did not finish ticket within 5s");
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
 
-        cancel.store(true, Ordering::Relaxed);
-        run_handle.await.unwrap();
+        run_handle.stop();
+        run_handle.join().await;
 
         assert_eq!(provider.requests(), 1);
     }
@@ -1441,17 +1441,12 @@ mod tests {
     #[tokio::test]
     async fn late_added_agent_joined_on_shutdown() {
         let results_dir = tempfile::tempdir().unwrap();
-        let cancel = Arc::new(AtomicBool::new(false));
         let tickets = TicketSystem::new()
             .results_dir(results_dir.path().to_path_buf())
-            .interrupt_signal(Arc::clone(&cancel))
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1));
 
-        let run_handle = {
-            let tickets = Arc::clone(&tickets);
-            tokio::spawn(async move { tickets.run().await })
-        };
+        let run_handle = tickets.run();
 
         tokio::time::sleep(Duration::from_millis(150)).await;
 
@@ -1477,20 +1472,149 @@ mod tests {
                 break;
             }
             if tokio::time::Instant::now() > deadline {
-                cancel.store(true, Ordering::Relaxed);
-                let _ = run_handle.await;
+                run_handle.stop();
+                run_handle.join().await;
                 panic!("late-added agent did not finish ticket within 5s");
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
 
-        // The supervisor must join the late-spawned task on shutdown rather
-        // than orphan it. If it did orphan it, run() would still return on
-        // signal flip, but the late task would dangle.
-        cancel.store(true, Ordering::Relaxed);
-        tokio::time::timeout(Duration::from_secs(2), run_handle)
+        // The run must join the late-spawned task on shutdown rather than
+        // orphan it. If it did orphan it, run() would still return on signal
+        // flip, but the late task would dangle.
+        run_handle.stop();
+        tokio::time::timeout(Duration::from_secs(2), run_handle.join())
             .await
-            .expect("run() did not return within 2s of signal flip")
-            .unwrap();
+            .expect("run() did not return within 2s of signal flip");
+    }
+
+    // ---- Running tests ----
+
+    #[tokio::test]
+    async fn running_run_dry_drains_late_added_tickets() {
+        let results_dir = tempfile::tempdir().unwrap();
+        let provider = MockProvider::with_results(vec![
+            Ok(write_result_response("a-done")),
+            Ok(write_result_response("b-done")),
+        ]);
+        let tickets = TicketSystem::new()
+            .results_dir(results_dir.path().to_path_buf())
+            .max_request_retries(0)
+            .request_retry_delay(Duration::from_millis(1));
+        tickets.add(
+            Agent::new()
+                .name("worker")
+                .provider(provider as Arc<dyn Provider>)
+                .model("mock")
+                .role("test")
+                .silent()
+                .tool(ManageTicketsTool),
+        );
+
+        let handle = tickets.run();
+
+        // Queue tickets after the run is in flight.
+        tickets.task("a");
+        tickets.task("b");
+
+        let last = tokio::time::timeout(Duration::from_secs(5), handle.run_dry())
+            .await
+            .expect("run_dry did not finish within 5s");
+
+        assert_eq!(last, "b-done");
+        assert_eq!(tickets.results().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn running_signal_returns_shared_arc() {
+        let results_dir = tempfile::tempdir().unwrap();
+        let tickets = TicketSystem::new()
+            .results_dir(results_dir.path().to_path_buf())
+            .max_request_retries(0)
+            .request_retry_delay(Duration::from_millis(1));
+
+        let handle = tickets.run();
+        let signal = handle.signal();
+        signal.store(true, Ordering::Relaxed);
+
+        tokio::time::timeout(Duration::from_secs(2), handle.join())
+            .await
+            .expect("run did not exit within 2s of external signal flip");
+    }
+
+    #[tokio::test]
+    async fn running_stop_is_abrupt() {
+        let results_dir = tempfile::tempdir().unwrap();
+        let tickets = TicketSystem::new()
+            .results_dir(results_dir.path().to_path_buf())
+            .max_request_retries(0)
+            .request_retry_delay(Duration::from_millis(1));
+
+        let handle = tickets.run();
+        handle.stop();
+
+        tokio::time::timeout(Duration::from_secs(2), handle.join())
+            .await
+            .expect("run did not exit within 2s of stop()");
+    }
+
+    #[tokio::test]
+    async fn run_dry_after_run_resets_signal() {
+        let results_dir = tempfile::tempdir().unwrap();
+        let provider = MockProvider::with_results(vec![
+            Ok(write_result_response("first")),
+            Ok(write_result_response("second")),
+        ]);
+        let tickets = TicketSystem::new()
+            .results_dir(results_dir.path().to_path_buf())
+            .max_request_retries(0)
+            .request_retry_delay(Duration::from_millis(1));
+        tickets.add(
+            Agent::new()
+                .name("worker")
+                .provider(provider as Arc<dyn Provider>)
+                .model("mock")
+                .role("test")
+                .silent()
+                .tool(ManageTicketsTool),
+        );
+
+        // First run: spawn, drain. Leaves the interrupt signal flipped.
+        tickets.task("first");
+        let first = tickets.run().run_dry().await;
+        assert_eq!(first, "first");
+
+        // Second run must reset the signal at entry; otherwise the
+        // supervisor exits before claiming the new ticket.
+        tickets.task("second");
+        let second = tokio::time::timeout(Duration::from_secs(5), tickets.run_dry())
+            .await
+            .expect("second run_dry did not finish within 5s");
+        assert_eq!(second, "second");
+    }
+
+    #[tokio::test]
+    async fn agent_run_dry_forwards_to_bound_system() {
+        let results_dir = tempfile::tempdir().unwrap();
+        let provider = MockProvider::with_results(vec![Ok(write_result_response("forwarded"))]);
+        let tickets = TicketSystem::new()
+            .results_dir(results_dir.path().to_path_buf())
+            .max_request_retries(0)
+            .request_retry_delay(Duration::from_millis(1));
+        let agent = tickets.add(
+            Agent::new()
+                .name("worker")
+                .provider(provider as Arc<dyn Provider>)
+                .model("mock")
+                .role("test")
+                .silent()
+                .tool(ManageTicketsTool),
+        );
+
+        agent.task("hello");
+        let last = tokio::time::timeout(Duration::from_secs(5), agent.run_dry())
+            .await
+            .expect("agent.run_dry did not finish within 5s");
+        assert_eq!(last, "forwarded");
     }
 }
