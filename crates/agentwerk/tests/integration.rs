@@ -22,5 +22,8 @@ mod grep_finds_code_pattern;
 #[path = "integration/list_directory_enumerates_entries.rs"]
 mod list_directory_enumerates_entries;
 
+#[path = "integration/traces_call_path_across_files.rs"]
+mod traces_call_path_across_files;
+
 #[path = "integration/write_file_creates_file.rs"]
 mod write_file_creates_file;

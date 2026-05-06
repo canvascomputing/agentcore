@@ -101,13 +101,13 @@ async fn main() {
     let mut failures = 0usize;
     for ticket in tickets.tickets() {
         let idx_from_body = parse_idx_from_body(&ticket.task);
-        let parsed = ticket.result().and_then(|record| {
-            let idx = record
+        let parsed = ticket.result().and_then(|attached| {
+            let idx = attached
                 .result
                 .get("idx")
                 .and_then(|x| x.as_u64())
                 .map(|n| n as usize)?;
-            let sum = record
+            let sum = attached
                 .result
                 .get("partial_sum")
                 .and_then(|x| x.as_i64())
