@@ -22,7 +22,7 @@ use super::memory::Memory;
 use super::policy::Policies;
 use super::r#loop::Runnable;
 use super::stats::Stats;
-use super::tickets::{ResultRecord, Ticket, TicketSystem};
+use super::tickets::{TicketResult, Ticket, TicketSystem};
 
 static AGENT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -375,38 +375,15 @@ impl Agent {
         Runnable::run(&*sys)
     }
 
-    /// Start the loop and wait for the queue to drain. Returns the
-    /// most recently created `Done` ticket's `result`, or an empty
-    /// string if none settled. Equivalent to
-    /// `self.run().run_dry().await`.
-    pub async fn run_dry(&self) -> String {
+    /// Start a background run and wait for the queue to drain.
+    /// Returns every finished ticket's [`TicketResult`], in creation
+    /// order. Equivalent to `self.run().run_dry().await`.
+    pub async fn run_dry(&self) -> Vec<TicketResult> {
         let sys = self
             .ticket_system
             .upgrade()
             .expect("Agent::run_dry requires a bound TicketSystem");
         Runnable::run_dry(&*sys).await
-    }
-
-    /// Forwarded from the bound `TicketSystem`. Every `Done` ticket's
-    /// `ResultRecord`, in ticket creation order. An agent can drive
-    /// multiple tickets via repeated `task(...)` calls, so callers
-    /// often want the full list rather than just the last entry.
-    pub fn results(&self) -> Vec<ResultRecord> {
-        let sys = self
-            .ticket_system
-            .upgrade()
-            .expect("Agent::results requires a bound TicketSystem");
-        sys.results()
-    }
-
-    /// Forwarded from the bound `TicketSystem`. Structured analogue of
-    /// `Agent::run`'s String return.
-    pub fn last_result(&self) -> Option<ResultRecord> {
-        let sys = self
-            .ticket_system
-            .upgrade()
-            .expect("Agent::last_result requires a bound TicketSystem");
-        sys.last_result()
     }
 }
 
@@ -608,33 +585,6 @@ mod tests {
             stored.task,
             serde_json::Value::String("Search rust forums.".into()),
         );
-    }
-
-    #[tokio::test]
-    async fn results_and_last_result_forward_to_bound_ticket_system() {
-        use super::super::tickets::Status;
-
-        let sys = crate::agents::TicketSystem::new();
-        let agent = Agent::new().ticket_system(&sys);
-        sys.task("a").task("b");
-        for (key, payload) in [("TICKET-1", "first"), ("TICKET-2", "second")] {
-            sys.set_result(
-                key,
-                ResultRecord {
-                    agent: "tester".into(),
-                    ticket: key.into(),
-                    result: serde_json::Value::String(payload.into()),
-                },
-            )
-            .unwrap();
-            sys.force_status(key, Status::Done).unwrap();
-        }
-
-        let all = agent.results();
-        assert_eq!(all.len(), 2);
-        assert_eq!(all[0].ticket, "TICKET-1");
-        assert_eq!(all[1].ticket, "TICKET-2");
-        assert_eq!(agent.last_result().unwrap().ticket, "TICKET-2");
     }
 
     #[tokio::test]

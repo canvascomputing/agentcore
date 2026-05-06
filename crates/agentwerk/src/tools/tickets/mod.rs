@@ -9,7 +9,7 @@ use std::io::Write as _;
 
 use serde_json::Value;
 
-use crate::agents::tickets::{ResultRecord, Status, Ticket, TicketError, TicketSystem};
+use crate::agents::tickets::{TicketResult, Status, Ticket, TicketError, TicketSystem};
 use crate::schemas::{format_violations, Schema};
 
 use super::tool::{ToolContext, ToolResult};
@@ -359,11 +359,11 @@ fn action_edit(ticket_system: &TicketSystem, input: &Value, ctx: &ToolContext) -
 
 /// Validate `result` against the ticket's schema (or against the
 /// "non-empty string" rule when there is no schema), append an NDJSON
-/// record to the configured results directory, attach the record to
-/// the ticket, and transition the ticket to `Done`. The `agent` field
-/// on the record is taken from the calling context; the `ticket` field
-/// is the resolved key. Shared by `WriteResultTool` and the loop's
-/// terminal-reply path.
+/// line carrying the `TicketResult` to the configured results
+/// directory, attach the result to the ticket, and transition the
+/// ticket to `Done`. The `agent` field is taken from the calling
+/// context; the `ticket` field is the resolved key. Shared by
+/// `WriteResultTool` and the loop's terminal-reply path.
 pub(super) fn write_result(
     ticket_system: &TicketSystem,
     ctx: &ToolContext,
@@ -392,7 +392,7 @@ pub(super) fn write_result(
         }
     }
 
-    let record = ResultRecord {
+    let ticket_result = TicketResult {
         agent,
         ticket: key.to_string(),
         result,
@@ -403,7 +403,7 @@ pub(super) fn write_result(
         .unwrap_or_else(|| ctx.working_dir.clone());
     {
         let _guard = write_result::results_write_lock().lock().unwrap();
-        if let Err(e) = append_ndjson(&target_dir, &record) {
+        if let Err(e) = append_ndjson(&target_dir, &ticket_result) {
             return ToolResult::error(format!(
                 "Cannot write result to {}: {e}",
                 target_dir.display()
@@ -411,7 +411,7 @@ pub(super) fn write_result(
         }
     }
 
-    if let Err(e) = ticket_system.set_result(key, record) {
+    if let Err(e) = ticket_system.set_result(key, ticket_result) {
         return ToolResult::error(ticket_error_message(e));
     }
     match ticket_system.update_status(key, Status::Done) {
@@ -422,9 +422,9 @@ pub(super) fn write_result(
 
 const RESULTS_FILE: &str = "results.jsonl";
 
-fn append_ndjson(dir: &std::path::Path, record: &ResultRecord) -> std::io::Result<()> {
+fn append_ndjson(dir: &std::path::Path, result: &TicketResult) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    let mut line = serde_json::to_string(record).map_err(std::io::Error::other)?;
+    let mut line = serde_json::to_string(result).map_err(std::io::Error::other)?;
     line.push('\n');
     let mut file = OpenOptions::new()
         .create(true)

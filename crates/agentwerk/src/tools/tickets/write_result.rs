@@ -1,7 +1,7 @@
 //! Single-purpose tool for finishing a ticket. Validates the agent's
-//! result against the ticket's schema (when set), appends a record to
-//! `<results_dir>/results.jsonl`, attaches the record to the ticket,
-//! and transitions the ticket to `Done`.
+//! result against the ticket's schema (when set), appends an NDJSON
+//! line to `<results_dir>/results.jsonl`, attaches the `TicketResult`
+//! to the ticket, and transitions the ticket to `Done`.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -110,10 +110,10 @@ mod tests {
         assert!(matches!(outcome, ToolResult::Success(_)));
         let t = sys.get(&key).unwrap();
         assert_eq!(t.status(), Status::Done);
-        let record = t.result().unwrap();
-        assert_eq!(record.agent, "alice");
-        assert_eq!(record.ticket, key);
-        assert_eq!(record.result, serde_json::Value::String("the answer".into()));
+        let attached = t.result().unwrap();
+        assert_eq!(attached.agent, "alice");
+        assert_eq!(attached.ticket, key);
+        assert_eq!(attached.result, serde_json::Value::String("the answer".into()));
 
         let log = std::fs::read_to_string(dir.path().join("results.jsonl")).unwrap();
         let line = log.trim_end();
@@ -154,8 +154,8 @@ mod tests {
         assert_eq!(t.status(), Status::Done);
         assert_eq!(t.result().unwrap().result["x"], 1);
 
-        // The on-disk record carries `result` as a JSON object, not an
-        // escaped string.
+        // The saved `result` field is a JSON object, not an escaped
+        // string of JSON.
         let log = std::fs::read_to_string(dir.path().join("results.jsonl")).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(log.trim_end()).unwrap();
         assert!(parsed["result"].is_object(), "expected raw object, got {parsed}");

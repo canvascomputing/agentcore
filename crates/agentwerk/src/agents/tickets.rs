@@ -43,7 +43,7 @@ pub struct Ticket {
     /// Set when the ticket reaches `Status::Failed`. Millis since
     /// epoch. Mutually exclusive with `finished_at`.
     pub(crate) failed_at: Option<u64>,
-    pub(crate) result: Option<ResultRecord>,
+    pub(crate) result: Option<TicketResult>,
 }
 
 /// Record an agent writes when it finishes a ticket. Carries the source
@@ -51,13 +51,13 @@ pub struct Ticket {
 /// for tickets without a schema, otherwise the validated JSON value).
 /// Same shape as the line `WriteResultTool` appends to `results.jsonl`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ResultRecord {
+pub struct TicketResult {
     pub agent: String,
     pub ticket: String,
     pub result: serde_json::Value,
 }
 
-impl ResultRecord {
+impl TicketResult {
     /// Result rendered as a String: the raw text for string payloads,
     /// canonical JSON for everything else. Lossless re-parsing is not
     /// required.
@@ -166,7 +166,7 @@ impl Ticket {
         ))
     }
 
-    pub fn result(&self) -> Option<&ResultRecord> {
+    pub fn result(&self) -> Option<&TicketResult> {
         self.result.as_ref()
     }
 
@@ -174,7 +174,7 @@ impl Ticket {
     /// no recorded result. Convenience for callers that want a flat
     /// string view of the result regardless of the underlying JSON shape.
     pub fn result_string(&self) -> Option<String> {
-        self.result.as_ref().map(ResultRecord::result_string)
+        self.result.as_ref().map(TicketResult::result_string)
     }
 
     // ---- predicate helpers (compose with TicketSystem::filter / find / count) ----
@@ -492,11 +492,11 @@ impl TicketSystem {
         Ok(())
     }
 
-    /// Attach a result record to the ticket at `key`.
+    /// Attach a `TicketResult` to the ticket at `key`.
     pub(crate) fn set_result(
         &self,
         key: &str,
-        record: ResultRecord,
+        result: TicketResult,
     ) -> Result<(), TicketError> {
         let mut store = self.tickets.lock().unwrap();
         let ticket = store
@@ -504,7 +504,7 @@ impl TicketSystem {
             .ok_or_else(|| TicketError::TicketMissing {
                 key: key.to_string(),
             })?;
-        ticket.result = Some(record);
+        ticket.result = Some(result);
         Ok(())
     }
 
@@ -547,24 +547,6 @@ impl TicketSystem {
     /// Earliest ticket by creation time, if any.
     pub fn first(&self) -> Option<Ticket> {
         self.tickets().into_iter().next()
-    }
-
-    /// Every `Done` ticket's `ResultRecord`, in ticket creation order.
-    /// Tickets that finished without a recorded result are skipped.
-    pub fn results(&self) -> Vec<ResultRecord> {
-        self.filter(Ticket::is_done)
-            .into_iter()
-            .filter_map(|t| t.result)
-            .collect()
-    }
-
-    /// Most recently created `Done` ticket's `ResultRecord`, or `None`.
-    /// Structured analogue of `run_dry`'s String return.
-    pub fn last_result(&self) -> Option<ResultRecord> {
-        self.filter(Ticket::is_done)
-            .into_iter()
-            .rev()
-            .find_map(|t| t.result)
     }
 
     /// Substring search over the task body, case-insensitive.
@@ -694,21 +676,20 @@ impl Runnable for TicketSystem {
         super::running::Running::new(system, signal, join)
     }
 
-    fn run_dry(&self) -> impl std::future::Future<Output = String> + Send {
+    fn run_dry(&self) -> impl std::future::Future<Output = Vec<TicketResult>> + Send {
         self.run().run_dry()
     }
 }
 
 impl TicketSystem {
-    /// Result of the most recently created `Status::Done` ticket, or
-    /// an empty string when no ticket has reached `Done` (or its
-    /// `result` is unset). Strings are returned as-is; structured
-    /// payloads are rendered as canonical JSON.
-    pub(crate) fn last_done_result(&self) -> String {
+    /// Every `Done` ticket's `TicketResult`, in ticket creation order.
+    /// Tickets that finished without a recorded result are skipped.
+    /// Backing helper for `Running::run_dry`.
+    pub(crate) fn collect_results(&self) -> Vec<TicketResult> {
         self.filter(Ticket::is_done)
-            .last()
-            .and_then(|t| t.result_string())
-            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|t| t.result)
+            .collect()
     }
 }
 
@@ -874,10 +855,10 @@ mod tests {
         Ticket::new(format!("body-{label}")).label(label)
     }
 
-    fn attach_done_record(sys: &TicketSystem, key: &str, agent: &str, result: &str) {
+    fn attach_done_result(sys: &TicketSystem, key: &str, agent: &str, result: &str) {
         sys.set_result(
             key,
-            ResultRecord {
+            TicketResult {
                 agent: agent.into(),
                 ticket: key.into(),
                 result: serde_json::Value::String(result.into()),
@@ -991,7 +972,7 @@ mod tests {
         sys.task("hi");
         sys.set_result(
             "TICKET-1",
-            ResultRecord {
+            TicketResult {
                 agent: "tester".into(),
                 ticket: "TICKET-1".into(),
                 result: serde_json::Value::String("answer".into()),
@@ -999,10 +980,10 @@ mod tests {
         )
         .unwrap();
         let stored = sys.get("TICKET-1").unwrap();
-        let record = stored.result().unwrap();
-        assert_eq!(record.agent, "tester");
-        assert_eq!(record.ticket, "TICKET-1");
-        assert_eq!(record.result, serde_json::Value::String("answer".into()));
+        let attached = stored.result().unwrap();
+        assert_eq!(attached.agent, "tester");
+        assert_eq!(attached.ticket, "TICKET-1");
+        assert_eq!(attached.result, serde_json::Value::String("answer".into()));
     }
 
     #[test]
@@ -1033,12 +1014,12 @@ mod tests {
     }
 
     #[test]
-    fn results_returns_done_records_in_creation_order() {
+    fn collect_results_returns_results_in_creation_order() {
         let sys = TicketSystem::new();
         sys.task("a").task("b").task("c");
-        attach_done_record(&sys, "TICKET-1", "alice", "first");
-        attach_done_record(&sys, "TICKET-3", "alice", "third");
-        let results = sys.results();
+        attach_done_result(&sys, "TICKET-1", "alice", "first");
+        attach_done_result(&sys, "TICKET-3", "alice", "third");
+        let results = sys.collect_results();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].ticket, "TICKET-1");
         assert_eq!(results[0].result, serde_json::Value::String("first".into()));
@@ -1047,22 +1028,21 @@ mod tests {
     }
 
     #[test]
-    fn last_result_returns_most_recently_created_done_record() {
+    fn collect_results_last_is_most_recently_created_done() {
         let sys = TicketSystem::new();
         sys.task("a").task("b");
-        attach_done_record(&sys, "TICKET-2", "alice", "second");
-        attach_done_record(&sys, "TICKET-1", "alice", "first");
-        let last = sys.last_result().expect("expected last_result");
+        attach_done_result(&sys, "TICKET-2", "alice", "second");
+        attach_done_result(&sys, "TICKET-1", "alice", "first");
+        let last = sys.collect_results().last().cloned().expect("expected last result");
         assert_eq!(last.ticket, "TICKET-2");
         assert_eq!(last.result, serde_json::Value::String("second".into()));
     }
 
     #[test]
-    fn results_and_last_result_are_empty_when_nothing_done() {
+    fn collect_results_is_empty_when_nothing_done() {
         let sys = TicketSystem::new();
         sys.task("pending");
-        assert!(sys.results().is_empty());
-        assert!(sys.last_result().is_none());
+        assert!(sys.collect_results().is_empty());
     }
 
     #[test]

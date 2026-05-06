@@ -15,4 +15,4 @@ pub use policy::Policies;
 pub use r#loop::Runnable;
 pub use running::Running;
 pub use stats::{LoopStats, Stats};
-pub use tickets::{ResultRecord, Status, Ticket, TicketError, TicketSystem};
+pub use tickets::{TicketResult, Status, Ticket, TicketError, TicketSystem};

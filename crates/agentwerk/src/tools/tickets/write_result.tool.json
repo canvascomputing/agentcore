@@ -7,7 +7,7 @@
   "constraints": [
     "Operates on the agent's current ticket. No `key` parameter; the loop resolves it from the calling agent's identity.",
     "Call exactly once per ticket, when the work is complete.",
-    "MUST pass `result` as a JSON value of its natural type. Stringifying an object (passing `\"{\\\"x\\\": 1}\"` instead of `{\"x\": 1}`) double-encodes the on-disk record.",
+    "MUST pass `result` as a JSON value of its natural type. Stringifying an object first (passing `\"{\\\"x\\\": 1}\"` instead of `{\"x\": 1}`) saves the value as an escaped string of JSON, not as the object itself.",
     "MUST NOT pass `null` or an empty string. Both mean 'no result' and are rejected.",
     "When the ticket carries a `schema`, `result` must validate against it. Failures count toward `max_schema_retries`."
   ],

@@ -25,8 +25,8 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
     tickets.add(agent);
     tickets.task("Find all Rust source files and describe what this project does.");
 
-    let result = tickets.run_dry().await;
-    common::print_result(&result, tickets.stats());
+    let results = tickets.run_dry().await;
+    common::print_result(&results, tickets.stats());
 
     assert!(tickets.stats().tool_calls() >= 1);
 

@@ -43,11 +43,12 @@ pub trait Runnable: Sized {
     /// [`Running::join`] for an abrupt cancel.
     fn run(&self) -> super::running::Running;
 
-    /// Start the loop and wait for the queue to drain. Returns the
-    /// most recently created `Done` ticket's `result`, or an empty
-    /// string if none settled. Equivalent to
-    /// `self.run().run_dry().await`.
-    fn run_dry(&self) -> impl Future<Output = String> + Send;
+    /// Start a background run and wait for the queue to drain.
+    /// Returns every finished ticket's [`TicketResult`], in creation
+    /// order. Equivalent to `self.run().run_dry().await`.
+    ///
+    /// [`TicketResult`]: super::tickets::TicketResult
+    fn run_dry(&self) -> impl Future<Output = Vec<super::tickets::TicketResult>> + Send;
 }
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -349,8 +350,8 @@ async fn process_ticket(
             let final_status = match ticket_system.get(key) {
                 None => return,
                 Some(ticket) => match (&ticket.schema, ticket.result()) {
-                    (Some(schema), Some(record)) => {
-                        if schema.validate(&record.result).is_ok() {
+                    (Some(schema), Some(attached)) => {
+                        if schema.validate(&attached.result).is_ok() {
                             Status::Done
                         } else {
                             Status::Failed
@@ -1517,12 +1518,12 @@ mod tests {
         tickets.task("a");
         tickets.task("b");
 
-        let last = tokio::time::timeout(Duration::from_secs(5), handle.run_dry())
+        let results = tokio::time::timeout(Duration::from_secs(5), handle.run_dry())
             .await
             .expect("run_dry did not finish within 5s");
 
-        assert_eq!(last, "b-done");
-        assert_eq!(tickets.results().len(), 2);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results.last().unwrap().result_string(), "b-done");
     }
 
     #[tokio::test]
@@ -1582,15 +1583,15 @@ mod tests {
         // First run: spawn, drain. Leaves the interrupt signal flipped.
         tickets.task("first");
         let first = tickets.run().run_dry().await;
-        assert_eq!(first, "first");
+        assert_eq!(first.last().unwrap().result_string(), "first");
 
-        // Second run must reset the signal at entry; otherwise the
-        // supervisor exits before claiming the new ticket.
+        // Second run must reset the signal at entry; otherwise the run
+        // exits before claiming the new ticket.
         tickets.task("second");
         let second = tokio::time::timeout(Duration::from_secs(5), tickets.run_dry())
             .await
             .expect("second run_dry did not finish within 5s");
-        assert_eq!(second, "second");
+        assert_eq!(second.last().unwrap().result_string(), "second");
     }
 
     #[tokio::test]
@@ -1612,9 +1613,9 @@ mod tests {
         );
 
         agent.task("hello");
-        let last = tokio::time::timeout(Duration::from_secs(5), agent.run_dry())
+        let results = tokio::time::timeout(Duration::from_secs(5), agent.run_dry())
             .await
             .expect("agent.run_dry did not finish within 5s");
-        assert_eq!(last, "forwarded");
+        assert_eq!(results.last().unwrap().result_string(), "forwarded");
     }
 }

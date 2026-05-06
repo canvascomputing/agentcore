@@ -102,8 +102,8 @@ async fn finds_every_lib_rs_in_nested_tree() -> std::result::Result<(), Box<dyn 
         "Find every `lib.rs` file anywhere in the project tree, including nested directories.",
     );
 
-    let result = tickets.run_dry().await;
-    common::print_result(&result, tickets.stats());
+    let results = tickets.run_dry().await;
+    common::print_result(&results, tickets.stats());
 
     let recorded = calls.lock().unwrap().clone();
 
@@ -148,7 +148,7 @@ async fn finds_every_lib_rs_in_nested_tree() -> std::result::Result<(), Box<dyn 
             "glob_tool output should reach nested `{expected}`; got: {output:?}"
         );
     }
-    let _ = result;
+    let _ = results;
 
     Ok(())
 }

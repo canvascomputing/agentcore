@@ -37,7 +37,7 @@ use agentwerk::Agent;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let answer = Agent::new()
+    let results = Agent::new()
         .provider(provider_from_env()?)
         .model(&model_from_env()?)
         .role("Answer questions about this repository.")
@@ -46,6 +46,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .run_dry()
         .await;
 
+    let answer = results
+        .last()
+        .map(|r| r.result_string())
+        .unwrap_or_default();
     println!("{answer}");
     Ok(())
 }
@@ -166,11 +170,10 @@ let agent = Agent::new()
 agent.task("Compute 2+2.");
 agent.task_labeled("Compute 3+3.", "math");
 
-let last = agent.run_dry().await;
-let all = agent.results();
+let results = agent.run_dry().await;
 ```
 
-`agent` here is a `Running`: `task`, `task_labeled`, and `results` reach the bound ticket system through `Deref`. `run_dry` waits for the queue to drain, then stops and joins. `stop` and `join` are also available for abrupt cancellation.
+`agent` here is a `Running`: `task` and `task_labeled` reach the bound ticket system through `Deref`. `run_dry` waits for the queue to drain, then stops and joins, and returns every finished ticket's `TicketResult`. `stop` and `join` are also available for abrupt cancellation.
 
 Methods called after the agent is built:
 
@@ -182,9 +185,7 @@ Methods called after the agent is built:
 | | `task_schema_labeled(value, schema, label)` | Create a labelled task whose result must validate against `schema`. |
 | | `create(ticket)` | Add a caller-built `Ticket` to the queue. |
 | **Run** | `run()` | Start a background run and return a `Running` handle. |
-| | `run_dry().await` | Run until every queued task finishes and return the last result. |
-| **Results** | `results()` | Return every finished ticket's result, in creation order. |
-| | `last_result()` | Return the most recent finished ticket's result, or `None`. |
+| | `run_dry().await` | Run until every queued task finishes and return every `TicketResult`. |
 | **Inspect** | `get_name()` | Return the configured name. |
 | | `get_labels()` | Return the configured label scope. |
 | | `handles(labels)` | Return `true` when the label scope overlaps. |
@@ -218,9 +219,7 @@ let result = tickets.run_dry().await;
 | | `task_schema_labeled(value, schema, label)` | Create a labelled task whose result must validate against `schema`. |
 | | `create(ticket)` | Add a caller-built `Ticket` to the queue. |
 | **Run** | `run()` | Start a background run and return a `Running` handle. |
-| | `run_dry().await` | Run until every queued task finishes and return the last result. |
-| **Results** | `results()` | Return every finished ticket's result, in creation order. |
-| | `last_result()` | Return the most recent finished ticket's result, or `None`. |
+| | `run_dry().await` | Run until every queued task finishes and return every `TicketResult`. |
 | **Inspect** | `get(key)` / `tickets()` / `first()` | Look up finished tickets. |
 | | `search(query)` | Return tickets whose task body matches `query`, case-insensitively. |
 | | `filter(predicate)` | Return tickets matching `predicate`, in creation order. |
@@ -296,7 +295,7 @@ let greet = Tool::new("greet", "Say hello")
 | **Memory** | `MemoryTool` | Adds, replaces, or removes entries in the agent's memory. |
 | **Discovery** | `ToolSearchTool` | Discovers tools registered with `Tool::defer(true)`. |
 
-`BashTool::unrestricted()` allows any command. `WriteResultTool` validates against the ticket's `schema`, appends an NDJSON record to `<results_dir>/results.jsonl`, and attaches the record to the ticket. `MemoryTool` is auto-registered when `Agent::memory(&store)` is set.
+`BashTool::unrestricted()` allows any command. `WriteResultTool` validates against the ticket's `schema`, appends an NDJSON line to `<results_dir>/results.jsonl`, and attaches the `TicketResult` to the ticket. `MemoryTool` is auto-registered when `Agent::memory(&store)` is set.
 
 ### Memory
 
