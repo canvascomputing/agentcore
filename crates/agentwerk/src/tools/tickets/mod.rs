@@ -399,7 +399,7 @@ pub(super) fn write_result(
     };
 
     let target_dir = ticket_system
-        .results_dir_value()
+        .workspace_value()
         .unwrap_or_else(|| ctx.working_dir.clone());
     {
         let _guard = write_result::results_write_lock().lock().unwrap();

@@ -1,6 +1,6 @@
 //! Single-purpose tool for finishing a ticket. Validates the agent's
 //! result against the ticket's schema (when set), appends an NDJSON
-//! line to `<results_dir>/results.jsonl`, attaches the `TicketResult`
+//! line to `<workspace>/results.jsonl`, attaches the `TicketResult`
 //! to the ticket, and transitions the ticket to `Done`.
 
 use std::future::Future;
@@ -101,7 +101,7 @@ mod tests {
     async fn writes_string_result_and_marks_done() {
         let dir = tempfile::tempdir().unwrap();
         let (sys, key) = one_ticket("alice");
-        let sys = Arc::clone(&sys).results_dir(dir.path().to_path_buf());
+        let sys = Arc::clone(&sys).workspace(dir.path().to_path_buf());
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
         let outcome = WriteResultTool
             .call(serde_json::json!({"result": "the answer"}), &ctx)
@@ -127,7 +127,7 @@ mod tests {
     async fn rejects_empty_string_when_no_schema() {
         let dir = tempfile::tempdir().unwrap();
         let (sys, key) = one_ticket("alice");
-        let sys = Arc::clone(&sys).results_dir(dir.path().to_path_buf());
+        let sys = Arc::clone(&sys).workspace(dir.path().to_path_buf());
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
         let outcome = WriteResultTool
             .call(serde_json::json!({"result": ""}), &ctx)
@@ -143,7 +143,7 @@ mod tests {
     async fn accepts_structured_value_when_no_schema() {
         let dir = tempfile::tempdir().unwrap();
         let (sys, key) = one_ticket("alice");
-        let sys = Arc::clone(&sys).results_dir(dir.path().to_path_buf());
+        let sys = Arc::clone(&sys).workspace(dir.path().to_path_buf());
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
         let outcome = WriteResultTool
             .call(serde_json::json!({"result": {"x": 1, "y": [2, 3]}}), &ctx)
@@ -166,7 +166,7 @@ mod tests {
     async fn rejects_null_result_when_no_schema() {
         let dir = tempfile::tempdir().unwrap();
         let (sys, _key) = one_ticket("alice");
-        let sys = Arc::clone(&sys).results_dir(dir.path().to_path_buf());
+        let sys = Arc::clone(&sys).workspace(dir.path().to_path_buf());
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
         let outcome = WriteResultTool
             .call(serde_json::json!({"result": null}), &ctx)
@@ -178,7 +178,7 @@ mod tests {
     #[tokio::test]
     async fn validates_against_schema() {
         let dir = tempfile::tempdir().unwrap();
-        let sys = TicketSystem::new().results_dir(dir.path().to_path_buf());
+        let sys = TicketSystem::new().workspace(dir.path().to_path_buf());
         let schema = Schema::parse(serde_json::json!({
             "type": "object",
             "properties": {"x": {"type": "string"}},
@@ -211,7 +211,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn falls_back_to_working_dir_when_results_dir_unset() {
+    async fn falls_back_to_working_dir_when_workspace_unset() {
         let dir = tempfile::tempdir().unwrap();
         let (sys, _key) = one_ticket("alice");
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
@@ -250,7 +250,7 @@ mod tests {
     #[tokio::test]
     async fn appends_one_line_per_completed_ticket() {
         let dir = tempfile::tempdir().unwrap();
-        let sys = TicketSystem::new().results_dir(dir.path().to_path_buf());
+        let sys = TicketSystem::new().workspace(dir.path().to_path_buf());
 
         let key1 = sys.insert(Ticket::new("a"), "tester".into());
         sys.force_status(&key1, Status::InProgress).unwrap();
@@ -287,7 +287,7 @@ mod tests {
     async fn concurrent_writes_produce_one_intact_line_per_ticket() {
         const N: usize = 32;
         let dir = tempfile::tempdir().unwrap();
-        let sys = TicketSystem::new().results_dir(dir.path().to_path_buf());
+        let sys = TicketSystem::new().workspace(dir.path().to_path_buf());
 
         let mut expected = Vec::with_capacity(N);
         for i in 0..N {

@@ -7,27 +7,43 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-const ENTRY_DELIMITER: &str = "\n§\n";
+use serde::{Deserialize, Serialize};
+
+/// Yardstick the char-limit check joins entries with. Not a file format
+/// detail: on disk every entry is its own JSON line. Kept stable across the
+/// JSONL switch so the limit semantics do not shift under existing callers.
+const LIMIT_SEPARATOR: &str = "\n§\n";
 const DEFAULT_CHAR_LIMIT: usize = 2200;
-const MEMORY_FILE: &str = "memory.md";
+const MEMORY_FILE: &str = "memory.jsonl";
+
+/// One on-disk entry. Round-trips through `memory.jsonl`. `added_at` is
+/// preserved across reads; `add` and `replace` stamp it with the current
+/// time, `rewrite` stamps every entry afresh.
+#[derive(Clone, Serialize, Deserialize)]
+struct MemoryRecord {
+    content: String,
+    added_at: u64,
+}
 
 /// File-backed memory shared by every `Agent` bound to it. Mirrors `TicketSystem`
 /// in shape: the caller constructs one `Arc<Memory>` and binds it to one or
 /// more agents through `Agent::memory(&store)`. Two agents pointed at the same
-/// `Arc` share `memory.md`; two agents pointed at different stores see
+/// `Arc` share `memory.jsonl`; two agents pointed at different stores see
 /// independent memory.
 pub struct Memory {
     memory_dir: PathBuf,
-    entries: Mutex<Vec<String>>,
+    entries: Mutex<Vec<MemoryRecord>>,
     char_limit: usize,
     write_lock: Mutex<()>,
 }
 
 impl Memory {
     /// Open or create a memory store rooted at `memory_dir`. The directory is
-    /// created if missing. `memory.md` is read and split on the entry
-    /// delimiter when present. Char limit defaults to 2200.
+    /// created if missing. `memory.jsonl` is read line by line when present:
+    /// malformed lines are dropped, duplicates by `content` are collapsed.
+    /// Char limit defaults to 2200.
     pub fn open(memory_dir: impl Into<PathBuf>) -> io::Result<Arc<Self>> {
         let memory_dir = memory_dir.into();
         fs::create_dir_all(&memory_dir)?;
@@ -40,15 +56,22 @@ impl Memory {
         }))
     }
 
-    /// A clone of the current entries, in insertion order. Callers that need
-    /// a single string (the loop, a REPL `/memory` command) concatenate them
-    /// with whatever separator suits their format. Empty when no entries.
+    /// A clone of the current entry contents, in insertion order. Callers
+    /// that need a single string (the loop, a REPL `/memory` command)
+    /// concatenate them with whatever separator suits their format. Empty
+    /// when no entries.
     pub fn entries(&self) -> Vec<String> {
-        self.entries.lock().unwrap().clone()
+        self.entries
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| e.content.clone())
+            .collect()
     }
 
     /// Append a new entry. Rejects empty content, verbatim duplicates, and
-    /// content that would push the rendered file past the char limit.
+    /// content that would push the rendered prompt section past the char
+    /// limit.
     pub fn add(&self, content: &str) -> Result<(), String> {
         let _w = self.write_lock.lock().unwrap();
         let mut entries = self.entries.lock().unwrap().clone();
@@ -56,12 +79,15 @@ impl Memory {
         if content.is_empty() {
             return Err("Content must not be empty".into());
         }
-        if entries.iter().any(|e| e == content) {
+        if entries.iter().any(|e| e.content == content) {
             return Err("An entry with identical content already exists".into());
         }
-        let current_chars = entries.join(ENTRY_DELIMITER).len();
-        entries.push(content.to_string());
-        let rendered = entries.join(ENTRY_DELIMITER);
+        let current_chars = render_for_prompt(&entries).len();
+        entries.push(MemoryRecord {
+            content: content.to_string(),
+            added_at: now_ms(),
+        });
+        let rendered = render_for_prompt(&entries);
         if rendered.len() > self.char_limit {
             return Err(format!(
                 "Memory at {}/{} chars. Adding this entry ({} chars) would exceed the limit. \
@@ -77,7 +103,8 @@ impl Memory {
         Ok(())
     }
 
-    /// Replace the unique entry containing `old_text` with `content`.
+    /// Replace the unique entry containing `old_text` with `content`. Stamps
+    /// `added_at` with the current time on the replacement.
     pub fn replace(&self, old_text: &str, content: &str) -> Result<(), String> {
         let _w = self.write_lock.lock().unwrap();
         let mut entries = self.entries.lock().unwrap().clone();
@@ -86,8 +113,11 @@ impl Memory {
         if content.is_empty() {
             return Err("Replacement content must not be empty".into());
         }
-        entries[idx] = content.to_string();
-        let rendered = entries.join(ENTRY_DELIMITER);
+        entries[idx] = MemoryRecord {
+            content: content.to_string(),
+            added_at: now_ms(),
+        };
+        let rendered = render_for_prompt(&entries);
         if rendered.len() > self.char_limit {
             return Err(format!(
                 "Replacement would push memory to {} chars (limit {}). \
@@ -116,13 +146,19 @@ impl Memory {
 
     /// Replace every entry with `new_entries`. Used by callers that drive
     /// their own consolidation. Skips the char-limit check: a misbehaving
-    /// rewrite would still be caught at the next `add` attempt.
+    /// rewrite would still be caught at the next `add` attempt. Stamps a
+    /// fresh `added_at` on every entry.
     pub fn rewrite(&self, new_entries: Vec<String>) -> Result<(), String> {
         let _w = self.write_lock.lock().unwrap();
-        let cleaned: Vec<String> = new_entries
+        let now = now_ms();
+        let cleaned: Vec<MemoryRecord> = new_entries
             .into_iter()
             .map(|e| e.trim().to_string())
             .filter(|e| !e.is_empty())
+            .map(|content| MemoryRecord {
+                content,
+                added_at: now,
+            })
             .collect();
         write_entries_to_disk(&self.memory_dir.join(MEMORY_FILE), &cleaned)
             .map_err(|e| format!("Failed to persist memory: {e}"))?;
@@ -131,14 +167,14 @@ impl Memory {
     }
 }
 
-fn unique_match(entries: &[String], needle: &str) -> Result<usize, String> {
+fn unique_match(entries: &[MemoryRecord], needle: &str) -> Result<usize, String> {
     if needle.is_empty() {
         return Err("`old_text` must not be empty".into());
     }
     let hits: Vec<usize> = entries
         .iter()
         .enumerate()
-        .filter_map(|(i, e)| e.contains(needle).then_some(i))
+        .filter_map(|(i, e)| e.content.contains(needle).then_some(i))
         .collect();
     match hits.len() {
         0 => Err(format!(
@@ -151,37 +187,65 @@ fn unique_match(entries: &[String], needle: &str) -> Result<usize, String> {
     }
 }
 
-fn read_entries_from_disk(path: &Path) -> io::Result<Vec<String>> {
+fn render_for_prompt(entries: &[MemoryRecord]) -> String {
+    entries
+        .iter()
+        .map(|e| e.content.as_str())
+        .collect::<Vec<_>>()
+        .join(LIMIT_SEPARATOR)
+}
+
+fn read_entries_from_disk(path: &Path) -> io::Result<Vec<MemoryRecord>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
     let raw = fs::read_to_string(path)?;
-    if raw.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut entries: Vec<String> = raw
-        .split(ENTRY_DELIMITER)
-        .map(|e| e.trim().to_string())
-        .filter(|e| !e.is_empty())
-        .collect();
-    let mut seen: Vec<String> = Vec::with_capacity(entries.len());
-    entries.retain(|e| {
-        if seen.iter().any(|s| s == e) {
-            false
-        } else {
-            seen.push(e.clone());
-            true
+    let mut entries: Vec<MemoryRecord> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
         }
-    });
+        let Ok(record) = serde_json::from_str::<MemoryRecord>(trimmed) else {
+            continue;
+        };
+        if record.content.is_empty() {
+            continue;
+        }
+        if seen.iter().any(|s| s == &record.content) {
+            continue;
+        }
+        seen.push(record.content.clone());
+        entries.push(record);
+    }
     Ok(entries)
 }
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn write_entries_to_disk(path: &Path, entries: &[String]) -> io::Result<()> {
+fn write_entries_to_disk(path: &Path, entries: &[MemoryRecord]) -> io::Result<()> {
     let parent = path.parent().unwrap_or(Path::new("."));
     fs::create_dir_all(parent)?;
-    atomic_write(path, entries.join(ENTRY_DELIMITER).as_bytes())
+    let body = serialize_to_jsonl(entries)?;
+    atomic_write(path, body.as_bytes())
+}
+
+fn serialize_to_jsonl(entries: &[MemoryRecord]) -> io::Result<String> {
+    let mut out = String::new();
+    for entry in entries {
+        let line = serde_json::to_string(entry).map_err(io::Error::other)?;
+        out.push_str(&line);
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn atomic_write(path: &Path, body: &[u8]) -> io::Result<()> {
@@ -219,6 +283,15 @@ mod tests {
         (store, dir)
     }
 
+    fn read_records(path: &Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
     #[test]
     fn open_creates_missing_directory() {
         let dir = tempfile::tempdir().unwrap();
@@ -234,20 +307,25 @@ mod tests {
     }
 
     #[test]
-    fn add_writes_entry_to_memory_md_and_makes_it_observable() {
+    fn add_writes_one_jsonl_line_per_entry() {
         let (store, dir) = fresh_store();
         store.add("hello world").unwrap();
         assert_eq!(store.entries(), vec!["hello world".to_string()]);
-        let raw = fs::read_to_string(dir.path().join("memory.md")).unwrap();
-        assert_eq!(raw, "hello world");
+        let records = read_records(&dir.path().join("memory.jsonl"));
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["content"], "hello world");
+        assert!(records[0]["added_at"].as_u64().unwrap() > 0);
     }
 
     #[test]
-    fn add_appends_entries_joined_by_delimiter_on_disk() {
-        let (store, _dir) = fresh_store();
+    fn add_appends_one_record_per_call() {
+        let (store, dir) = fresh_store();
         store.add("first").unwrap();
         store.add("second").unwrap();
-        assert_eq!(store.entries().join("\n§\n"), "first\n§\nsecond");
+        let records = read_records(&dir.path().join("memory.jsonl"));
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["content"], "first");
+        assert_eq!(records[1]["content"], "second");
     }
 
     #[test]
@@ -369,11 +447,54 @@ mod tests {
     #[test]
     fn open_dedupes_disk_entries_on_load() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("memory.md"), "same\n§\nsame\n§\nother").unwrap();
+        let body = "{\"content\":\"same\",\"added_at\":1}\n\
+                    {\"content\":\"same\",\"added_at\":2}\n\
+                    {\"content\":\"other\",\"added_at\":3}\n";
+        fs::write(dir.path().join("memory.jsonl"), body).unwrap();
         let store = Memory::open(dir.path()).unwrap();
         assert_eq!(
             store.entries(),
             vec!["same".to_string(), "other".to_string()]
         );
+    }
+
+    #[test]
+    fn open_silently_drops_malformed_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = "{\"content\":\"good\",\"added_at\":1}\n\
+                    not json at all\n\
+                    {\"missing_added_at\":\"x\"}\n\
+                    {\"content\":\"also good\",\"added_at\":2}\n";
+        fs::write(dir.path().join("memory.jsonl"), body).unwrap();
+        let store = Memory::open(dir.path()).unwrap();
+        assert_eq!(
+            store.entries(),
+            vec!["good".to_string(), "also good".to_string()]
+        );
+    }
+
+    #[test]
+    fn add_stamps_added_at_to_a_non_zero_value() {
+        let (store, dir) = fresh_store();
+        store.add("hello").unwrap();
+        let records = read_records(&dir.path().join("memory.jsonl"));
+        assert!(records[0]["added_at"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn round_trip_preserves_added_at_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = "{\"content\":\"persisted\",\"added_at\":1234567890}\n";
+        fs::write(dir.path().join("memory.jsonl"), body).unwrap();
+        let store = Memory::open(dir.path()).unwrap();
+        // A no-op operation that triggers a rewrite of the file would
+        // overwrite added_at; reading without writing preserves it.
+        store.add("fresh").unwrap();
+        let records = read_records(&dir.path().join("memory.jsonl"));
+        let persisted = records
+            .iter()
+            .find(|r| r["content"] == "persisted")
+            .unwrap();
+        assert_eq!(persisted["added_at"].as_u64().unwrap(), 1234567890);
     }
 }

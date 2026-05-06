@@ -696,7 +696,7 @@ mod tests {
 
         let results_dir = tempfile::tempdir().unwrap();
         let tickets = TicketSystem::new()
-            .results_dir(results_dir.path().to_path_buf())
+            .workspace(results_dir.path().to_path_buf())
             .max_request_retries(max_request_retries)
             .request_retry_delay(Duration::from_millis(1))
             .max_schema_retries(max_schema_retries)
@@ -929,7 +929,7 @@ mod tests {
 
         let results_dir = tempfile::tempdir().unwrap();
         let tickets = TicketSystem::new()
-            .results_dir(results_dir.path().to_path_buf())
+            .workspace(results_dir.path().to_path_buf())
             .max_request_retries(3)
             .request_retry_delay(Duration::from_millis(1));
         let agent = Agent::new()
@@ -1196,7 +1196,7 @@ mod tests {
         ]);
         let results_dir = tempfile::tempdir().unwrap();
         let tickets = TicketSystem::new()
-            .results_dir(results_dir.path().to_path_buf())
+            .workspace(results_dir.path().to_path_buf())
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1))
             .max_schema_retries(10)
@@ -1237,7 +1237,7 @@ mod tests {
         let store = Memory::open(memory_dir.path()).unwrap();
 
         let tickets = TicketSystem::new()
-            .results_dir(results_dir.path().to_path_buf())
+            .workspace(results_dir.path().to_path_buf())
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1))
             .max_time(Duration::from_millis(500));
@@ -1289,7 +1289,7 @@ mod tests {
         let store = Memory::open(memory_dir.path()).unwrap();
 
         let tickets = TicketSystem::new()
-            .results_dir(results_dir.path().to_path_buf())
+            .workspace(results_dir.path().to_path_buf())
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1))
             .max_time(Duration::from_millis(500));
@@ -1335,7 +1335,7 @@ mod tests {
 
         let cancel = Arc::new(AtomicBool::new(false));
         let tickets = TicketSystem::new()
-            .results_dir(results_dir.path().to_path_buf())
+            .workspace(results_dir.path().to_path_buf())
             .interrupt_signal(Arc::clone(&cancel))
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1))
@@ -1395,7 +1395,7 @@ mod tests {
     async fn add_after_run_spawns_new_agent() {
         let results_dir = tempfile::tempdir().unwrap();
         let tickets = TicketSystem::new()
-            .results_dir(results_dir.path().to_path_buf())
+            .workspace(results_dir.path().to_path_buf())
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1));
 
@@ -1443,7 +1443,7 @@ mod tests {
     async fn late_added_agent_joined_on_shutdown() {
         let results_dir = tempfile::tempdir().unwrap();
         let tickets = TicketSystem::new()
-            .results_dir(results_dir.path().to_path_buf())
+            .workspace(results_dir.path().to_path_buf())
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1));
 
@@ -1499,7 +1499,7 @@ mod tests {
             Ok(write_result_response("b-done")),
         ]);
         let tickets = TicketSystem::new()
-            .results_dir(results_dir.path().to_path_buf())
+            .workspace(results_dir.path().to_path_buf())
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1));
         tickets.add(
@@ -1530,7 +1530,7 @@ mod tests {
     async fn running_signal_returns_shared_arc() {
         let results_dir = tempfile::tempdir().unwrap();
         let tickets = TicketSystem::new()
-            .results_dir(results_dir.path().to_path_buf())
+            .workspace(results_dir.path().to_path_buf())
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1));
 
@@ -1547,7 +1547,7 @@ mod tests {
     async fn running_stop_is_abrupt() {
         let results_dir = tempfile::tempdir().unwrap();
         let tickets = TicketSystem::new()
-            .results_dir(results_dir.path().to_path_buf())
+            .workspace(results_dir.path().to_path_buf())
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1));
 
@@ -1567,7 +1567,7 @@ mod tests {
             Ok(write_result_response("second")),
         ]);
         let tickets = TicketSystem::new()
-            .results_dir(results_dir.path().to_path_buf())
+            .workspace(results_dir.path().to_path_buf())
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1));
         tickets.add(
@@ -1599,7 +1599,7 @@ mod tests {
         let results_dir = tempfile::tempdir().unwrap();
         let provider = MockProvider::with_results(vec![Ok(write_result_response("forwarded"))]);
         let tickets = TicketSystem::new()
-            .results_dir(results_dir.path().to_path_buf())
+            .workspace(results_dir.path().to_path_buf())
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1));
         let agent = tickets.add(

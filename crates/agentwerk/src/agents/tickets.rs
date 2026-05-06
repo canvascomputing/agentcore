@@ -253,7 +253,8 @@ pub struct TicketSystem {
     policies: Mutex<Policies>,
     pub(crate) interrupt_signal: Mutex<Arc<AtomicBool>>,
     pub(crate) stats: Stats,
-    results_dir: Mutex<Option<PathBuf>>,
+    workspace: Mutex<Option<PathBuf>>,
+    tickets_log_lock: Mutex<()>,
 }
 
 impl TicketSystem {
@@ -269,7 +270,8 @@ impl TicketSystem {
             policies: Mutex::new(Policies::default()),
             interrupt_signal: Mutex::new(Arc::new(AtomicBool::new(false))),
             stats: Stats::new(),
-            results_dir: Mutex::new(None),
+            workspace: Mutex::new(None),
+            tickets_log_lock: Mutex::new(()),
         })
     }
 
@@ -330,16 +332,18 @@ impl TicketSystem {
         self
     }
 
-    /// Directory where `WriteResultTool` appends `results.jsonl`. When
-    /// unset, the tool falls back to the calling agent's working
-    /// directory.
-    pub fn results_dir(self: Arc<Self>, dir: impl Into<PathBuf>) -> Arc<Self> {
-        *self.results_dir.lock().unwrap() = Some(dir.into());
+    /// Directory under which the system writes `results.jsonl` and
+    /// `tickets.jsonl`. Memory lives next to them when the caller points
+    /// `Memory::open` at the same directory. When unset, `WriteResultTool`
+    /// falls back to the calling agent's working directory and the ticket
+    /// event log is skipped entirely.
+    pub fn workspace(self: Arc<Self>, dir: impl Into<PathBuf>) -> Arc<Self> {
+        *self.workspace.lock().unwrap() = Some(dir.into());
         self
     }
 
-    pub(crate) fn results_dir_value(&self) -> Option<PathBuf> {
-        self.results_dir.lock().unwrap().clone()
+    pub(crate) fn workspace_value(&self) -> Option<PathBuf> {
+        self.workspace.lock().unwrap().clone()
     }
 
     // ---- ticket-creation API mirrored on Agent ----
@@ -407,6 +411,10 @@ impl TicketSystem {
         };
         let key = ticket.key.clone();
         let labels = ticket.labels.clone();
+        let reporter = ticket.reporter.clone();
+        let assignee = ticket.assignee.clone();
+        let task = ticket.task.clone();
+        let created_at = ticket.created_at;
         store.insert(key.clone(), ticket);
         drop(store);
         TicketStats::record_created(&self.stats);
@@ -414,7 +422,27 @@ impl TicketSystem {
             let slice = self.stats.stats_for_label(l);
             TicketStats::record_created(&*slice);
         }
+        self.append_ticket_event(serde_json::json!({
+            "event": "created",
+            "ts": created_at,
+            "key": key,
+            "reporter": reporter,
+            "labels": labels,
+            "assignee": assignee,
+            "task": task,
+        }));
         key
+    }
+
+    /// Append one JSON line to `<workspace>/tickets.jsonl`. Silently no-ops
+    /// when no workspace is configured. Errors are swallowed: the log is
+    /// observational, not load-bearing for run correctness.
+    pub(crate) fn append_ticket_event(&self, event: serde_json::Value) {
+        let Some(dir) = self.workspace_value() else {
+            return;
+        };
+        let _guard = self.tickets_log_lock.lock().unwrap();
+        let _ = append_ticket_event_to_dir(&dir, &event);
     }
 
     /// Returns a clone of the ticket at `key`, if any.
@@ -444,10 +472,12 @@ impl TicketSystem {
             ticket.status = status;
             let durations = terminal_durations(ticket);
             let labels = ticket.labels.clone();
-            (prev, durations, labels)
+            let assignee = ticket.assignee.clone();
+            (prev, durations, labels, assignee)
         };
         fire_transition_recorder(&self.stats, outcome.0, status, now, outcome.1);
         fire_label_transition(&self.stats, status, outcome.1, &outcome.2);
+        self.log_transition(key, outcome.0, status, now, outcome.1, &outcome.3);
         Ok(())
     }
 
@@ -468,11 +498,51 @@ impl TicketSystem {
             ticket.status = status;
             let durations = terminal_durations(ticket);
             let labels = ticket.labels.clone();
-            (prev, durations, labels)
+            let assignee = ticket.assignee.clone();
+            (prev, durations, labels, assignee)
         };
         fire_transition_recorder(&self.stats, outcome.0, status, now, outcome.1);
         fire_label_transition(&self.stats, status, outcome.1, &outcome.2);
+        self.log_transition(key, outcome.0, status, now, outcome.1, &outcome.3);
         Ok(())
+    }
+
+    /// Append a `started` / `done` / `failed` line to `tickets.jsonl` if
+    /// `prev → next` is observable. No-op when prev == next or when the
+    /// transition is not one we surface.
+    fn log_transition(
+        &self,
+        key: &str,
+        prev: Status,
+        next: Status,
+        ts: u64,
+        (ticket_duration, work_duration): (Duration, Duration),
+        assignee: &Option<String>,
+    ) {
+        if prev == next {
+            return;
+        }
+        if prev == Status::Todo && next == Status::InProgress {
+            self.append_ticket_event(serde_json::json!({
+                "event": "started",
+                "ts": ts,
+                "key": key,
+                "assignee": assignee,
+            }));
+        }
+        match next {
+            Status::Done | Status::Failed => {
+                let event = if next == Status::Done { "done" } else { "failed" };
+                self.append_ticket_event(serde_json::json!({
+                    "event": event,
+                    "ts": ts,
+                    "key": key,
+                    "duration_ms": ticket_duration.as_millis() as u64,
+                    "work_ms": work_duration.as_millis() as u64,
+                }));
+            }
+            _ => {}
+        }
     }
 
     /// Set a ticket's assignee. Used by the loop to pin a Path-B ticket
@@ -847,6 +917,23 @@ fn numeric_id(key: &str) -> u32 {
         .unwrap_or(u32::MAX)
 }
 
+const TICKETS_LOG_FILE: &str = "tickets.jsonl";
+
+fn append_ticket_event_to_dir(
+    dir: &std::path::Path,
+    event: &serde_json::Value,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let mut line = serde_json::to_string(event).map_err(std::io::Error::other)?;
+    line.push('\n');
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(TICKETS_LOG_FILE))?;
+    use std::io::Write as _;
+    file.write_all(line.as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1124,5 +1211,84 @@ mod tests {
         assert_eq!(sys.stats().tickets_done(), 1);
         assert_eq!(sys.stats().stats_for_label("scan").tickets_done(), 0);
         assert_eq!(sys.stats().stats_for_label("scan").tickets_created(), 0);
+    }
+
+    fn read_tickets_log(dir: &std::path::Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(dir.join("tickets.jsonl"))
+            .unwrap()
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn workspace_unset_skips_tickets_log() {
+        let sys = TicketSystem::new();
+        sys.task("hello");
+        sys.update_status("TICKET-1", Status::InProgress).unwrap();
+        sys.update_status("TICKET-1", Status::Done).unwrap();
+        // No workspace, no panic, no file: this asserts the no-op path.
+        assert!(sys.workspace_value().is_none());
+    }
+
+    #[test]
+    fn workspace_emits_created_started_done_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let sys = TicketSystem::new().workspace(dir.path().to_path_buf());
+        sys.task("hello");
+        sys.update_status("TICKET-1", Status::InProgress).unwrap();
+        sys.update_status("TICKET-1", Status::Done).unwrap();
+        let lines = read_tickets_log(dir.path());
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0]["event"], "created");
+        assert_eq!(lines[0]["key"], "TICKET-1");
+        assert_eq!(lines[0]["reporter"], "user");
+        assert_eq!(lines[0]["task"], "hello");
+        assert_eq!(lines[1]["event"], "started");
+        assert_eq!(lines[1]["key"], "TICKET-1");
+        assert_eq!(lines[2]["event"], "done");
+        assert_eq!(lines[2]["key"], "TICKET-1");
+        assert!(lines[2]["duration_ms"].is_u64());
+        assert!(lines[2]["work_ms"].is_u64());
+    }
+
+    #[test]
+    fn workspace_emits_failed_event_on_force_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let sys = TicketSystem::new().workspace(dir.path().to_path_buf());
+        sys.task("hello");
+        sys.force_status("TICKET-1", Status::Failed).unwrap();
+        let lines = read_tickets_log(dir.path());
+        // created + failed (no started since Todo→Failed via force_status)
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["event"], "created");
+        assert_eq!(lines[1]["event"], "failed");
+        assert_eq!(lines[1]["key"], "TICKET-1");
+    }
+
+    #[test]
+    fn workspace_created_event_carries_assignee_when_pinned() {
+        let dir = tempfile::tempdir().unwrap();
+        let sys = TicketSystem::new().workspace(dir.path().to_path_buf());
+        sys.create(Ticket::new("specific").assign_to("alice"));
+        let lines = read_tickets_log(dir.path());
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["event"], "created");
+        assert_eq!(lines[0]["assignee"], "alice");
+    }
+
+    #[test]
+    fn workspace_logs_one_line_per_lifecycle_step_for_multiple_tickets() {
+        let dir = tempfile::tempdir().unwrap();
+        let sys = TicketSystem::new().workspace(dir.path().to_path_buf());
+        sys.task("a").task("b");
+        sys.update_status("TICKET-1", Status::InProgress).unwrap();
+        sys.update_status("TICKET-1", Status::Done).unwrap();
+        sys.update_status("TICKET-2", Status::InProgress).unwrap();
+        sys.update_status("TICKET-2", Status::Failed).unwrap();
+        let lines = read_tickets_log(dir.path());
+        // 2 created + 2 started + 1 done + 1 failed
+        assert_eq!(lines.len(), 6);
     }
 }

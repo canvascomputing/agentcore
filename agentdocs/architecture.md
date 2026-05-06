@@ -34,7 +34,8 @@ The invariants that shape how code fits together. Layout says where code lives; 
 
 - `Status` transitions go through tickets-side helpers; the agent never writes status directly. `Failed` is reserved for system-driven outcomes (schema-retry trip, policy violations).
 - `task_schema*` attaches a `Schema` to the ticket; the tool validates the result and the loop applies `max_schema_retries` on mismatch.
-- A successful call appends one NDJSON record `{agent, ticket, result}` to `<results_dir>/results.jsonl` (configured on `TicketSystem`; falls back to the agent's working directory) and attaches the same `ResultRecord` to the ticket. The record is surfaced through `Ticket::result()`; `run_dry` returns its serialized form for the most recent `Done` ticket.
+- A successful call appends one NDJSON record `{agent, ticket, result}` to `<workspace>/results.jsonl` (configured via `TicketSystem::workspace(dir)`; falls back to the agent's working directory) and attaches the same `ResultRecord` to the ticket. The record is surfaced through `Ticket::result()`; `run_dry` returns its serialized form for the most recent `Done` ticket.
+- When a workspace is set, the system also appends one JSON line to `<workspace>/tickets.jsonl` per lifecycle event (`created`, `started`, `done`, `failed`). The log is observational: errors are swallowed and a `None` workspace skips writes entirely. The result payload stays in `results.jsonl`; `tickets.jsonl` carries only the transition.
 
 ## Memory is opt-in and shareable across agents
 
@@ -42,9 +43,9 @@ The invariants that shape how code fits together. Layout says where code lives; 
 
 Two layers of state exist. The intra-ticket message vector inside `process_ticket` is always present; it carries a multi-step tool turn through and is dropped when the ticket reaches a terminal status. `Agent::memory(&store)` adds a separate cross-ticket layer: a `Memory` rooted at a caller-supplied directory, surfaced to the model through `MemoryTool` and rendered into the system prompt under `## Memory`.
 
-- The store is constructed via `Memory::open(memory_dir)` and passed to one or more agents through `Agent::memory(&store)`. Two agents bound to the same `Arc<Memory>` share `memory.md`; two agents bound to different stores see independent memory. The pattern mirrors `Agent::ticket_system(&Arc<TicketSystem>)`.
+- The store is constructed via `Memory::open(memory_dir)` and passed to one or more agents through `Agent::memory(&store)`. Two agents bound to the same `Arc<Memory>` share `memory.jsonl` (one entry per line: `{"content": "...", "added_at": <ms>}`); two agents bound to different stores see independent memory. The pattern mirrors `Agent::ticket_system(&Arc<TicketSystem>)`. Pointing `Memory::open` at the same directory as `TicketSystem::workspace` co-locates `memory.jsonl` with `results.jsonl` and `tickets.jsonl`.
 - The loop reads `Memory::entries()` once at the top of `process_ticket`, concatenates them, and feeds the result to `Agent::system_prompt(memory: Option<&str>)`. The system prompt stays byte-stable across every turn of the ticket so the provider's prefix cache survives mid-ticket memory writes; cross-ticket and cross-agent writes become visible at the top of the next ticket.
-- Memory is purely model-driven. The model calls `memory_tool` with `add` / `replace` / `remove`; the tool description carries the policy (work-feedback triggers, utility-ranked priority, do NOT save task progress / completed-work logs / TODOs). A hard char limit (default 2200) rejects writes that would push the file past the cap and tells the model to consolidate first. Callers that want to drive their own consolidation outside the model loop call `Memory::rewrite(new_entries)` directly.
+- Memory is purely model-driven. The model calls `memory_tool` with `add` / `replace` / `remove`; the tool description carries the policy (work-feedback triggers, utility-ranked priority, do NOT save task progress / completed-work logs / TODOs). A hard char limit (default 2200) rejects writes that would push the rendered prompt section past the cap and tells the model to consolidate first. Callers that want to drive their own consolidation outside the model loop call `Memory::rewrite(new_entries)` directly.
 
 ## One observer, one error path
 

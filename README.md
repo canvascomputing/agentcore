@@ -77,6 +77,7 @@ make use_case name=<name>    # run one
 
 - [Providers](#providers): LLM backends agents send requests to.
 - [Agents](#agents): Workers that pick up tickets and produce results.
+- [Prompting](#prompting): How role, context, and task shape the model's input.
 - [Ticket Systems](#ticket-systems): Shared queues that route tickets to agents.
 - [Tools](#tools): Capabilities agents call to take action.
 - [Memory](#memory): Durable facts the model curates across tickets.
@@ -138,28 +139,11 @@ Configure an agent: identity, provider, prompt, tools, events, and memory.
 | | `working_dir(p)` | Set the directory tools resolve paths against. |
 | **Events** | `event_handler(fn)` | Set a custom event observer. |
 | | `silent()` | Drop every event instead of logging it. |
-| **Memory** | `memory(&store)` | Bind a shared `Memory` so facts persist across tickets and restarts. |
-
-`WriteResultTool` is auto-registered on every agent. Memory is off by default. Bind a store with `.memory(&store)` to enable it.
-
-##### Context
-
-Each ticket starts with a context block listing working directory, platform, OS version, date, and how much of each configured policy limit is left.
-
-```markdown
-- Working directory: /Users/me/code/repo
-- Platform: darwin
-- OS version: 25.1.0
-- Date: 2026-05-06
-- Steps remaining: 8
-- Input tokens remaining: 95000
-- Output tokens remaining: 12000
-- Time remaining: 240s
-```
+| **Memory** | `memory(&store)` | Create a `Memory` so facts persist across tickets and restarts. |
 
 #### Run
 
-Start a run with `run`, queue tasks while it's in flight, finish with `run_dry` and read the results.
+Start an agent with `run`, queue tasks while it's working, finish with `run_dry` and read the results.
 
 ```rust
 let agent = Agent::new()
@@ -173,7 +157,7 @@ agent.task_labeled("Compute 3+3.", "math");
 let results = agent.run_dry().await;
 ```
 
-`agent` here is a `Running`: `task` and `task_labeled` reach the bound ticket system through `Deref`. `run_dry` waits for the queue to drain, then stops and joins, and returns every finished ticket's `TicketResult`. `stop` and `join` are also available for abrupt cancellation.
+`run()` starts the agent in the background. While it is running, `task` and `task_labeled` queue more work. `run_dry` waits for the queue to drain, stops the agent, and returns every finished ticket's `TicketResult`. `stop` and `join` are also available for abrupt cancellation.
 
 Methods called after the agent is built:
 
@@ -190,6 +174,48 @@ Methods called after the agent is built:
 | | `get_labels()` | Return the configured label scope. |
 | | `handles(labels)` | Return `true` when the label scope overlaps. |
 
+
+### Prompting
+
+A prompt has three main parts: `role`, `context`, and `task`, see the [prompting framework](https://github.com/canvascomputing/prompting).
+
+#### Role
+
+```rust
+let agent = Agent::new().role("You are an arithmetic worker. Show your work.");
+```
+
+The role is the agent's identity and operating rules. It is set once at build time and reused on every ticket the agent handles.
+
+#### Context
+
+```rust
+let agent = Agent::new().context("- Repo: example/widgets\n- Branch: main");
+```
+
+The context is the first user message of every ticket. When `context(text)` is not set, agentwerk generates a default block:
+
+```markdown
+- Working directory: /Users/me/code/repo
+- Platform: darwin
+- OS version: 25.1.0
+- Date: 2026-05-06
+- Steps remaining: 8
+- Input tokens remaining: 95000
+- Output tokens remaining: 12000
+- Time remaining: 240s
+```
+
+Override when the agent needs runtime facts the default block does not carry, such as a target file or a session identifier.
+
+#### Task
+
+```rust
+agent.task("Compute 2+2.");
+agent.task(serde_json::json!({ "file": "Cargo.toml", "find": "version" }));
+```
+
+The task is the per-ticket request. `value` may be a string or any serde-serializable type; structured tasks are pretty-printed as JSON. Use `task_labeled` for label routing, or `task_schema` / `task_schema_labeled` to attach a `Schema` the result must validate against.
 
 ### Ticket Systems
 
@@ -212,7 +238,7 @@ let result = tickets.run_dry().await;
 | **Construct** | `TicketSystem::new()` | Create a new ticket system that agents can share. |
 | | `add(agent)` | Register an agent with the system. |
 | | `interrupt_signal(signal)` | Override the cancel signal shared across agents. |
-| | `results_dir(dir)` | Set the directory where `results.jsonl` is appended. |
+| | `workspace(dir)` | Set the workspace directory under which `results.jsonl` and `tickets.jsonl` are written. |
 | **Tasks** | `task(value)` | Create a task. |
 | | `task_labeled(value, label)` | Create a task tagged with `label` for label-scoped routing. |
 | | `task_schema(value, schema)` | Create a task whose result must validate against `schema`. |
@@ -228,6 +254,16 @@ let result = tickets.run_dry().await;
 | | `stats()` | Return the run counters and timings. |
 | **Status** | `update_status(key, status)` | Transition a ticket through the state machine. |
 | | `force_status(key, status)` | Force a ticket to `status`, bypassing the state machine. |
+
+#### Workspace
+
+When `workspace(dir)` is set, the system also appends one observational JSON line to `<dir>/tickets.jsonl` per lifecycle event:
+
+- `{"event":"created","ts":<ms>,"key":"TICKET-N","reporter":...,"labels":[...],"assignee":...|null,"task":<value>}`
+- `{"event":"started","ts":<ms>,"key":"TICKET-N","assignee":...}`
+- `{"event":"done"|"failed","ts":<ms>,"key":"TICKET-N","duration_ms":<u64>,"work_ms":<u64>}`
+
+The actual result payload still lives in `results.jsonl`; the `done` line is a transition marker. Without a workspace, the log is skipped.
 
 #### Policies
 
@@ -295,7 +331,7 @@ let greet = Tool::new("greet", "Say hello")
 | **Memory** | `MemoryTool` | Adds, replaces, or removes entries in the agent's memory. |
 | **Discovery** | `ToolSearchTool` | Discovers tools registered with `Tool::defer(true)`. |
 
-`BashTool::unrestricted()` allows any command. `WriteResultTool` validates against the ticket's `schema`, appends an NDJSON line to `<results_dir>/results.jsonl`, and attaches the `TicketResult` to the ticket. `MemoryTool` is auto-registered when `Agent::memory(&store)` is set.
+`BashTool::unrestricted()` allows any command. `WriteResultTool` validates against the ticket's `schema`, appends an NDJSON line to `<workspace>/results.jsonl`, and attaches the `TicketResult` to the ticket. `MemoryTool` is auto-registered when `Agent::memory(&store)` is set.
 
 ### Memory
 
@@ -304,7 +340,7 @@ A `Memory` lets the model carry facts from one ticket to the next, even across p
 ```rust
 use agentwerk::{Agent, Memory};
 
-let memory = Memory::open("./.agentwerk-memory")?;
+let memory = Memory::open("./.agentwerk")?;
 
 let alice = Agent::new()
     .name("alice")
@@ -319,7 +355,7 @@ let bob = Agent::new()
     .memory(&memory);
 ```
 
-Both agents read and write the same `memory.md`. Bind two agents to two different stores for independent memory.
+Both agents read and write the same `memory.jsonl` (one entry per line: `{"content": "...", "added_at": <ms>}`). Bind two agents to two different stores for independent memory. Pointing `Memory::open` at the same directory as `TicketSystem::workspace` co-locates `memory.jsonl`, `results.jsonl`, and `tickets.jsonl`.
 
 Methods on `Memory`:
 
@@ -332,7 +368,7 @@ Methods on `Memory`:
 | | `remove(old_text)` | Drop the unique entry containing `old_text`. |
 | | `rewrite(entries)` | Replace every entry in a single call. |
 
-`add` rejects empty content, duplicates, and content that would push the file past the size cap.
+`add` rejects empty content, duplicates, and content that would push the rendered prompt section past the size cap.
 
 ### Schemas
 
