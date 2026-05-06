@@ -108,22 +108,18 @@ See [Environment](#environment) for the variable names.
 An `Agent` is a single worker that turns tasks into results. It calls the provider in a loop, invokes tools as the model requests them, and writes a result back when the task is finished.
 
 ```rust
-use agentwerk::Agent;
-
 let agent = Agent::new()
     .name("worker_0")
     .provider(provider)
     .model(&model)
     .role("You are an arithmetic worker.")
     .label("worker")
-    .tool(BashTool::new("ls", "ls *"));
-
-agent.task("Compute 2+2.");
-
-let answer = agent.run().await;
+    .task("Compute 2+2.");
 ```
 
-Builder methods (each returns the `Agent` for chaining):
+#### Build
+
+Configure an agent: identity, provider, prompt, tools, events, and memory.
 
 | | Method | Description |
 |-|--------|-------------|
@@ -133,7 +129,7 @@ Builder methods (each returns the `Agent` for chaining):
 | **Provider** | `provider(p)` | Set the LLM provider. |
 | | `model(m)` | Set the model the provider runs. |
 | **Prompt** | `role(text)` | Set the role prompt. |
-| | `context(text)` | Prepend text to the first message of every ticket. |
+| | `context(text)` | Replace the default context block with custom markdown. |
 | **Tools** | `tool(t)` / `tools([..])` | Register a tool the agent may call. |
 | | `working_dir(p)` | Set the directory tools resolve paths against. |
 | **Events** | `event_handler(fn)` | Set a custom event observer. |
@@ -141,6 +137,43 @@ Builder methods (each returns the `Agent` for chaining):
 | **Memory** | `memory(&store)` | Bind a shared `Memory` so facts persist across tickets and restarts. |
 
 `WriteResultTool` is auto-registered on every agent. Memory is off by default. Bind a store with `.memory(&store)` to enable it.
+
+##### Context
+
+Each ticket starts with a context block listing working directory, platform, OS version, date, and how much of each configured policy limit is left.
+
+```markdown
+- Working directory: /Users/me/code/repo
+- Platform: darwin
+- OS version: 25.1.0
+- Date: 2026-05-06
+- Steps remaining: 8
+- Input tokens remaining: 95000
+- Output tokens remaining: 12000
+- Time remaining: 240s
+```
+
+#### Run
+
+Enqueue tasks, run agents, and read the results.
+
+```rust
+let agent = Agent::new()
+    .provider(provider)
+    .model(&model);
+
+agent.task("Compute 2+2.");
+
+let runner = tokio::spawn({
+    let agent = agent.clone();
+    async move { agent.run().await }
+});
+
+agent.task_labeled("Compute 3+3.", "math");
+
+let last = runner.await.unwrap();
+let all = agent.results();
+```
 
 Methods called after the agent is built:
 
@@ -157,6 +190,7 @@ Methods called after the agent is built:
 | **Inspect** | `get_name()` | Return the configured name. |
 | | `get_labels()` | Return the configured label scope. |
 | | `handles(labels)` | Return `true` when the label scope overlaps. |
+
 
 ### Ticket Systems
 
@@ -397,6 +431,7 @@ println!("[scan] {} done, {} tokens", scan.tickets_done(), scan.input_tokens());
 | | Method | Description |
 |-|--------|-------------|
 | **Run** | `run_duration()` | Return the elapsed time from first ticket start to run end, or `None` while the run is active. |
+| | `elapsed()` | Return the live elapsed time since the run started, or `None` until the first ticket starts. |
 | | `total_work_duration()` | Return the sum of every finished ticket's start-to-end span. |
 | **Tickets** | `tickets_created()` | Return the count of tickets created. |
 | | `tickets_done()` | Return the count of tickets that finished successfully. |

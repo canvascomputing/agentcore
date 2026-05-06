@@ -226,8 +226,9 @@ async fn process_ticket(
         .memory_handle()
         .map(|s| s.entries().join("\n\n"));
 
+    let policies = ticket_system.policies();
     let mut messages: Vec<Message> = Vec::new();
-    if let Some(ctx) = agent.context_message() {
+    if let Some(ctx) = agent.context_message(&policies, &ticket_system.stats) {
         messages.push(Message::user(ctx));
     }
     messages.push(task_msg);
@@ -235,7 +236,6 @@ async fn process_ticket(
         key: key.to_string(),
     });
 
-    let policies = ticket_system.policies();
     let max_request_tokens = policies.max_request_tokens;
     let max_schema_retries = policies.max_schema_retries.unwrap_or(u32::MAX);
     // Consecutive schema-validation failures since the last successful

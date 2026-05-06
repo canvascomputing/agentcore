@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Recorder protocol for the agent loop. Each agent holds an
 /// `Arc<dyn LoopStats + Send + Sync>` and reports loop events through
@@ -146,6 +146,21 @@ impl Stats {
         } else {
             Some(Duration::from_millis(f - s))
         }
+    }
+
+    /// Live elapsed duration since the first `record_started` call.
+    /// `None` until the run has started; counterpart to `run_duration`,
+    /// which only resolves after `mark_finished`.
+    pub fn elapsed(&self) -> Option<Duration> {
+        let s = self.started_at.load(Ordering::Relaxed);
+        if s == 0 {
+            return None;
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()?
+            .as_millis() as u64;
+        Some(Duration::from_millis(now.saturating_sub(s)))
     }
 
     /// `tickets_done / (tickets_done + tickets_failed)`. `None` when

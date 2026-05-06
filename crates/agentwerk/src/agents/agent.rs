@@ -19,7 +19,9 @@ use crate::tools::{MemoryTool, ToolLike, ToolRegistry, WriteResultTool};
 
 use super::memory::Memory;
 
+use super::policy::Policies;
 use super::r#loop::Runnable;
+use super::stats::Stats;
 use super::tickets::{ResultRecord, Ticket, TicketSystem};
 
 static AGENT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -271,11 +273,22 @@ impl Agent {
 
     /// Render the context block pushed as the first user message in the
     /// loop. Falls back to [`default_context`] (working directory, platform,
-    /// OS version, date) when [`Self::context`] was not set.
-    pub(super) fn context_message(&self) -> Option<String> {
+    /// OS version, date, plus a `… remaining` line for each configured
+    /// policy budget) when [`Self::context`] was not set. A custom context
+    /// is left byte-exact: `policies` and `stats` are ignored on that
+    /// branch.
+    pub(super) fn context_message(
+        &self,
+        policies: &Policies,
+        stats: &Stats,
+    ) -> Option<String> {
         match &self.context {
             Some(body) => Some(Section::context(self.interpolate(body)).render()),
-            None => Some(default_context(&self.working_dir_or_default())),
+            None => Some(default_context(
+                &self.working_dir_or_default(),
+                policies,
+                stats,
+            )),
         }
     }
 
@@ -387,6 +400,7 @@ impl Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::stats::LoopStats;
 
     #[test]
     fn handles_default_scope_only_picks_unlabeled_tickets() {
@@ -422,7 +436,11 @@ mod tests {
     #[test]
     fn context_message_falls_back_to_default_when_unset() {
         let agent = Agent::new().role("R");
-        let rendered = agent.context_message().expect("default context");
+        let policies = Policies::default();
+        let stats = Stats::new();
+        let rendered = agent
+            .context_message(&policies, &stats)
+            .expect("default context");
         assert!(rendered.starts_with("## Context\n\n"));
         assert!(rendered.contains("- Working directory: "));
         assert!(rendered.contains("- Platform: "));
@@ -432,9 +450,54 @@ mod tests {
     #[test]
     fn context_message_renders_h2_heading_when_set() {
         let agent = Agent::new().context("- Working directory: /tmp");
+        let policies = Policies::default();
+        let stats = Stats::new();
         assert_eq!(
-            agent.context_message().as_deref(),
+            agent.context_message(&policies, &stats).as_deref(),
             Some("## Context\n\n- Working directory: /tmp"),
+        );
+    }
+
+    #[test]
+    fn context_message_appends_runtime_lines_when_policy_budgets_are_set() {
+        let agent = Agent::new().working_dir("/tmp/check");
+        let policies = Policies {
+            max_steps: Some(3),
+            max_input_tokens: Some(1_000),
+            ..Policies::default()
+        };
+        let stats = Stats::new();
+        stats.record_step();
+        stats.record_request(250, 0);
+
+        let rendered = agent
+            .context_message(&policies, &stats)
+            .expect("default context");
+
+        let expected = format!(
+            "{static_prefix}\n\
+             - Steps remaining: 2\n\
+             - Input tokens remaining: 750",
+            static_prefix =
+                default_context(&PathBuf::from("/tmp/check"), &Policies::default(), &Stats::new()),
+        );
+        assert_eq!(rendered, expected);
+    }
+
+    #[test]
+    fn context_message_ignores_runtime_args_for_custom_context() {
+        // Custom contexts stay byte-exact regardless of policy/stats —
+        // the caller opted out of the default scaffolding entirely.
+        let agent = Agent::new().context("- Note: custom");
+        let policies = Policies {
+            max_steps: Some(3),
+            ..Policies::default()
+        };
+        let stats = Stats::new();
+        stats.record_step();
+        assert_eq!(
+            agent.context_message(&policies, &stats).as_deref(),
+            Some("## Context\n\n- Note: custom"),
         );
     }
 
@@ -484,8 +547,10 @@ mod tests {
         let agent = Agent::new()
             .context("- Topic: {topic}")
             .template_variable("topic", "Rust generics");
+        let policies = Policies::default();
+        let stats = Stats::new();
         assert_eq!(
-            agent.context_message().as_deref(),
+            agent.context_message(&policies, &stats).as_deref(),
             Some("## Context\n\n- Topic: Rust generics"),
         );
     }
@@ -495,9 +560,11 @@ mod tests {
         let agent = Agent::new()
             .role("Hi {missing}.")
             .context("- Note: {also_missing}");
+        let policies = Policies::default();
+        let stats = Stats::new();
         assert_eq!(agent.system_prompt(None), "Hi {missing}.");
         assert_eq!(
-            agent.context_message().as_deref(),
+            agent.context_message(&policies, &stats).as_deref(),
             Some("## Context\n\n- Note: {also_missing}"),
         );
     }
