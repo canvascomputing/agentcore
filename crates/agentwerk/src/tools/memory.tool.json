@@ -22,10 +22,10 @@
     "IMPORTANT: the memory contents the model sees are captured at the top of each ticket. Mid-ticket writes show up in the next ticket, not this one."
   ],
   "output": [
-    "Success: `entry added`, `entry replaced`, or `entry removed`.",
-    "Input error `old_text matched zero entries`: list the entries from your `## Memory` block and pick a longer unique substring.",
-    "Input error `old_text matched N entries`: pick a substring unique to the entry you mean.",
-    "Input error `content exceeded the char limit`: shorten the new entry, or `remove` a lower-priority existing entry first, then retry."
+    "Success: `entry added (N entries, P% -- U/L chars)` with usage stats after every write. Use the percentage to judge remaining capacity.",
+    "Zero-match error: lists all current entries (truncated to 80 chars each) so you can pick a correct `old_text` substring on the next call.",
+    "Multi-match error: lists the matched entries so you can pick a longer unique substring.",
+    "Char-limit error: shorten the new entry, or `remove` a lower-priority existing entry first, then retry."
   ],
   "read_only": false,
   "input_schema": {

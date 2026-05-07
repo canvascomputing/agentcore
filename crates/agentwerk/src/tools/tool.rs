@@ -227,6 +227,7 @@ impl ToolRegistry {
     }
 
     pub(crate) fn get(&self, name: &str) -> Option<Arc<dyn ToolLike>> {
+        let name = name.trim();
         self.tools.iter().find(|t| t.name() == name).cloned()
     }
 

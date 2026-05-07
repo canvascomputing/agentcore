@@ -27,6 +27,16 @@ struct MemoryRecord {
     added_at: u64,
 }
 
+/// Returned by `add`, `replace`, and `remove` on success so the tool layer
+/// can show the model how much of the char budget is consumed.
+#[derive(Debug)]
+pub struct MemoryOutcome {
+    pub message: &'static str,
+    pub chars_used: usize,
+    pub char_limit: usize,
+    pub entries: usize,
+}
+
 /// File-backed memory shared by every `Agent` bound to it. Mirrors `TicketSystem`
 /// in shape: the caller constructs one `Arc<Memory>` and binds it to one or
 /// more agents through `Agent::memory(&store)`. Two agents pointed at the same
@@ -73,7 +83,7 @@ impl Memory {
     /// Append a new entry. Rejects empty content, verbatim duplicates, and
     /// content that would push the rendered prompt section past the char
     /// limit.
-    pub fn add(&self, content: &str) -> Result<(), String> {
+    pub fn add(&self, content: &str) -> Result<MemoryOutcome, String> {
         let _w = self.write_lock.lock().unwrap();
         let mut entries = self.entries.lock().unwrap().clone();
         let content = content.trim();
@@ -100,13 +110,20 @@ impl Memory {
         }
         write_entries_to_disk(&self.memory_dir.join(MEMORY_FILE), &entries)
             .map_err(|e| format!("Failed to persist memory: {e}"))?;
+        let chars_used = rendered.len();
+        let entry_count = entries.len();
         *self.entries.lock().unwrap() = entries;
-        Ok(())
+        Ok(MemoryOutcome {
+            message: "entry added",
+            chars_used,
+            char_limit: self.char_limit,
+            entries: entry_count,
+        })
     }
 
     /// Replace the unique entry containing `old_text` with `content`. Stamps
     /// `added_at` with the current time on the replacement.
-    pub fn replace(&self, old_text: &str, content: &str) -> Result<(), String> {
+    pub fn replace(&self, old_text: &str, content: &str) -> Result<MemoryOutcome, String> {
         let _w = self.write_lock.lock().unwrap();
         let mut entries = self.entries.lock().unwrap().clone();
         let idx = unique_match(&entries, old_text)?;
@@ -129,20 +146,34 @@ impl Memory {
         }
         write_entries_to_disk(&self.memory_dir.join(MEMORY_FILE), &entries)
             .map_err(|e| format!("Failed to persist memory: {e}"))?;
+        let chars_used = rendered.len();
+        let entry_count = entries.len();
         *self.entries.lock().unwrap() = entries;
-        Ok(())
+        Ok(MemoryOutcome {
+            message: "entry replaced",
+            chars_used,
+            char_limit: self.char_limit,
+            entries: entry_count,
+        })
     }
 
     /// Drop the unique entry containing `old_text`.
-    pub fn remove(&self, old_text: &str) -> Result<(), String> {
+    pub fn remove(&self, old_text: &str) -> Result<MemoryOutcome, String> {
         let _w = self.write_lock.lock().unwrap();
         let mut entries = self.entries.lock().unwrap().clone();
         let idx = unique_match(&entries, old_text)?;
         entries.remove(idx);
         write_entries_to_disk(&self.memory_dir.join(MEMORY_FILE), &entries)
             .map_err(|e| format!("Failed to persist memory: {e}"))?;
+        let chars_used = render_for_prompt(&entries).len();
+        let entry_count = entries.len();
         *self.entries.lock().unwrap() = entries;
-        Ok(())
+        Ok(MemoryOutcome {
+            message: "entry removed",
+            chars_used,
+            char_limit: self.char_limit,
+            entries: entry_count,
+        })
     }
 
     /// Replace every entry with `new_entries`. Used by callers that drive
@@ -216,13 +247,57 @@ fn unique_match(entries: &[MemoryRecord], needle: &str) -> Result<usize, String>
         .collect();
     match hits.len() {
         0 => Err(format!(
-            "No memory entry contains `{needle}`. List the entries first or pick a different substring."
+            "No memory entry contains `{needle}`. Current entries:\n{}",
+            format_entry_listing(entries),
         )),
         1 => Ok(hits[0]),
-        n => Err(format!(
-            "`{needle}` matches {n} memory entries. Pick a longer unique substring."
-        )),
+        n => {
+            // When every matched entry has identical content, operate on the
+            // first one instead of rejecting — the model's substring is
+            // unambiguous even though it hits more than once.
+            let all_identical = hits
+                .iter()
+                .all(|&i| entries[i].content == entries[hits[0]].content);
+            if all_identical {
+                return Ok(hits[0]);
+            }
+            let matched: Vec<&MemoryRecord> = hits.iter().map(|&i| &entries[i]).collect();
+            Err(format!(
+                "`{needle}` matches {n} entries. Pick a longer unique substring.\n\
+                 Matched entries:\n{}",
+                format_matched_listing(&matched),
+            ))
+        }
     }
+}
+
+fn truncate_preview(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max).collect();
+        format!("{truncated}...")
+    }
+}
+
+fn format_entry_listing(entries: &[MemoryRecord]) -> String {
+    if entries.is_empty() {
+        return "  (no entries)".to_string();
+    }
+    entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| format!("  [{}] {}", i + 1, truncate_preview(&e.content, 80)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_matched_listing(entries: &[&MemoryRecord]) -> String {
+    entries
+        .iter()
+        .map(|e| format!("  - {}", truncate_preview(&e.content, 80)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn render_for_prompt(entries: &[MemoryRecord]) -> String {
@@ -534,5 +609,141 @@ mod tests {
             .find(|r| r["content"] == "persisted")
             .unwrap();
         assert_eq!(persisted["added_at"].as_u64().unwrap(), 1234567890);
+    }
+
+    #[test]
+    fn unique_match_zero_hits_lists_entries() {
+        let entries = vec![
+            MemoryRecord {
+                content: "reviewed requirements doc".into(),
+                added_at: 1,
+            },
+            MemoryRecord {
+                content: "auth uses JWT tokens".into(),
+                added_at: 2,
+            },
+        ];
+        let err = unique_match(&entries, "nonexistent").unwrap_err();
+        assert!(err.contains("No memory entry contains"), "{err}");
+        assert!(err.contains("reviewed requirements doc"), "{err}");
+        assert!(err.contains("auth uses JWT tokens"), "{err}");
+    }
+
+    #[test]
+    fn unique_match_zero_hits_empty_store_says_no_entries() {
+        let err = unique_match(&[], "anything").unwrap_err();
+        assert!(err.contains("(no entries)"), "{err}");
+    }
+
+    #[test]
+    fn unique_match_multi_hit_lists_matched() {
+        let entries = vec![
+            MemoryRecord {
+                content: "alpha note about scanning".into(),
+                added_at: 1,
+            },
+            MemoryRecord {
+                content: "alpha rule for detection".into(),
+                added_at: 2,
+            },
+            MemoryRecord {
+                content: "beta unrelated entry".into(),
+                added_at: 3,
+            },
+        ];
+        let err = unique_match(&entries, "alpha").unwrap_err();
+        assert!(err.contains("matches 2"), "{err}");
+        assert!(err.contains("alpha note about scanning"), "{err}");
+        assert!(err.contains("alpha rule for detection"), "{err}");
+        // The unmatched entry should not appear
+        assert!(!err.contains("beta unrelated"), "{err}");
+    }
+
+    #[test]
+    fn replace_succeeds_when_all_matches_are_identical() {
+        // Test unique_match directly with duplicate records (open dedupes on
+        // load so we cannot reproduce duplicates through the public API).
+        let entries = vec![
+            MemoryRecord {
+                content: "duplicate entry".into(),
+                added_at: 1,
+            },
+            MemoryRecord {
+                content: "duplicate entry".into(),
+                added_at: 2,
+            },
+        ];
+        let idx = unique_match(&entries, "duplicate").unwrap();
+        assert_eq!(idx, 0);
+    }
+
+    #[test]
+    fn remove_succeeds_when_all_matches_are_identical() {
+        let entries = vec![
+            MemoryRecord {
+                content: "same content".into(),
+                added_at: 1,
+            },
+            MemoryRecord {
+                content: "same content".into(),
+                added_at: 2,
+            },
+        ];
+        let idx = unique_match(&entries, "same content").unwrap();
+        assert_eq!(idx, 0);
+    }
+
+    #[test]
+    fn add_returns_outcome_with_usage() {
+        let (store, _dir) = fresh_store();
+        let out = store.add("hello world").unwrap();
+        assert_eq!(out.message, "entry added");
+        assert_eq!(out.chars_used, "hello world".len());
+        assert_eq!(out.char_limit, DEFAULT_CHAR_LIMIT);
+        assert_eq!(out.entries, 1);
+    }
+
+    #[test]
+    fn replace_returns_outcome_with_usage() {
+        let (store, _dir) = fresh_store();
+        store.add("old value").unwrap();
+        let out = store.replace("old value", "new value").unwrap();
+        assert_eq!(out.message, "entry replaced");
+        assert_eq!(out.chars_used, "new value".len());
+        assert_eq!(out.char_limit, DEFAULT_CHAR_LIMIT);
+        assert_eq!(out.entries, 1);
+    }
+
+    #[test]
+    fn remove_returns_outcome_with_usage() {
+        let (store, _dir) = fresh_store();
+        store.add("one").unwrap();
+        store.add("two").unwrap();
+        let out = store.remove("one").unwrap();
+        assert_eq!(out.message, "entry removed");
+        assert_eq!(out.chars_used, "two".len());
+        assert_eq!(out.char_limit, DEFAULT_CHAR_LIMIT);
+        assert_eq!(out.entries, 1);
+    }
+
+    #[test]
+    fn truncate_preview_short_string_unchanged() {
+        assert_eq!(truncate_preview("short", 80), "short");
+    }
+
+    #[test]
+    fn truncate_preview_long_string_truncated() {
+        let long = "a".repeat(100);
+        let preview = truncate_preview(&long, 80);
+        assert_eq!(preview.chars().count(), 83); // 80 + "..."
+        assert!(preview.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_preview_multibyte_chars() {
+        let s = "ä".repeat(100); // 2-byte chars
+        let preview = truncate_preview(&s, 80);
+        assert!(preview.ends_with("..."));
+        assert_eq!(preview.chars().count(), 83);
     }
 }

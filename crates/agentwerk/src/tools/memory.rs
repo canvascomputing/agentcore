@@ -66,11 +66,11 @@ impl ToolLike for MemoryTool {
 
             let outcome = match action {
                 "add" => match content {
-                    Some(c) => self.store.add(c).map(|_| "entry added"),
+                    Some(c) => self.store.add(c),
                     None => return Ok(ToolResult::error("Missing required parameter: content")),
                 },
                 "replace" => match (old_text, content) {
-                    (Some(o), Some(c)) => self.store.replace(o, c).map(|_| "entry replaced"),
+                    (Some(o), Some(c)) => self.store.replace(o, c),
                     _ => {
                         return Ok(ToolResult::error(
                             "Missing required parameter: replace needs both `old_text` and `content`",
@@ -78,7 +78,7 @@ impl ToolLike for MemoryTool {
                     }
                 },
                 "remove" => match old_text {
-                    Some(o) => self.store.remove(o).map(|_| "entry removed"),
+                    Some(o) => self.store.remove(o),
                     None => return Ok(ToolResult::error("Missing required parameter: old_text")),
                 },
                 "" => return Ok(ToolResult::error("Missing required parameter: action")),
@@ -86,7 +86,17 @@ impl ToolLike for MemoryTool {
             };
 
             match outcome {
-                Ok(msg) => Ok(ToolResult::success(msg)),
+                Ok(out) => {
+                    let pct = if out.char_limit > 0 {
+                        (out.chars_used * 100) / out.char_limit
+                    } else {
+                        0
+                    };
+                    Ok(ToolResult::success(format!(
+                        "{} ({} entries, {}% -- {}/{} chars)",
+                        out.message, out.entries, pct, out.chars_used, out.char_limit,
+                    )))
+                }
                 Err(why) => Ok(ToolResult::error(why)),
             }
         })
