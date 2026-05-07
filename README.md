@@ -16,7 +16,7 @@
   <a href="#development">Development</a>
 </p>
 
-<p align="center">A Rust crate for agentic workflows: a ticket-driven execution loop, agent orchestration, built-in tools, durable memory, schema-validated results, retry and token policies, and multi-provider support.</p>
+<p align="center">agentwerk builds agentic workflows around a ticket-driven execution loop, with built-in tools, memory, schema validation, retries, budget policies, and multi-provider support.</p>
 
 <p align="center"><em>agentwerk pairs "agent" with the German "Werk", a word for both factory and artwork: machinery for building agentic systems.</em></p>
 
@@ -36,22 +36,18 @@ use agentwerk::tools::ReadFileTool;
 use agentwerk::Agent;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
     let results = Agent::new()
-        .provider(provider_from_env()?)
-        .model(&model_from_env()?)
-        .role("Answer questions about this repository.")
+        .provider(provider_from_env().unwrap())
+        .model(&model_from_env().unwrap())
+        .role("You are a Rust developer who reads source files to answer questions.")
         .tool(ReadFileTool)
         .task("What does Cargo.toml describe?")
         .run_dry()
         .await;
 
-    let answer = results
-        .last()
-        .map(|r| r.result_string())
-        .unwrap_or_default();
+    let answer = results.last().unwrap().result_string();
     println!("{answer}");
-    Ok(())
 }
 ```
 
@@ -61,7 +57,7 @@ Example applications living under `crates/use-cases/`:
 
 - [Terminal REPL](crates/use-cases/src/terminal_repl/): minimal interactive chat
 - [Divide and Conquer](crates/use-cases/src/divide_and_conquer/): arithmetic problem shared across agents
-- [Deep Research](crates/use-cases/src/deep_research_v2/): agentic web research pipeline (requires `BRAVE_API_KEY`)
+- [Deep Research](crates/use-cases/src/deep_research_v2/): deep research pipeline (requires `BRAVE_API_KEY`)
 - [Malware Scanner](crates/use-cases/src/malware_scanner/): identify indicators of compromise in a software package
 
 Run one with:
@@ -101,12 +97,10 @@ let provider = AnthropicProvider::new(key)
     .base_url("http://localhost:8000")
     .timeout(Duration::from_secs(120));
 
-// Pick a provider and model from environment variables.
+// Pick a provider and model from environment variables, see #Environment
 let provider = provider_from_env()?;
 let model = model_from_env()?;
 ```
-
-See [Environment](#environment) for the variable names.
 
 ### Agents
 
@@ -157,7 +151,7 @@ agent.task_labeled("Compute 3+3.", "math");
 let results = agent.run_dry().await;
 ```
 
-`run()` starts the agent in the background. While it is running, `task` and `task_labeled` queue more work. `run_dry` waits for the queue to drain, stops the agent, and returns every finished ticket's `TicketResult`. `stop` and `join` are also available for abrupt cancellation.
+`run()` starts the agent in the background. While it is running, `task` calls queue more work. `run_dry` waits for the queue to drain, stops the agent, and returns every finished task in a `TicketResult`.
 
 Methods called after the agent is built:
 
@@ -167,12 +161,9 @@ Methods called after the agent is built:
 | | `task_labeled(value, label)` | Create a task tagged with `label` for label-scoped routing. |
 | | `task_schema(value, schema)` | Create a task whose result must validate against `schema`. |
 | | `task_schema_labeled(value, schema, label)` | Create a labelled task whose result must validate against `schema`. |
-| | `create(ticket)` | Add a caller-built `Ticket` to the queue. |
-| **Run** | `run()` | Start a background run and return a `Running` handle. |
-| | `run_dry().await` | Run until every queued task finishes and return every `TicketResult`. |
-| **Inspect** | `get_name()` | Return the configured name. |
-| | `get_labels()` | Return the configured label scope. |
-| | `handles(labels)` | Return `true` when the label scope overlaps. |
+| | `create(ticket)` | Add a `Ticket` to the queue. |
+| **Run** | `run()` | Start working and wait for incoming tickets. |
+| | `run_dry().await` | Work until every queued task finishes and return every `TicketResult`. |
 
 
 ### Prompting

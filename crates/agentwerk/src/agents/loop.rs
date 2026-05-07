@@ -181,7 +181,7 @@ pub(super) async fn handle_tickets(agent: Agent) {
             .map(|t| (t.key().to_string(), false));
         // Path B: open Todo whose labels match this agent's scope.
         let path_b = ticket_system
-            .find(|t| t.is_todo() && t.assignee().is_none() && agent.handles(&t.labels))
+            .find(|t| t.is_todo() && t.assignee().is_none() && agent.handles_labels(&t.labels))
             .map(|t| (t.key().to_string(), true));
         let claim = path_a.or(path_b);
 

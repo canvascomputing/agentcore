@@ -202,14 +202,8 @@ impl Agent {
         self
     }
 
-    pub fn get_name(&self) -> &str {
+    pub(super) fn get_name(&self) -> &str {
         &self.name
-    }
-
-    /// Labels the agent declared. Empty means "default scope" — the agent
-    /// handles only tickets with no labels.
-    pub fn get_labels(&self) -> &[String] {
-        &self.labels
     }
 
     pub(super) fn resolve_event_handler(&self) -> Arc<dyn Fn(Event) + Send + Sync> {
@@ -217,9 +211,9 @@ impl Agent {
     }
 
     /// Returns true when the agent's label scope intersects the ticket's
-    /// labels. Empty agent labels mean "default scope" — only tickets with
+    /// labels. Empty agent labels mean "default scope": only tickets with
     /// no labels match.
-    pub fn handles(&self, ticket_labels: &[String]) -> bool {
+    pub(super) fn handles_labels(&self, ticket_labels: &[String]) -> bool {
         if self.labels.is_empty() {
             ticket_labels.is_empty()
         } else {
@@ -393,19 +387,19 @@ mod tests {
     use crate::agents::stats::LoopStats;
 
     #[test]
-    fn handles_default_scope_only_picks_unlabeled_tickets() {
+    fn handles_labels_default_scope_only_picks_unlabeled_tickets() {
         let agent = Agent::new();
-        assert!(agent.handles(&[]));
-        assert!(!agent.handles(&["research".into()]));
+        assert!(agent.handles_labels(&[]));
+        assert!(!agent.handles_labels(&["research".into()]));
     }
 
     #[test]
-    fn handles_with_labels_intersects_ticket_labels() {
+    fn handles_labels_with_labels_intersects_ticket_labels() {
         let agent = Agent::new().label("research").label("urgent");
-        assert!(agent.handles(&["research".into()]));
-        assert!(agent.handles(&["urgent".into(), "other".into()]));
-        assert!(!agent.handles(&["report".into()]));
-        assert!(!agent.handles(&[]));
+        assert!(agent.handles_labels(&["research".into()]));
+        assert!(agent.handles_labels(&["urgent".into(), "other".into()]));
+        assert!(!agent.handles_labels(&["report".into()]));
+        assert!(!agent.handles_labels(&[]));
     }
 
     #[test]
