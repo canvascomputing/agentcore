@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use agentwerk::providers::{model_from_env, provider_from_env, ProviderResult};
 use agentwerk::tools::ManageTicketsTool;
-use agentwerk::{Agent, Event, EventKind, Runnable, Schema, TicketSystem, Tool, ToolResult};
+use agentwerk::{Agent, Event, EventKind, Schema, TicketSystem, Tool, ToolResult};
 
 const RESEARCHER_ROLE: &str = include_str!("prompts/researcher.role.md");
 const REPORT_WRITER_ROLE: &str = include_str!("prompts/report-writer.role.md");

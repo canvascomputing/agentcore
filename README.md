@@ -78,8 +78,8 @@ make use_case name=<name>    # run one
 - [Tools](#tools): Capabilities agents call to take action.
 - [Memory](#memory): Durable facts the model curates across tickets.
 - [Schemas](#schemas): JSON schemas that validate ticket results.
-- [Events](#events): Lifecycle signals the run emits.
-- [Stats](#stats): Counters and timings the run records.
+- [Events](#events): Lifecycle signals emitted while agents work.
+- [Stats](#stats): Counters and timings recorded while agents work.
 
 ## Providers
 
@@ -168,7 +168,7 @@ Methods called after the agent is built:
 
 ## Prompting
 
-You define every prompt in three parts: `role` (who the agent is), `context` (the situation it works in), and `task` (the specific work for this ticket). The shape comes from the [prompting framework](https://github.com/canvascomputing/prompting).
+You define every prompt in three parts: `role` (who the agent is), `context` (the situation it works in), and `task` (the specific work it has to perform). The shape comes from the [prompting framework](https://github.com/canvascomputing/prompting).
 
 ### Role
 
@@ -213,7 +213,7 @@ agent.task(serde_json::json!({ "file": "Cargo.toml", "find": "version" }));
 A `TicketSystem` is the shared queue that connects multiple agents. You drop tasks in; the system hands each ticket to an agent that can take it. **Labels** are the primary way to distribute work: tag a ticket with a label, register one or more agents for that label, and the system spreads matching tickets across that pool. If a ticket has to go to one specific agent, you can assign it by name instead.
 
 ```rust
-use agentwerk::{Runnable, TicketSystem};
+use agentwerk::TicketSystem;
 
 let tickets = TicketSystem::new();
 
@@ -241,38 +241,40 @@ let result = tickets.run_dry().await;
 | | `filter(predicate)` | Return tickets matching `predicate`, in creation order. |
 | | `find(predicate)` | Return the first ticket matching `predicate`. |
 | | `count(predicate)` | Return the count of tickets matching `predicate`. |
-| | `stats()` | Return the run counters and timings. |
+| | `stats()` | Return current statistics. |
 | **Status** | `update_status(key, status)` | Transition a ticket through the state machine. |
 | | `force_status(key, status)` | Force a ticket to `status`, bypassing the state machine. |
 
 ### Policies
 
-Configure execution limits on a ticket system. A breach fires `EventKind::PolicyViolated` and stops the run.
+Configure execution policies on a ticket system. A breach fires `EventKind::PolicyViolated` and halts execution.
 
 ```rust
 let tickets = TicketSystem::new()
     .max_steps(40)
+    .max_time(std::time::Duration::from_secs(300));
     .max_input_tokens(200_000)
     .max_output_tokens(50_000)
     .max_request_tokens(8_000)
     .max_schema_retries(3)
     .max_request_retries(3)
     .request_retry_delay(std::time::Duration::from_millis(500))
-    .max_time(std::time::Duration::from_secs(300));
 ```
 
 | Method | Description |
 |--------|-------------|
 | `max_steps(n)` | Cap the total number of steps. |
+| `max_time(d)` | Cap the total elapsed duration. |
 | `max_input_tokens(n)` | Cap the total input tokens. |
 | `max_output_tokens(n)` | Cap the total output tokens. |
 | `max_request_tokens(n)` | Cap the input tokens per request. |
 | `max_schema_retries(n)` | Cap the schema-validation retry attempts. |
 | `max_request_retries(n)` | Cap the retry attempts on recoverable provider errors. |
 | `request_retry_delay(d)` | Set the base delay between request retries. |
-| `max_time(d)` | Cap the run's elapsed duration. |
 
 ## Tools
+
+A tool is a capability you give an agent so it can take action while solving a ticket: read a file, run a shell command, fetch a URL. Each tool declares a JSON-Schema for its inputs and a handler the agent runs when it picks the tool.
 
 ```rust
 use agentwerk::{Tool, ToolResult};
@@ -311,11 +313,9 @@ let greet = Tool::new("greet", "Say hello")
 | **Memory** | `MemoryTool` | Adds, replaces, or removes entries in the agent's memory. |
 | **Discovery** | `ToolSearchTool` | Discovers tools registered with `Tool::defer(true)`. |
 
-`BashTool::unrestricted()` allows any command. `WriteResultTool` validates against the ticket's `schema`, appends an NDJSON line to `<workspace>/results.jsonl`, and attaches the `TicketResult` to the ticket. `MemoryTool` is auto-registered when `Agent::memory(&store)` is set.
-
 ## Memory
 
-A `Memory` lets the model carry facts from one ticket to the next, even across process restarts. It is a file-backed store the model curates through `MemoryTool`. Current entries are rendered into the system prompt at the top of every ticket. Updates during a ticket appear in the prompt at the start of the next one. Multiple agents can share one store.
+`Memory` lets an agent carry knowledge from one task to the next, even across process restarts. It is a file-backed store the agent curates through `MemoryTool`.
 
 ```rust
 use agentwerk::{Agent, Memory};
@@ -335,7 +335,7 @@ let bob = Agent::new()
     .memory(&memory);
 ```
 
-Both agents read and write the same `memory.jsonl` (one entry per line: `{"content": "...", "added_at": <ms>}`). Bind two agents to two different stores for independent memory. Pointing `Memory::open` at the same directory as `TicketSystem::workspace` co-locates `memory.jsonl`, `results.jsonl`, and `tickets.jsonl`.
+Both agents read and write the same `memory.jsonl` (one entry per line: `{"content": "...", "added_at": <ms>}`). Bind two agents to two different stores for independent memory.
 
 Methods on `Memory`:
 
@@ -348,11 +348,9 @@ Methods on `Memory`:
 | | `remove(old_text)` | Drop the unique entry containing `old_text`. |
 | | `rewrite(entries)` | Replace every entry in a single call. |
 
-`add` rejects empty content, duplicates, and content that would push the rendered prompt section past the size cap.
-
 ## Schemas
 
-`Schema::parse` accepts a JSON-Schema document. Attach it to a ticket so the agent's result (written via `write_result_tool`) must validate against it.
+A `Schema` constrains the shape of a ticket's result. Attach a JSON-Schema document to a ticket and the agent's answer must validate against it before the ticket can finish.
 
 ```rust
 use agentwerk::Schema;
@@ -387,7 +385,7 @@ tickets.create(Ticket::new(body).schema(schema).assign_to("report_writer"));
 
 ## Events
 
-Agents emit lifecycle events that the caller observes:
+Events give you visibility into everything that happens while agents work: which tickets they pick up, which tools they call, when provider requests start, finish, or fail. Register an event handler to log them, show progress, or measure throughput.
 
 ```rust
 use std::sync::Arc;
@@ -423,28 +421,24 @@ let handler = Arc::new(|event: Event| match &event.kind {
 | **Tool** | `ToolCallStarted` | A tool invocation started. |
 | | `ToolCallFinished` | A tool invocation finished. |
 | | `ToolCallFailed` | A tool invocation failed but the ticket continues. |
-| **Run** | `PolicyViolated` | A policy limit was breached and the run stopped. |
-
-> When `.event_handler(...)` is not set, agents log ticket lifecycle, tool activity, request failures, and policy violations to stderr via `default_logger()`. Call `.silent()` on the agent to drop every event.
+| **Run** | `PolicyViolated` | A policy limit was breached and execution stopped. |
 
 ## Stats
 
+`Stats` summarise what happened while agents worked: tickets finished, tokens consumed, tool calls made, time spent. Read them while agents are working, or after they finish. Labels group tickets into categories, and filtering by label scopes the numbers to one of those categories.
+
 ```rust
 let s = tickets.stats();
-println!("{} done, {} requests, {} in / {} out tokens",
-    s.tickets_done(), s.requests(), s.input_tokens(), s.output_tokens());
+println!("{} done, {} tokens", s.tickets_done(), s.input_tokens());
 
-// Same accessors, scoped to one ticket label.
 let scan = s.stats_for_label("scan");
-println!("[scan] {} done, {} tokens", scan.tickets_done(), scan.input_tokens());
+println!("scan: {} done", scan.tickets_done());
 ```
-
-`Stats` collects counters and timings across the run. Read them after `run()` or `run_dry()`, or at any time during a run. `stats_for_label(label)` returns a slice with the same accessors, scoped to tickets carrying that label. `run_duration()` is `None` on a slice because the elapsed run duration stays global.
 
 | | Method | Description |
 |-|--------|-------------|
-| **Run** | `run_duration()` | Return the elapsed time from first ticket start to run end, or `None` while the run is active. |
-| | `elapsed()` | Return the live elapsed time since the run started, or `None` until the first ticket starts. |
+| **Run** | `run_duration()` | Return the elapsed time from the first ticket starting to the last finishing, or `None` while agents are still working. |
+| | `elapsed()` | Return the live elapsed time since the first ticket started, or `None` until the first ticket starts. |
 | | `total_work_duration()` | Return the sum of every finished ticket's start-to-end span. |
 | **Tickets** | `tickets_created()` | Return the count of tickets created. |
 | | `tickets_done()` | Return the count of tickets that finished successfully. |

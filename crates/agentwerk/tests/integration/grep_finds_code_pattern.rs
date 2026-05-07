@@ -13,7 +13,7 @@ use super::common;
 
 use agentwerk::event::EventKind;
 use agentwerk::tools::{GlobTool, GrepTool, ListDirectoryTool, ReadFileTool};
-use agentwerk::{default_logger, Agent, Event, Runnable, TicketSystem};
+use agentwerk::{default_logger, Agent, Event, TicketSystem};
 
 /// The exact substring the model must locate. Contains regex metachars
 /// (`<`, `>`, `(`, `)`, `,`) so any regex-style escaping by the model

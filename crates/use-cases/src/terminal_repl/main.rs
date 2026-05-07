@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use agentwerk::providers::{model_from_env, provider_from_env};
 use agentwerk::tools::{GlobTool, GrepTool, ListDirectoryTool, ReadFileTool};
-use agentwerk::{Agent, Event, EventKind, Memory, Runnable, Status, TicketSystem};
+use agentwerk::{Agent, Event, EventKind, Memory, Status, TicketSystem};
 
 const ROLE: &str = include_str!("prompts/repl.role.md");
 

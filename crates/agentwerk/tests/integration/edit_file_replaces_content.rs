@@ -7,7 +7,7 @@ use std::fs;
 use super::common;
 
 use agentwerk::tools::EditFileTool;
-use agentwerk::{Agent, Runnable, TicketSystem};
+use agentwerk::{Agent, TicketSystem};
 
 const ORIGINAL: &str = "setting=old_value\nother=keep_me\n";
 

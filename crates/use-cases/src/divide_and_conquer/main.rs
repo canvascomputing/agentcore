@@ -22,7 +22,7 @@ use std::time::Instant;
 use agentwerk::providers::{model_from_env, provider_from_env};
 use agentwerk::tools::ManageTicketsTool;
 use agentwerk::{
-    Agent, Event, EventKind, Runnable, Schema, Status, TicketSystem, Tool, ToolResult,
+    Agent, Event, EventKind, Schema, Status, TicketSystem, Tool, ToolResult,
 };
 use serde_json::{json, Value};
 

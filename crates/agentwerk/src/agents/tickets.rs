@@ -18,7 +18,7 @@ use crate::providers::{AsUserMessage, Message};
 
 use super::agent::Agent;
 use super::policy::Policies;
-use super::r#loop::{run_main_loop, Runnable};
+use super::r#loop::run_main_loop;
 use super::stats::{Stats, TicketStats};
 
 /// A ticket. Caller-settable fields: `task`, `labels`, `schema`,
@@ -723,13 +723,32 @@ impl TicketSystem {
     }
 }
 
-impl Runnable for TicketSystem {
-    fn add(&self, mut agent: Agent) -> Agent {
+impl TicketSystem {
+    /// Bind `agent` to this system: drain any tickets it queued in its
+    /// default system into this one and push a clone onto this system's
+    /// agents list. Returns the wired agent for chaining (`.task(...)`
+    /// etc.).
+    ///
+    /// May be called before or after `run()` / `run_dry()`. When called
+    /// after `run()`, the new agent starts polling for tickets within
+    /// roughly one `IDLE_POLL_INTERVAL` (~100 ms).
+    pub fn add(&self, mut agent: Agent) -> Agent {
         self.bind_agent(&mut agent);
         agent
     }
 
-    fn run(&self) -> super::running::Running {
+    /// Start the agent loop on a background tokio task and return a
+    /// [`Running`] handle. The handle owns the interrupt signal;
+    /// tickets queued afterwards are picked up within
+    /// ~`IDLE_POLL_INTERVAL`. Finish with [`Running::run_dry`] to wait
+    /// for the queue to drain, or [`Running::stop`] +
+    /// [`Running::join`] for an abrupt cancel.
+    ///
+    /// [`Running`]: super::running::Running
+    /// [`Running::run_dry`]: super::running::Running::run_dry
+    /// [`Running::stop`]: super::running::Running::stop
+    /// [`Running::join`]: super::running::Running::join
+    pub fn run(&self) -> super::running::Running {
         let signal = Arc::clone(&self.interrupt_signal.lock().unwrap());
         // Reset so a system can be re-run after a previous run_dry left
         // the flag set.
@@ -746,12 +765,13 @@ impl Runnable for TicketSystem {
         super::running::Running::new(system, signal, join)
     }
 
-    fn run_dry(&self) -> impl std::future::Future<Output = Vec<TicketResult>> + Send {
+    /// Start a background run and wait for the queue to drain.
+    /// Returns every finished ticket's [`TicketResult`], in creation
+    /// order. Equivalent to `self.run().run_dry().await`.
+    pub fn run_dry(&self) -> impl std::future::Future<Output = Vec<TicketResult>> + Send {
         self.run().run_dry()
     }
-}
 
-impl TicketSystem {
     /// Every `Done` ticket's `TicketResult`, in ticket creation order.
     /// Tickets that finished without a recorded result are skipped.
     /// Backing helper for `Running::run_dry`.

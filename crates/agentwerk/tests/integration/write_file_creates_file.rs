@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::common;
 
 use agentwerk::tools::WriteFileTool;
-use agentwerk::{Agent, Runnable, TicketSystem};
+use agentwerk::{Agent, TicketSystem};
 
 #[tokio::test]
 async fn creates_file_with_token() -> std::result::Result<(), Box<dyn std::error::Error>> {

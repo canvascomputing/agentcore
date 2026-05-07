@@ -4,7 +4,7 @@
 use super::common;
 
 use agentwerk::tools::{GlobTool, ManageTicketsTool, ReadFileTool};
-use agentwerk::{Agent, Runnable, TicketSystem};
+use agentwerk::{Agent, TicketSystem};
 
 #[tokio::test]
 async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {

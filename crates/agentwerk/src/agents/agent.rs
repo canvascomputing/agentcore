@@ -20,7 +20,6 @@ use crate::tools::{MemoryTool, ToolLike, ToolRegistry, WriteResultTool};
 use super::memory::Memory;
 
 use super::policy::Policies;
-use super::r#loop::Runnable;
 use super::stats::Stats;
 use super::tickets::{TicketResult, Ticket, TicketSystem};
 
@@ -366,7 +365,7 @@ impl Agent {
             .ticket_system
             .upgrade()
             .expect("Agent::run requires a bound TicketSystem");
-        Runnable::run(&*sys)
+        sys.run()
     }
 
     /// Start a background run and wait for the queue to drain.
@@ -377,7 +376,7 @@ impl Agent {
             .ticket_system
             .upgrade()
             .expect("Agent::run_dry requires a bound TicketSystem");
-        Runnable::run_dry(&*sys).await
+        sys.run_dry().await
     }
 }
 

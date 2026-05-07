@@ -1,9 +1,7 @@
 //! Multi-agent loop driver. One tokio task per registered agent,
 //! reading the shared `TicketSystem` through the upgraded
-//! `Weak<TicketSystem>` stamped at `bind_agent`. Also defines the
-//! `Runnable` trait that `TicketSystem` implements.
+//! `Weak<TicketSystem>` stamped at `bind_agent`.
 
-use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,38 +16,6 @@ use super::retry::ExponentialRetry;
 use super::stats::LoopStats;
 use super::tickets::{policy_violated_kind, Status};
 use crate::prompts::schema_retry;
-
-/// Surface for binding agents and running them. Implemented by `TicketSystem`.
-pub trait Runnable: Sized {
-    /// Bind `agent`: drain any tickets it queued in its default system
-    /// into this one and push a clone onto this system's agents list.
-    /// Returns the wired agent for chaining (`.task(...)` etc.).
-    ///
-    /// May be called before or after `run()` / `run_dry()`. When called
-    /// after `run()`, the new agent starts polling for tickets within
-    /// roughly one `IDLE_POLL_INTERVAL` (~100 ms).
-    fn add(&self, agent: Agent) -> Agent;
-
-    /// `add` with a label-scope pin in one call.
-    fn add_assigned(&self, agent: Agent, assign: impl Into<String>) -> Agent {
-        self.add(agent.label(assign))
-    }
-
-    /// Start the agent loop on a background tokio task and return a
-    /// [`Running`] handle. The handle owns the interrupt signal;
-    /// tickets queued afterwards are picked up within
-    /// ~`IDLE_POLL_INTERVAL`. Finish with [`Running::run_dry`] to wait
-    /// for the queue to drain, or [`Running::stop`] +
-    /// [`Running::join`] for an abrupt cancel.
-    fn run(&self) -> super::running::Running;
-
-    /// Start a background run and wait for the queue to drain.
-    /// Returns every finished ticket's [`TicketResult`], in creation
-    /// order. Equivalent to `self.run().run_dry().await`.
-    ///
-    /// [`TicketResult`]: super::tickets::TicketResult
-    fn run_dry(&self) -> impl Future<Output = Vec<super::tickets::TicketResult>> + Send;
-}
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -534,7 +500,7 @@ mod tests {
             &self,
             request: ModelRequest,
             _on_event: Arc<dyn Fn(crate::providers::types::StreamEvent) + Send + Sync>,
-        ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
+        ) -> Pin<Box<dyn std::future::Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
             self.received.lock().unwrap().push(request.messages.clone());
             self.received_system_prompts
                 .lock()

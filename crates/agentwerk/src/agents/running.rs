@@ -1,4 +1,4 @@
-//! Handle returned from [`Runnable::run`]. Owns the background tokio
+//! Handle returned from [`TicketSystem::run`]. Owns the background tokio
 //! task driving the agent loop, the interrupt signal, and a strong
 //! reference to the ticket system. Forwards task / result accessors to
 //! the system through `Deref`, so a single binding (typically named
@@ -14,7 +14,7 @@ use tokio::task::JoinHandle;
 
 use super::tickets::{now_millis, pending_count, policy_violated, TicketResult, TicketSystem};
 
-/// In-flight run handle. Created by [`Runnable::run`]. Holds the
+/// In-flight run handle. Created by [`TicketSystem::run`]. Holds the
 /// background tokio task driving the agent loop and the interrupt
 /// signal that stops it.
 pub struct Running {

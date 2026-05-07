@@ -5,7 +5,7 @@
 use super::common;
 
 use agentwerk::tools::BashTool;
-use agentwerk::{Agent, Runnable, Schema, TicketSystem};
+use agentwerk::{Agent, Schema, TicketSystem};
 
 #[tokio::test]
 async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
