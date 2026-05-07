@@ -348,34 +348,34 @@ impl TicketSystem {
 
     // ---- ticket-creation API mirrored on Agent ----
 
-    /// Enqueue a ticket carrying `value` as its task body.
-    pub fn task<T: Serialize>(&self, value: T) -> &Self {
-        self.dispatch(Ticket::new(value));
+    /// Enqueue a ticket carrying `task` as its body.
+    pub fn task<T: Serialize>(&self, task: T) -> &Self {
+        self.dispatch(Ticket::new(task));
         self
     }
 
-    /// Enqueue a ticket carrying `value`, attached to `label` for Path B
+    /// Enqueue a ticket carrying `task`, attached to `label` for Path B
     /// routing.
-    pub fn task_labeled<T: Serialize>(&self, value: T, label: impl Into<String>) -> &Self {
-        self.dispatch(Ticket::new(value).label(label));
+    pub fn task_labeled<T: Serialize>(&self, task: T, label: impl Into<String>) -> &Self {
+        self.dispatch(Ticket::new(task).label(label));
         self
     }
 
     /// Enqueue a ticket whose final `done` result must validate against
     /// `schema`.
-    pub fn task_schema<T: Serialize>(&self, value: T, schema: crate::schemas::Schema) -> &Self {
-        self.dispatch(Ticket::new(value).schema(schema));
+    pub fn task_schema<T: Serialize>(&self, task: T, schema: crate::schemas::Schema) -> &Self {
+        self.dispatch(Ticket::new(task).schema(schema));
         self
     }
 
     /// `task_schema` + `task_labeled` combined.
     pub fn task_schema_labeled<T: Serialize>(
         &self,
-        value: T,
+        task: T,
         schema: crate::schemas::Schema,
         label: impl Into<String>,
     ) -> &Self {
-        self.dispatch(Ticket::new(value).schema(schema).label(label));
+        self.dispatch(Ticket::new(task).schema(schema).label(label));
         self
     }
 

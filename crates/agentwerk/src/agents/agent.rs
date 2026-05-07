@@ -297,28 +297,28 @@ impl Agent {
         out
     }
 
-    /// Enqueue a ticket carrying `value` as its task body. Always available
+    /// Enqueue a ticket carrying `task` as its body. Always available
     /// (the agent has a bound ticket system from construction onward).
     /// Returns `&Self` for chaining.
-    pub fn task<T: Serialize>(&self, value: T) -> &Self {
-        let ticket = Ticket::new(value);
+    pub fn task<T: Serialize>(&self, task: T) -> &Self {
+        let ticket = Ticket::new(task);
         self.dispatch(ticket);
         self
     }
 
-    /// Enqueue a ticket carrying `value` and attached to `label` for
+    /// Enqueue a ticket carrying `task` and attached to `label` for
     /// Path B routing. To pin a ticket directly to an agent (Path A),
     /// build it explicitly: `agent.create(Ticket::new(...).assign_to("alice"))`.
-    pub fn task_labeled<T: Serialize>(&self, value: T, label: impl Into<String>) -> &Self {
-        let ticket = Ticket::new(value).label(label);
+    pub fn task_labeled<T: Serialize>(&self, task: T, label: impl Into<String>) -> &Self {
+        let ticket = Ticket::new(task).label(label);
         self.dispatch(ticket);
         self
     }
 
-    /// Enqueue a ticket carrying `value` plus a `schema` the agent's final
+    /// Enqueue a ticket carrying `task` plus a `schema` the agent's final
     /// `done` result must validate against.
-    pub fn task_schema<T: Serialize>(&self, value: T, schema: crate::schemas::Schema) -> &Self {
-        let ticket = Ticket::new(value).schema(schema);
+    pub fn task_schema<T: Serialize>(&self, task: T, schema: crate::schemas::Schema) -> &Self {
+        let ticket = Ticket::new(task).schema(schema);
         self.dispatch(ticket);
         self
     }
@@ -326,11 +326,11 @@ impl Agent {
     /// `task_schema` + `task_labeled` combined.
     pub fn task_schema_labeled<T: Serialize>(
         &self,
-        value: T,
+        task: T,
         schema: crate::schemas::Schema,
         label: impl Into<String>,
     ) -> &Self {
-        let ticket = Ticket::new(value).schema(schema).label(label);
+        let ticket = Ticket::new(task).schema(schema).label(label);
         self.dispatch(ticket);
         self
     }

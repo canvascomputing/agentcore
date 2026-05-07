@@ -22,13 +22,13 @@
 
 ---
 
-## Installation
+# Installation
 
 ```bash
 cargo add agentwerk
 ```
 
-## Quick Start
+# Quick Start
 
 ```rust
 use agentwerk::providers::{model_from_env, provider_from_env};
@@ -51,7 +51,7 @@ async fn main() {
 }
 ```
 
-## Use Cases
+# Use Cases
 
 Example applications living under `crates/use-cases/`:
 
@@ -69,7 +69,7 @@ make use_case name=<name>    # run one
 
 > Configure an LLM provider first (see [Environment](#environment)).
 
-## API
+# API
 
 - [Providers](#providers): LLM backends agents send requests to.
 - [Agents](#agents): Workers that pick up tickets and produce results.
@@ -81,7 +81,7 @@ make use_case name=<name>    # run one
 - [Events](#events): Lifecycle signals the run emits.
 - [Stats](#stats): Counters and timings the run records.
 
-### Providers
+## Providers
 
 A `Provider` connects an agent to an LLM service. The crate ships providers for Anthropic, OpenAI, Mistral, and a LiteLLM proxy. The same agent code runs against any of them.
 
@@ -102,9 +102,9 @@ let provider = provider_from_env()?;
 let model = model_from_env()?;
 ```
 
-### Agents
+## Agents
 
-An `Agent` is a single worker that turns tasks into results. It calls the provider in a loop, invokes tools as the model requests them, and writes a result back when the task is finished.
+An `Agent` is a worker that solves one task at a time. A **task** is the work you hand it: a question, an instruction, or a structured request. Each task becomes a **ticket**: a record that tracks the work from start to finish and holds the final answer. The agent picks up a ticket, calls any tools it has been given (read a file, run a command, search memory), and writes the answer back onto the ticket.
 
 ```rust
 let agent = Agent::new()
@@ -116,7 +116,7 @@ let agent = Agent::new()
     .task("Compute 2+2.");
 ```
 
-#### Build
+### Build
 
 Configure an agent: identity, provider, prompt, tools, events, and memory.
 
@@ -135,7 +135,7 @@ Configure an agent: identity, provider, prompt, tools, events, and memory.
 | | `silent()` | Drop every event instead of logging it. |
 | **Memory** | `memory(&store)` | Create a `Memory` so facts persist across tickets and restarts. |
 
-#### Run
+### Run
 
 Start an agent with `run`, queue tasks while it's working, finish with `run_dry` and read the results.
 
@@ -157,34 +157,30 @@ Methods called after the agent is built:
 
 | | Method | Description |
 |-|--------|-------------|
-| **Tasks** | `task(value)` | Create a task. |
-| | `task_labeled(value, label)` | Create a task tagged with `label` for label-scoped routing. |
-| | `task_schema(value, schema)` | Create a task whose result must validate against `schema`. |
-| | `task_schema_labeled(value, schema, label)` | Create a labelled task whose result must validate against `schema`. |
+| **Tasks** | `task(task)` | Create a task for the agent. |
+| | `task_labeled(task, label)` | Create a task tagged with `label` for label-scoped routing. |
+| | `task_schema(task, schema)` | Create a task whose result must validate against `schema`. |
+| | `task_schema_labeled(task, schema, label)` | Create a labelled task whose result must validate against `schema`. |
 | | `create(ticket)` | Add a `Ticket` to the queue. |
 | **Run** | `run()` | Start working and wait for incoming tickets. |
 | | `run_dry().await` | Work until every queued task finishes and return every `TicketResult`. |
 
 
-### Prompting
+## Prompting
 
-A prompt has three main parts: `role`, `context`, and `task`, see the [prompting framework](https://github.com/canvascomputing/prompting).
+You define every prompt in three parts: `role` (who the agent is), `context` (the situation it works in), and `task` (the specific work for this ticket). The shape comes from the [prompting framework](https://github.com/canvascomputing/prompting).
 
-#### Role
+### Role
+
+The role is the agent's identity and operating rules. It is set once at build time and reused on every ticket the agent handles.
 
 ```rust
 let agent = Agent::new().role("You are an arithmetic worker. Show your work.");
 ```
 
-The role is the agent's identity and operating rules. It is set once at build time and reused on every ticket the agent handles.
+### Context
 
-#### Context
-
-```rust
-let agent = Agent::new().context("- Repo: example/widgets\n- Branch: main");
-```
-
-The context is the first user message of every ticket. When `context(text)` is not set, agentwerk generates a default block:
+The context is the briefing the agent reads at the start of every ticket. When `context(text)` is not set, agentwerk fills in a default block of runtime facts:
 
 ```markdown
 - Working directory: /Users/me/code/repo
@@ -197,30 +193,33 @@ The context is the first user message of every ticket. When `context(text)` is n
 - Time remaining: 240s
 ```
 
-Override when the agent needs runtime facts the default block does not carry, such as a target file or a session identifier.
+Override when the agent needs runtime facts the default block does not carry, such as a target file or a session identifier:
 
-#### Task
+```rust
+let agent = Agent::new().context("- Repo: example/widgets\n- Branch: main");
+```
+
+### Task
+
+The task is the work itself: plain text, or a structured object the agent reads.
 
 ```rust
 agent.task("Compute 2+2.");
 agent.task(serde_json::json!({ "file": "Cargo.toml", "find": "version" }));
 ```
 
-The task is the per-ticket request. `value` may be a string or any serde-serializable type; structured tasks are pretty-printed as JSON. Use `task_labeled` for label routing, or `task_schema` / `task_schema_labeled` to attach a `Schema` the result must validate against.
+## Ticket Systems
 
-### Ticket Systems
-
-A `TicketSystem` lets multiple agents work through a shared backlog of tasks. Tasks become tickets in one queue, and agents claim them either by matching labels or by direct assignment to a named agent.
+A `TicketSystem` is the shared queue that connects multiple agents. You drop tasks in; the system hands each ticket to an agent that can take it. **Labels** are the primary way to distribute work: tag a ticket with a label, register one or more agents for that label, and the system spreads matching tickets across that pool. If a ticket has to go to one specific agent, you can assign it by name instead.
 
 ```rust
 use agentwerk::{Runnable, TicketSystem};
 
-let tickets = TicketSystem::new()
-    .max_steps(20)
-    .max_time(std::time::Duration::from_secs(60));
+let tickets = TicketSystem::new();
 
 tickets.task("Summarise the Cargo.toml of this project.");
 tickets.add(agent);
+
 let result = tickets.run_dry().await;
 ```
 
@@ -229,11 +228,11 @@ let result = tickets.run_dry().await;
 | **Construct** | `TicketSystem::new()` | Create a new ticket system that agents can share. |
 | | `add(agent)` | Register an agent with the system. |
 | | `interrupt_signal(signal)` | Override the cancel signal shared across agents. |
-| | `workspace(dir)` | Set the workspace directory under which `results.jsonl` and `tickets.jsonl` are written. |
-| **Tasks** | `task(value)` | Create a task. |
-| | `task_labeled(value, label)` | Create a task tagged with `label` for label-scoped routing. |
-| | `task_schema(value, schema)` | Create a task whose result must validate against `schema`. |
-| | `task_schema_labeled(value, schema, label)` | Create a labelled task whose result must validate against `schema`. |
+| | `workspace(dir)` | Set the workspace directory where memory, ticket results, and the ticket logs are persisted. |
+| **Tasks** | `task(task)` | Create a task. |
+| | `task_labeled(task, label)` | Create a task tagged with `label` for label-scoped routing. |
+| | `task_schema(task, schema)` | Create a task whose result must validate against `schema`. |
+| | `task_schema_labeled(task, schema, label)` | Create a labelled task whose result must validate against `schema`. |
 | | `create(ticket)` | Add a caller-built `Ticket` to the queue. |
 | **Run** | `run()` | Start a background run and return a `Running` handle. |
 | | `run_dry().await` | Run until every queued task finishes and return every `TicketResult`. |
@@ -246,17 +245,7 @@ let result = tickets.run_dry().await;
 | **Status** | `update_status(key, status)` | Transition a ticket through the state machine. |
 | | `force_status(key, status)` | Force a ticket to `status`, bypassing the state machine. |
 
-#### Workspace
-
-When `workspace(dir)` is set, the system also appends one observational JSON line to `<dir>/tickets.jsonl` per lifecycle event:
-
-- `{"event":"created","ts":<ms>,"key":"TICKET-N","reporter":...,"labels":[...],"assignee":...|null,"task":<value>}`
-- `{"event":"started","ts":<ms>,"key":"TICKET-N","assignee":...}`
-- `{"event":"done"|"failed","ts":<ms>,"key":"TICKET-N","duration_ms":<u64>,"work_ms":<u64>}`
-
-The actual result payload still lives in `results.jsonl`; the `done` line is a transition marker. Without a workspace, the log is skipped.
-
-#### Policies
+### Policies
 
 Configure execution limits on a ticket system. A breach fires `EventKind::PolicyViolated` and stops the run.
 
@@ -283,7 +272,7 @@ let tickets = TicketSystem::new()
 | `request_retry_delay(d)` | Set the base delay between request retries. |
 | `max_time(d)` | Cap the run's elapsed duration. |
 
-### Tools
+## Tools
 
 ```rust
 use agentwerk::{Tool, ToolResult};
@@ -304,7 +293,7 @@ let greet = Tool::new("greet", "Say hello")
 
 `.read_only(true)` lets the loop run a tool concurrently with other read-only calls in the same step.
 
-#### Built-in tools
+### Built-in tools
 
 | | Tool | Description |
 |-|------|-------------|
@@ -324,7 +313,7 @@ let greet = Tool::new("greet", "Say hello")
 
 `BashTool::unrestricted()` allows any command. `WriteResultTool` validates against the ticket's `schema`, appends an NDJSON line to `<workspace>/results.jsonl`, and attaches the `TicketResult` to the ticket. `MemoryTool` is auto-registered when `Agent::memory(&store)` is set.
 
-### Memory
+## Memory
 
 A `Memory` lets the model carry facts from one ticket to the next, even across process restarts. It is a file-backed store the model curates through `MemoryTool`. Current entries are rendered into the system prompt at the top of every ticket. Updates during a ticket appear in the prompt at the start of the next one. Multiple agents can share one store.
 
@@ -361,7 +350,7 @@ Methods on `Memory`:
 
 `add` rejects empty content, duplicates, and content that would push the rendered prompt section past the size cap.
 
-### Schemas
+## Schemas
 
 `Schema::parse` accepts a JSON-Schema document. Attach it to a ticket so the agent's result (written via `write_result_tool`) must validate against it.
 
@@ -396,7 +385,7 @@ tickets.create(Ticket::new(body.clone()).schema(schema.clone()).label("report"))
 tickets.create(Ticket::new(body).schema(schema).assign_to("report_writer"));
 ```
 
-### Events
+## Events
 
 Agents emit lifecycle events that the caller observes:
 
@@ -438,7 +427,7 @@ let handler = Arc::new(|event: Event| match &event.kind {
 
 > When `.event_handler(...)` is not set, agents log ticket lifecycle, tool activity, request failures, and policy violations to stderr via `default_logger()`. Call `.silent()` on the agent to drop every event.
 
-### Stats
+## Stats
 
 ```rust
 let s = tickets.stats();
@@ -471,14 +460,14 @@ println!("[scan] {} done, {} tokens", scan.tickets_done(), scan.input_tokens());
 | | `errors()` | Return the total provider errors. |
 | **Labels** | `stats_for_label(label)` | Return a nested `Stats` slice scoped to tickets carrying `label`. |
 
-## Development
+# Development
 
-### Workspace
+## Workspace
 
 - `crates/agentwerk/`: the library.
 - `crates/use-cases/`: runnable example binaries that depend on the library.
 
-### Building and testing
+## Building and testing
 
 ```bash
 make                # build (warnings are errors)
@@ -488,7 +477,7 @@ make clean          # remove build artifacts
 make update         # update dependencies
 ```
 
-### Integration tests
+## Integration tests
 
 > Configure an LLM provider first (see [Environment](#environment)).
 
@@ -497,7 +486,7 @@ make test_integration                     # run all
 make test_integration name=bash_usage     # run one
 ```
 
-### Use cases
+## Use cases
 
 ```bash
 make use_case                                                 # list available
@@ -505,7 +494,7 @@ make use_case name=terminal-repl                              # run one
 make use_case name=deep-research-v2 args="What is a good life?"  # with arguments
 ```
 
-### Publishing
+## Publishing
 
 ```bash
 make bump                  # bump patch version, run tests, commit, tag
@@ -515,13 +504,13 @@ make bump part=major       # bump major version
 
 GitHub Actions handles the crates.io publish via trusted publishing once the new tag is pushed (`git push --tags`).
 
-### Documentation
+## Documentation
 
 ```bash
 make doc                   # cargo doc --no-deps -p agentwerk (strict rustdoc)
 ```
 
-### LiteLLM proxy
+## LiteLLM proxy
 
 Start a local LiteLLM proxy on port 4000 that forwards to a provider. Requires Docker.
 
@@ -531,7 +520,7 @@ make litellm LITELLM_PROVIDER=openai       # use OpenAI
 make litellm LITELLM_PROVIDER=mistral      # use Mistral
 ```
 
-### Local inference servers
+## Local inference servers
 
 agentwerk relies on server-side tool calling. Enable it through the following flags:
 
@@ -540,7 +529,7 @@ agentwerk relies on server-side tool calling. Enable it through the following fl
 | vLLM | `--enable-auto-tool-choice --tool-call-parser <parser>` |
 | llama.cpp | `--jinja` (enables tool calling) |
 
-### Environment
+## Environment
 
 Use cases and integration tests use the following environment variables:
 
