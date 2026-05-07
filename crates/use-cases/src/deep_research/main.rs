@@ -2,7 +2,7 @@
 //!
 //! Two phases run against separate `TicketSystem`s:
 //!   1. Three `researcher` agents drain three research tickets in
-//!      parallel via Path B label pickup. Each researcher calls
+//!      parallel via labelled pickup. Each researcher calls
 //!      `brave_search` and finishes its ticket by calling
 //!      `write_result_tool` with the findings string as `result`.
 //!   2. The driver assembles those findings into a single
@@ -10,7 +10,7 @@
 //!      agent. The report writer calls `write_result_tool` with a JSON
 //!      value the framework validates against the ticket's schema.
 //!
-//! Usage: deep-research-v2 <QUESTION>
+//! Usage: deep-research <QUESTION>
 //!
 //! Environment:
 //!   BRAVE_API_KEY       Required for web search
@@ -49,7 +49,7 @@ async fn main() {
         let body = format!(
             "Research perspective {i}\n\nQuestion: {question}\n\nProduce evidence and \
              sources for one perspective on this question. Focus on a different angle \
-             than perspectives 1..3 — the report writer will compare all three."
+             than perspectives 1..3: the report writer will compare all three."
         );
         tickets.task_labeled(body, "research");
         research_keys.push(format!("TICKET-{i}"));
@@ -91,7 +91,7 @@ async fn main() {
         .collect();
 
     if findings.iter().all(|f| f.lines().count() <= 1) {
-        eprintln!("\nNo researcher findings recorded — aborting before the report writer.");
+        eprintln!("\nNo researcher findings recorded: aborting before the report writer.");
         std::process::exit(1);
     }
 
@@ -151,7 +151,9 @@ async fn main() {
         }
     };
 
-    println!("\n{}\n", format_title_first(&parsed));
+    let title = parsed["title"].as_str().unwrap_or("(no title)");
+    let research = parsed["research"].as_str().unwrap_or("(no body)");
+    println!("\n## {title}\n\n{research}\n");
     let stats = tickets.stats();
     eprintln!("Duration:  {:?}", stats.run_duration().unwrap_or_default());
     eprintln!("Work time: {:?}", stats.total_work_duration());
@@ -202,16 +204,11 @@ fn brave_search_tool(api_key: String) -> Tool {
 
 async fn brave_search(api_key: &str, input: &serde_json::Value) -> ProviderResult<ToolResult> {
     let query = input["query"].as_str().unwrap_or("").trim();
-    let count = input["count"].as_u64().unwrap_or(5).min(20);
-
-    let url = format!(
-        "https://api.search.brave.com/res/v1/web/search?q={}&count={}",
-        urlencode(query),
-        count,
-    );
+    let count = input["count"].as_u64().unwrap_or(5).min(20).to_string();
 
     let response = match reqwest::Client::new()
-        .get(&url)
+        .get("https://api.search.brave.com/res/v1/web/search")
+        .query(&[("q", query), ("count", &count)])
         .header("X-Subscription-Token", api_key)
         .header("Accept", "application/json")
         .send()
@@ -244,21 +241,6 @@ async fn brave_search(api_key: &str, input: &serde_json::Value) -> ProviderResul
         .join("\n");
 
     Ok(ToolResult::success(text))
-}
-
-fn urlencode(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            ' ' => "%20".to_string(),
-            '&' => "%26".to_string(),
-            '?' => "%3F".to_string(),
-            '#' => "%23".to_string(),
-            '+' => "%2B".to_string(),
-            '=' => "%3D".to_string(),
-            _ if c.is_ascii_alphanumeric() || "-_.~".contains(c) => c.to_string(),
-            _ => format!("%{:02X}", c as u32),
-        })
-        .collect()
 }
 
 fn log_event(event: &Event) {
@@ -304,64 +286,34 @@ fn log_event(event: &Event) {
 
 fn tool_call_summary(tool_name: &str, input: &serde_json::Value) -> String {
     match tool_name {
-        "brave_search" => {
-            let q = input["query"].as_str().unwrap_or("");
-            if q.chars().count() > 50 {
-                let cut: String = q.chars().take(50).collect();
-                format!("{cut}…")
-            } else {
-                q.into()
-            }
-        }
+        "brave_search" => truncate(input["query"].as_str().unwrap_or(""), 50),
         "manage_tickets_tool" => input["action"].as_str().unwrap_or("?").into(),
         "write_result_tool" => {
             let result = match &input["result"] {
                 serde_json::Value::String(s) => s.clone(),
                 other => other.to_string(),
             };
-            if result.chars().count() > 50 {
-                let cut: String = result.chars().take(50).collect();
-                format!("done: {cut}…")
-            } else {
-                format!("done: {result}")
-            }
+            format!("done: {}", truncate(&result, 50))
         }
         _ => serde_json::to_string(input).unwrap_or_default(),
     }
 }
 
-fn format_title_first(data: &serde_json::Value) -> String {
-    let Some(obj) = data.as_object() else {
-        return serde_json::to_string_pretty(data).unwrap_or_default();
-    };
-    let mut entries: Vec<(&str, &serde_json::Value)> = Vec::new();
-    if let Some(title) = obj.get("title") {
-        entries.push(("title", title));
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.into();
     }
-    for (k, v) in obj {
-        if k != "title" {
-            entries.push((k, v));
-        }
-    }
-    let fields: Vec<String> = entries
-        .iter()
-        .map(|(k, v)| {
-            format!(
-                "  \"{k}\": {}",
-                serde_json::to_string_pretty(v).unwrap_or_default()
-            )
-        })
-        .collect();
-    format!("{{\n{}\n}}", fields.join(",\n"))
+    let cut: String = s.chars().take(max).collect();
+    format!("{cut}…")
 }
 
 fn parse_question() -> String {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 || args[1] == "--help" || args[1] == "-h" {
-        eprintln!("Usage: deep-research-v2 <QUESTION>");
+        eprintln!("Usage: deep-research <QUESTION>");
         eprintln!();
-        eprintln!("Example: deep-research-v2 \"Should we use Rust or Go for our backend?\"");
+        eprintln!("Example: deep-research \"Should we use Rust or Go for our backend?\"");
         eprintln!();
         eprintln!("Environment:");
         eprintln!("  BRAVE_API_KEY       Required for web search");

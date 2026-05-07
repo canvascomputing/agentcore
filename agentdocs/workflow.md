@@ -35,4 +35,4 @@ Commands used to build, test, release, and run example agents.
 - Run an example with `make use_case name=<name>`.
 - `terminal-repl` is a per-turn interactive chat with streaming output.
 - `divide-and-conquer` partitions an arithmetic problem across worker agents sharing one ticket queue.
-- `deep-research-v2` is a two-phase research pipeline with web search (requires `BRAVE_API_KEY`).
+- `deep-research` is a two-phase research pipeline with web search (requires `BRAVE_API_KEY`).

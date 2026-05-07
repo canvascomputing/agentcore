@@ -1,1 +1,5 @@
 /target
+
+# Default working dir created by use-case binaries when run from the
+# workspace root via `make use_case`.
+/.agentwerk

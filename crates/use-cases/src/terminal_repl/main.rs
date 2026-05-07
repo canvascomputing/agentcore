@@ -31,7 +31,7 @@ const ROLE: &str = include_str!("prompts/repl.role.md");
 async fn main() {
     let style = Style::detect();
     eprintln!(
-        "{}agentwerk REPL — /exit /history /clear, Ctrl-C to cancel.{}",
+        "{}agentwerk REPL: /exit /memory /clear, Ctrl-C to cancel.{}",
         style.dim, style.reset,
     );
 
@@ -144,8 +144,8 @@ async fn main() {
             println!();
         }
         eprintln!(
-            "\n{}— {} · {} steps · {} in / {} out{}",
-            style.dim, outcome, steps, input, output, style.reset,
+            "\n{}{outcome} · {steps} steps · {input} in / {output} out{}",
+            style.dim, style.reset,
         );
     }
 }

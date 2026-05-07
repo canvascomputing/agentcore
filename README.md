@@ -57,7 +57,7 @@ Example applications living under `crates/use-cases/`:
 
 - [Terminal REPL](crates/use-cases/src/terminal_repl/): minimal interactive chat
 - [Divide and Conquer](crates/use-cases/src/divide_and_conquer/): arithmetic problem shared across agents
-- [Deep Research](crates/use-cases/src/deep_research_v2/): deep research pipeline (requires `BRAVE_API_KEY`)
+- [Deep Research](crates/use-cases/src/deep_research/): deep research pipeline (requires `BRAVE_API_KEY`)
 - [Malware Scanner](crates/use-cases/src/malware_scanner/): identify indicators of compromise in a software package
 
 Run one with:
@@ -485,7 +485,7 @@ make test_integration name=bash_usage     # run one
 ```bash
 make use_case                                                 # list available
 make use_case name=terminal-repl                              # run one
-make use_case name=deep-research-v2 args="What is a good life?"  # with arguments
+make use_case name=deep-research args="What is a good life?"  # with arguments
 ```
 
 ## Publishing
@@ -532,7 +532,7 @@ Use cases and integration tests use the following environment variables:
 | Variable | Description |
 |----------|-------------|
 | `MODEL` | Generic model override for `model_from_env()`. |
-| `BRAVE_API_KEY` | Required by the `deep-research-v2` example. |
+| `BRAVE_API_KEY` | Required by the `deep-research` example. |
 
 **Anthropic**
 
