@@ -31,7 +31,7 @@ async fn creates_file_with_token() -> std::result::Result<(), Box<dyn std::error
              calls.",
         )
         .tool(WriteFileTool);
-    tickets.add(agent);
+    tickets.agent(agent);
     tickets.task(format!(
         "Create a file named `report.md` in the working directory containing \
          exactly the line `token={token}`."

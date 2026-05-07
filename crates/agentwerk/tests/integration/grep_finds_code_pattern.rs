@@ -106,7 +106,7 @@ async fn finds_code_pattern_with_special_chars(
         .tool(ListDirectoryTool)
         .tool(ReadFileTool)
         .event_handler(event_handler);
-    tickets.add(agent);
+    tickets.agent(agent);
     tickets.task(format!(
         "Which source file in this project contains the exact code \
          `{TARGET_SIGNATURE}`? Answer with the file's path."

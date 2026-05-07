@@ -22,7 +22,7 @@ const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Supervise the agent set: poll the system's agent list every
 /// `IDLE_POLL_INTERVAL`, spawn one `handle_tickets` task per newly
 /// appended agent, and join all of them on shutdown. Detects late adds
-/// from `tickets.add()` calls that land after `run()` was spawned.
+/// from `tickets.agent()` calls that land after `run()` was spawned.
 /// Exits when the interrupt signal flips.
 pub(super) async fn run_main_loop(system: &crate::agents::tickets::TicketSystem) {
     let signal = Arc::clone(&system.interrupt_signal.lock().unwrap());
@@ -141,20 +141,20 @@ pub(super) async fn handle_tickets(agent: Agent) {
             ));
             return;
         }
-        // Path A: ticket already pinned to this agent.
+        // Path A: in-progress ticket already labelled with this agent's name.
         let path_a = ticket_system
-            .find(|t| t.is_in_progress() && t.is_assigned_to(agent.get_name()))
+            .find(|t| t.status() == "in_progress" && t.has_label(agent.get_name()))
             .map(|t| (t.key().to_string(), false));
         // Path B: open Todo whose labels match this agent's scope.
         let path_b = ticket_system
-            .find(|t| t.is_todo() && t.assignee().is_none() && agent.handles_labels(&t.labels))
+            .find(|t| t.status() == "todo" && agent.handles_labels(&t.labels))
             .map(|t| (t.key().to_string(), true));
         let claim = path_a.or(path_b);
 
         let key = match claim {
-            Some((key, needs_assign)) => {
-                if needs_assign {
-                    let _ = ticket_system.set_assignee(&key, agent.get_name());
+            Some((key, needs_claim)) => {
+                if needs_claim {
+                    let _ = ticket_system.add_label(&key, agent.get_name());
                     let _ = ticket_system.update_status(&key, Status::InProgress);
                 }
                 key
@@ -232,8 +232,8 @@ async fn process_ticket(
             return;
         }
         match ticket_system.get(key) {
-            Some(t) if matches!(t.status(), Status::Done | Status::Failed) => {
-                emit(terminal_event(t.status(), key));
+            Some(t) if matches!(t.status, Status::Done | Status::Failed) => {
+                emit(terminal_event(t.status, key));
                 return;
             }
             Some(_) => {}
@@ -680,7 +680,7 @@ mod tests {
             // settle a ticket.
             .tool(ManageTicketsTool)
             .event_handler(handler);
-        tickets.add(agent);
+        tickets.agent(agent);
 
         if let Some(schema) = schema {
             tickets.task_schema("go", schema);
@@ -710,7 +710,7 @@ mod tests {
         assert_eq!(provider.requests(), 3);
         assert_eq!(retries_in(&events).len(), 2);
         assert!(failures_in(&events).is_empty());
-        assert_eq!(settled.unwrap().status(), Status::Done);
+        assert_eq!(settled.unwrap().status(), "done");
     }
 
     #[tokio::test]
@@ -759,7 +759,7 @@ mod tests {
 
         assert!(retries_in(&events).is_empty());
         assert!(failures_in(&events).is_empty());
-        assert_eq!(settled.unwrap().status(), Status::Done);
+        assert_eq!(settled.unwrap().status(), "done");
     }
 
     #[tokio::test]
@@ -904,7 +904,7 @@ mod tests {
             .model("mock")
             .role("test")
             .event_handler(handler);
-        tickets.add(agent);
+        tickets.agent(agent);
         tickets.task("go");
 
         let run_fut = tickets.run_dry();
@@ -958,7 +958,7 @@ mod tests {
             .count();
         assert_eq!(done, 1);
         assert_eq!(failed, 0);
-        assert_eq!(settled.unwrap().status(), Status::Done);
+        assert_eq!(settled.unwrap().status(), "done");
     }
 
     #[tokio::test]
@@ -978,7 +978,7 @@ mod tests {
             .count();
         assert_eq!(failed, 1);
         assert_eq!(done, 0);
-        assert_eq!(settled.unwrap().status(), Status::Failed);
+        assert_eq!(settled.unwrap().status(), "failed");
     }
 
     #[tokio::test]
@@ -1001,7 +1001,7 @@ mod tests {
         assert_eq!(done, 1);
         assert_eq!(failed, 0);
         let settled = settled.unwrap();
-        assert_eq!(settled.status(), Status::Done);
+        assert_eq!(settled.status(), "done");
         assert_eq!(settled.result().unwrap().result["partial_sum"], 42);
     }
 
@@ -1035,7 +1035,7 @@ mod tests {
         for (_, max_attempts, _) in &schema_retries {
             assert_eq!(*max_attempts, 10);
         }
-        assert_eq!(settled.unwrap().status(), Status::Done);
+        assert_eq!(settled.unwrap().status(), "done");
     }
 
     #[tokio::test]
@@ -1076,7 +1076,7 @@ mod tests {
             )
         });
         assert!(policy_violated, "expected MaxSchemaRetries PolicyViolated");
-        assert_eq!(settled.unwrap().status(), Status::Failed);
+        assert_eq!(settled.unwrap().status(), "failed");
     }
 
     // =====================================================================
@@ -1106,7 +1106,7 @@ mod tests {
             .model("mock")
             .role("test")
             .event_handler(handler);
-        tickets.add(agent);
+        tickets.agent(agent);
         tickets.task("go");
 
         let run_fut = tickets.run_dry();
@@ -1167,7 +1167,7 @@ mod tests {
             .request_retry_delay(Duration::from_millis(1))
             .max_schema_retries(10)
             .max_time(Duration::from_millis(500));
-        tickets.add(
+        tickets.agent(
             Agent::new()
                 .name("tester")
                 .provider(provider.clone() as Arc<dyn Provider>)
@@ -1206,7 +1206,7 @@ mod tests {
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1))
             .max_time(Duration::from_millis(500));
-        tickets.add(
+        tickets.agent(
             Agent::new()
                 .name("tester")
                 .provider(provider.clone() as Arc<dyn Provider>)
@@ -1257,7 +1257,7 @@ mod tests {
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1))
             .max_time(Duration::from_millis(500));
-        tickets.add(
+        tickets.agent(
             Agent::new()
                 .name("tester")
                 .provider(provider.clone() as Arc<dyn Provider>)
@@ -1304,7 +1304,7 @@ mod tests {
             .request_retry_delay(Duration::from_millis(1))
             .max_time(Duration::from_millis(500));
 
-        tickets.add(
+        tickets.agent(
             Agent::new()
                 .name("alice")
                 .label("a")
@@ -1313,7 +1313,7 @@ mod tests {
                 .role("test")
                 .memory(&store),
         );
-        tickets.add(
+        tickets.agent(
             Agent::new()
                 .name("bob")
                 .label("b")
@@ -1366,7 +1366,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         let provider = MockProvider::with_results(vec![Ok(write_result_response("ok"))]);
-        tickets.add(
+        tickets.agent(
             Agent::new()
                 .name("late")
                 .provider(provider.clone() as Arc<dyn Provider>)
@@ -1374,14 +1374,14 @@ mod tests {
                 .role("test")
                 .tool(ManageTicketsTool),
         );
-        tickets.ticket(Ticket::new("hello").assign_to("late"));
+        tickets.ticket(Ticket::new("hello").label("late"));
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
             let done = tickets
                 .tickets()
                 .iter()
-                .any(|t| t.is_done() && t.task.as_str() == Some("hello"));
+                .any(|t| t.status() == "done" && t.task.as_str() == Some("hello"));
             if done {
                 break;
             }
@@ -1412,7 +1412,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         let provider = MockProvider::with_results(vec![Ok(write_result_response("ok"))]);
-        tickets.add(
+        tickets.agent(
             Agent::new()
                 .name("late")
                 .provider(provider as Arc<dyn Provider>)
@@ -1420,14 +1420,14 @@ mod tests {
                 .role("test")
                 .tool(ManageTicketsTool),
         );
-        tickets.ticket(Ticket::new("x").assign_to("late"));
+        tickets.ticket(Ticket::new("x").label("late"));
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
             let done = tickets
                 .tickets()
                 .iter()
-                .any(|t| t.is_done() && t.task.as_str() == Some("x"));
+                .any(|t| t.status() == "done" && t.task.as_str() == Some("x"));
             if done {
                 break;
             }
@@ -1461,7 +1461,7 @@ mod tests {
             .workspace(results_dir.path().to_path_buf())
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1));
-        tickets.add(
+        tickets.agent(
             Agent::new()
                 .name("worker")
                 .provider(provider as Arc<dyn Provider>)
@@ -1528,7 +1528,7 @@ mod tests {
             .workspace(results_dir.path().to_path_buf())
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1));
-        tickets.add(
+        tickets.agent(
             Agent::new()
                 .name("worker")
                 .provider(provider as Arc<dyn Provider>)
@@ -1559,7 +1559,7 @@ mod tests {
             .workspace(results_dir.path().to_path_buf())
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1));
-        let agent = tickets.add(
+        let agent = tickets.agent(
             Agent::new()
                 .name("worker")
                 .provider(provider as Arc<dyn Provider>)

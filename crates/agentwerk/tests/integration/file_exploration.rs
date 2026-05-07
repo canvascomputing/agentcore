@@ -22,7 +22,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .tool(ReadFileTool)
         .tool(GlobTool)
         .tool(ManageTicketsTool);
-    tickets.add(agent);
+    tickets.agent(agent);
     tickets.task("Find all Rust source files and describe what this project does.");
 
     let results = tickets.run_dry().await;

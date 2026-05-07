@@ -2,7 +2,7 @@
   "name": "write_tickets_tool",
   "summary": [
     "Mutate the ticket queue: create new tickets or edit fields.",
-    "Use `create` with `assignee` to delegate work to another agent (their name) or scope it to a label.",
+    "Use `create` with `labels` containing an agent's name to delegate work to that agent, or with a topical label to scope it.",
     "Finishing a ticket is done with `write_result_tool`, not this tool."
   ],
   "constraints": [
@@ -14,7 +14,7 @@
     "To look up, list, or search tickets — use `read_tickets_tool`.",
     "When the agent needs read AND write in the same flow — use `manage_tickets_tool` instead of registering both.",
     "To finish the agent's current ticket — call `write_result_tool`.",
-    "To delegate work to another agent — use `create` with `assignee` set to that agent's name; the loop's Path A picks it up next iteration."
+    "To delegate work to another agent — use `create` with that agent's name in `labels`; the loop routes label-named tickets directly to the matching agent."
   ],
   "cautions": [
     "IMPORTANT: this tool cannot transition status. Use `write_result_tool` to finish; `Failed` is reserved for ticket-system-driven outcomes (schema-retry trip, policy violations).",
@@ -42,11 +42,7 @@
       "labels": {
         "type": "array",
         "items": { "type": "string" },
-        "description": "For `create` or `edit` (optional): label scope. Determines which agents can pick up the ticket via Path B (label intersection)."
-      },
-      "assignee": {
-        "type": "string",
-        "description": "For `create` (optional): a single label OR an agent name. If it matches a registered agent, the ticket is born `InProgress` with that assignee (Path A). Otherwise it is appended to `labels` (Path B)."
+        "description": "For `create` or `edit` (optional): label scope. Determines which agents pick up the ticket. Including an agent's name as a label pins the ticket to that agent."
       },
       "schema": {
         "type": "object",

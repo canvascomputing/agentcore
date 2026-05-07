@@ -56,7 +56,7 @@ async fn separates_files_and_directories() -> std::result::Result<(), Box<dyn st
              any text outside of tool calls.",
         )
         .tool(ListDirectoryTool);
-    tickets.add(agent);
+    tickets.agent(agent);
     tickets.task_schema(
         "List the top-level entries in the working directory, separating files from directories.",
         schema,

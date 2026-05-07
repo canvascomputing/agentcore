@@ -33,7 +33,7 @@ async fn replaces_substring_in_place() -> std::result::Result<(), Box<dyn std::e
              calls.",
         )
         .tool(EditFileTool);
-    tickets.add(agent);
+    tickets.agent(agent);
     tickets.task(
         "In `config.txt`, change the substring `old_value` to `new_value`. \
          Leave the rest of the file untouched.",

@@ -91,9 +91,8 @@ mod tests {
 
     fn one_ticket(agent: &str) -> (Arc<TicketSystem>, String) {
         let sys = TicketSystem::new();
-        let key = sys.insert(Ticket::new("body"), "tester".into());
+        let key = sys.insert(Ticket::new("body").label(agent), "tester".into());
         sys.force_status(&key, Status::InProgress).unwrap();
-        sys.set_assignee(&key, agent).unwrap();
         (sys, key)
     }
 
@@ -109,7 +108,7 @@ mod tests {
             .unwrap();
         assert!(matches!(outcome, ToolResult::Success(_)));
         let t = sys.get(&key).unwrap();
-        assert_eq!(t.status(), Status::Done);
+        assert_eq!(t.status(), "done");
         let attached = t.result().unwrap();
         assert_eq!(attached.agent, "alice");
         assert_eq!(attached.ticket, key);
@@ -135,7 +134,7 @@ mod tests {
             .unwrap();
         assert!(matches!(outcome, ToolResult::Error(_)));
         let t = sys.get(&key).unwrap();
-        assert_eq!(t.status(), Status::InProgress);
+        assert_eq!(t.status(), "in_progress");
         assert!(!dir.path().join("results.jsonl").exists());
     }
 
@@ -151,7 +150,7 @@ mod tests {
             .unwrap();
         assert!(matches!(outcome, ToolResult::Success(_)));
         let t = sys.get(&key).unwrap();
-        assert_eq!(t.status(), Status::Done);
+        assert_eq!(t.status(), "done");
         assert_eq!(t.result().unwrap().result["x"], 1);
 
         // The saved `result` field is a JSON object, not an escaped
@@ -185,9 +184,8 @@ mod tests {
             "required": ["x"]
         }))
         .unwrap();
-        let key = sys.insert(Ticket::new("hi").schema(schema), "tester".into());
+        let key = sys.insert(Ticket::new("hi").schema(schema).label("alice"), "tester".into());
         sys.force_status(&key, Status::InProgress).unwrap();
-        sys.set_assignee(&key, "alice").unwrap();
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
 
         // wrong shape
@@ -197,7 +195,7 @@ mod tests {
             .unwrap();
         assert!(matches!(outcome, ToolResult::SchemaError(_)));
         let t = sys.get(&key).unwrap();
-        assert_eq!(t.status(), Status::InProgress);
+        assert_eq!(t.status(), "in_progress");
 
         // valid shape
         let outcome = WriteResultTool
@@ -206,7 +204,7 @@ mod tests {
             .unwrap();
         assert!(matches!(outcome, ToolResult::Success(_)));
         let t = sys.get(&key).unwrap();
-        assert_eq!(t.status(), Status::Done);
+        assert_eq!(t.status(), "done");
         assert_eq!(t.result().unwrap().result["x"], "ok");
     }
 
@@ -252,18 +250,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sys = TicketSystem::new().workspace(dir.path().to_path_buf());
 
-        let key1 = sys.insert(Ticket::new("a"), "tester".into());
+        let key1 = sys.insert(Ticket::new("a").label("alice"), "tester".into());
         sys.force_status(&key1, Status::InProgress).unwrap();
-        sys.set_assignee(&key1, "alice").unwrap();
         let ctx_alice = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
         WriteResultTool
             .call(serde_json::json!({"result": "from alice"}), &ctx_alice)
             .await
             .unwrap();
 
-        let key2 = sys.insert(Ticket::new("b"), "tester".into());
+        let key2 = sys.insert(Ticket::new("b").label("bob"), "tester".into());
         sys.force_status(&key2, Status::InProgress).unwrap();
-        sys.set_assignee(&key2, "bob").unwrap();
         let ctx_bob = ctx_with(Arc::clone(&sys), "bob", dir.path().to_path_buf());
         WriteResultTool
             .call(serde_json::json!({"result": "from bob"}), &ctx_bob)
@@ -292,9 +288,8 @@ mod tests {
         let mut expected = Vec::with_capacity(N);
         for i in 0..N {
             let agent = format!("agent_{i}");
-            let key = sys.insert(Ticket::new(format!("body_{i}")), "tester".into());
+            let key = sys.insert(Ticket::new(format!("body_{i}")).label(&agent), "tester".into());
             sys.force_status(&key, Status::InProgress).unwrap();
-            sys.set_assignee(&key, &agent).unwrap();
             expected.push((agent, key));
         }
 

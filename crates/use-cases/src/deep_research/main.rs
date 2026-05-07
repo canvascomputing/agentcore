@@ -70,7 +70,7 @@ async fn main() {
         .collect();
 
     for r in researchers {
-        tickets.add(r);
+        tickets.agent(r);
     }
     tickets.run_dry().await;
 
@@ -126,7 +126,7 @@ async fn main() {
         .tool(ManageTicketsTool)
         .event_handler(Arc::clone(&event_handler));
 
-    tickets.add(report_writer);
+    tickets.agent(report_writer);
     let results = tickets.run_dry().await;
     let report = results
         .last()

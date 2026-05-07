@@ -1,6 +1,6 @@
 //! Agent: identity + prompt parts + provider/model + a bound ticket
 //! system. Holds a `Weak<TicketSystem>`; `Default` produces a dangling
-//! `Weak`, and `tickets.add(agent)` (or `agent.ticket_system(&shared)`)
+//! `Weak`, and `tickets.agent(agent)` (or `agent.ticket_system(&shared)`)
 //! stamps the system's `Weak<Self>` onto the agent. The loop upgrades it
 //! once at the start of `handle_tickets` and accesses `tickets`,
 //! `policies`, `stats`, and `interrupt_signal` through the resulting
@@ -206,9 +206,14 @@ impl Agent {
     }
 
     /// Returns true when the agent's label scope intersects the ticket's
-    /// labels. Empty agent labels mean "default scope": only tickets with
-    /// no labels match.
+    /// labels, OR when one of the ticket's labels equals the agent's name
+    /// (name acts as an implicit self-label, so labelling a ticket with an
+    /// agent's name pins it to that agent). Empty agent labels mean
+    /// "default scope": tickets with no labels match.
     pub(super) fn handles_labels(&self, ticket_labels: &[String]) -> bool {
+        if ticket_labels.iter().any(|l| l == &self.name) {
+            return true;
+        }
         if self.labels.is_empty() {
             ticket_labels.is_empty()
         } else {
@@ -302,8 +307,8 @@ impl Agent {
     }
 
     /// Enqueue a ticket carrying `task` and attached to `label` for
-    /// Path B routing. To pin a ticket directly to an agent (Path A),
-    /// build it explicitly: `agent.ticket(Ticket::new(...).assign_to("alice"))`.
+    /// Path B routing. To pin a ticket directly to an agent, label it
+    /// with the agent's name: `agent.ticket(Ticket::new(...).label("alice"))`.
     pub fn task_labeled<T: Serialize>(&self, task: T, label: impl Into<String>) -> &Self {
         let ticket = Ticket::new(task).label(label);
         self.dispatch(ticket);
@@ -331,9 +336,8 @@ impl Agent {
     }
 
     /// Enqueue a fully-built `Ticket`. System-managed fields (key,
-    /// reporter, created_at, status, result) are overwritten unless the
-    /// caller set `assignee` on the ticket — that case births the ticket
-    /// `InProgress` to enable Path A routing.
+    /// reporter, created_at, status, result) are overwritten. To pin the
+    /// ticket to a specific agent, label it with the agent's name.
     pub fn ticket(&self, ticket: Ticket) -> &Self {
         self.dispatch(ticket);
         self
@@ -395,6 +399,20 @@ mod tests {
         assert!(agent.handles_labels(&["urgent".into(), "other".into()]));
         assert!(!agent.handles_labels(&["report".into()]));
         assert!(!agent.handles_labels(&[]));
+    }
+
+    #[test]
+    fn handles_labels_matches_when_ticket_label_equals_agent_name() {
+        // Default-scope agent: a ticket labelled with the agent's name
+        // routes here even though the agent has no other labels.
+        let agent = Agent::new().name("alice");
+        assert!(agent.handles_labels(&["alice".into()]));
+        assert!(agent.handles_labels(&["alice".into(), "other".into()]));
+        // Same holds when the agent does carry topical labels.
+        let agent = Agent::new().name("alice").label("math");
+        assert!(agent.handles_labels(&["alice".into()]));
+        assert!(agent.handles_labels(&["math".into()]));
+        assert!(!agent.handles_labels(&["report".into()]));
     }
 
     #[test]

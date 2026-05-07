@@ -22,7 +22,7 @@ use super::r#loop::run_main_loop;
 use super::stats::{Stats, TicketStats};
 
 /// A ticket. Caller-settable fields: `task`, `labels`, `schema`,
-/// `assignee`. System-managed fields (`key`, `status`, `reporter`,
+/// `labels`. System-managed fields (`key`, `status`, `reporter`,
 /// `created_at`, `result`) are stamped at insertion time.
 #[derive(Debug, Clone)]
 pub struct Ticket {
@@ -31,7 +31,6 @@ pub struct Ticket {
     pub schema: Option<crate::schemas::Schema>,
     pub(crate) key: String,
     pub(crate) status: Status,
-    pub(crate) assignee: Option<String>,
     pub(crate) reporter: String,
     pub(crate) created_at: u64,
     /// Set when the ticket transitions `Todo → InProgress`. Millis
@@ -71,10 +70,9 @@ impl TicketResult {
 
 impl Ticket {
     /// New ticket carrying `task` as its body. Use the chainable helpers
-    /// (`label`, `labels`, `schema`, `assignee`) to populate
-    /// caller-settable fields. System-managed fields are stamped by the
-    /// ticket system at insertion time; the placeholders set here are
-    /// overwritten.
+    /// (`label`, `labels`, `schema`) to populate caller-settable fields.
+    /// System-managed fields are stamped by the ticket system at
+    /// insertion time; the placeholders set here are overwritten.
     pub fn new<T: Serialize>(task: T) -> Self {
         let value = serde_json::to_value(task).expect("Ticket::new: value must serialize to JSON");
         Self {
@@ -83,7 +81,6 @@ impl Ticket {
             schema: None,
             key: String::new(),
             status: Status::Todo,
-            assignee: None,
             reporter: String::new(),
             created_at: 0,
             started_at: None,
@@ -114,27 +111,17 @@ impl Ticket {
         self
     }
 
-    /// Pin the ticket directly to an agent by name. The ticket is born
-    /// `InProgress` and Path A on the loop side picks it up. There is no
-    /// auto-resolution between assignee and label — the caller must know
-    /// which they want.
-    pub fn assign_to(mut self, name: impl Into<String>) -> Self {
-        self.assignee = Some(name.into());
-        self
-    }
-
     // ---- read-only accessors for system-managed fields ----
 
     pub fn key(&self) -> &str {
         &self.key
     }
 
-    pub fn status(&self) -> Status {
-        self.status
-    }
-
-    pub fn assignee(&self) -> Option<&str> {
-        self.assignee.as_deref()
+    /// Current status as a lowercase string: `"todo"`, `"in_progress"`,
+    /// `"done"`, or `"failed"`. Use [`TicketSystem::update_status`] with the
+    /// `Status` enum to drive transitions.
+    pub fn status(&self) -> &'static str {
+        self.status.as_str()
     }
 
     pub fn reporter(&self) -> &str {
@@ -157,9 +144,10 @@ impl Ticket {
         self.failed_at
     }
 
-    /// Wall-clock duration from creation to terminal status (Done or
-    /// Failed), `None` while the ticket has not yet reached one.
-    pub fn duration(&self) -> Option<Duration> {
+    /// Elapsed duration from creation to terminal status (Done or
+    /// Failed), `None` while the ticket has not yet reached one. Mirrors
+    /// the naming convention of [`Stats::elapsed`].
+    pub fn elapsed(&self) -> Option<Duration> {
         let terminal = self.finished_at.or(self.failed_at)?;
         Some(Duration::from_millis(
             terminal.saturating_sub(self.created_at),
@@ -175,28 +163,6 @@ impl Ticket {
     /// string view of the result regardless of the underlying JSON shape.
     pub fn result_string(&self) -> Option<String> {
         self.result.as_ref().map(TicketResult::result_string)
-    }
-
-    // ---- predicate helpers (compose with TicketSystem::filter / find / count) ----
-
-    pub fn is_todo(&self) -> bool {
-        self.status == Status::Todo
-    }
-
-    pub fn is_in_progress(&self) -> bool {
-        self.status == Status::InProgress
-    }
-
-    pub fn is_done(&self) -> bool {
-        self.status == Status::Done
-    }
-
-    pub fn is_failed(&self) -> bool {
-        self.status == Status::Failed
-    }
-
-    pub fn is_assigned_to(&self, name: &str) -> bool {
-        self.assignee.as_deref() == Some(name)
     }
 
     pub fn has_label(&self, label: &str) -> bool {
@@ -220,6 +186,20 @@ pub enum Status {
     InProgress,
     Done,
     Failed,
+}
+
+impl Status {
+    /// Lowercase wire form: `"todo"`, `"in_progress"`, `"done"`, `"failed"`.
+    /// Single source of truth for the string rendering used by
+    /// [`Ticket::status`] and the `tickets.jsonl` event log.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Status::Todo => "todo",
+            Status::InProgress => "in_progress",
+            Status::Done => "done",
+            Status::Failed => "failed",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -380,9 +360,8 @@ impl TicketSystem {
     }
 
     /// Enqueue a fully-built `Ticket`. System-managed fields (key,
-    /// reporter, created_at, status, result) are overwritten unless
-    /// `assignee` was explicitly set on the ticket — that case births the
-    /// ticket `InProgress` to enable Path A routing.
+    /// reporter, created_at, status, result) are overwritten. To pin the
+    /// ticket to a specific agent, label it with the agent's name.
     pub fn ticket(&self, ticket: Ticket) -> &Self {
         self.dispatch(ticket);
         self
@@ -394,9 +373,9 @@ impl TicketSystem {
 
     // ---- inherent ticket-store methods ----
 
-    /// Insert `ticket`, stamping system fields. If `ticket.assignee` was
-    /// preset, the ticket is born `InProgress`; otherwise `Todo`. Returns
-    /// the inserted ticket's key.
+    /// Insert `ticket`, stamping system fields. The ticket is always born
+    /// `Todo`; to pin it to a specific agent, label it with the agent's
+    /// name. Returns the inserted ticket's key.
     pub(crate) fn insert(&self, mut ticket: Ticket, reporter: String) -> String {
         let mut store = self.tickets.lock().unwrap();
         let id = store.len() + 1;
@@ -404,15 +383,10 @@ impl TicketSystem {
         ticket.created_at = now_millis();
         ticket.reporter = reporter;
         ticket.result = None;
-        ticket.status = if ticket.assignee.is_some() {
-            Status::InProgress
-        } else {
-            Status::Todo
-        };
+        ticket.status = Status::Todo;
         let key = ticket.key.clone();
         let labels = ticket.labels.clone();
         let reporter = ticket.reporter.clone();
-        let assignee = ticket.assignee.clone();
         let task = ticket.task.clone();
         let created_at = ticket.created_at;
         store.insert(key.clone(), ticket);
@@ -428,7 +402,6 @@ impl TicketSystem {
             "key": key,
             "reporter": reporter,
             "labels": labels,
-            "assignee": assignee,
             "task": task,
         }));
         key
@@ -472,12 +445,11 @@ impl TicketSystem {
             ticket.status = status;
             let durations = terminal_durations(ticket);
             let labels = ticket.labels.clone();
-            let assignee = ticket.assignee.clone();
-            (prev, durations, labels, assignee)
+            (prev, durations, labels)
         };
         fire_transition_recorder(&self.stats, outcome.0, status, now, outcome.1);
         fire_label_transition(&self.stats, status, outcome.1, &outcome.2);
-        self.log_transition(key, outcome.0, status, now, outcome.1, &outcome.3);
+        self.log_transition(key, outcome.0, status, now, outcome.1, &outcome.2);
         Ok(())
     }
 
@@ -499,12 +471,11 @@ impl TicketSystem {
             ticket.status = status;
             let durations = terminal_durations(ticket);
             let labels = ticket.labels.clone();
-            let assignee = ticket.assignee.clone();
-            (prev, durations, labels, assignee)
+            (prev, durations, labels)
         };
         fire_transition_recorder(&self.stats, outcome.0, status, now, outcome.1);
         fire_label_transition(&self.stats, status, outcome.1, &outcome.2);
-        self.log_transition(key, outcome.0, status, now, outcome.1, &outcome.3);
+        self.log_transition(key, outcome.0, status, now, outcome.1, &outcome.2);
         Ok(())
     }
 
@@ -518,7 +489,7 @@ impl TicketSystem {
         next: Status,
         ts: u64,
         (ticket_duration, work_duration): (Duration, Duration),
-        assignee: &Option<String>,
+        labels: &[String],
     ) {
         if prev == next {
             return;
@@ -528,7 +499,7 @@ impl TicketSystem {
                 "event": "started",
                 "ts": ts,
                 "key": key,
-                "assignee": assignee,
+                "labels": labels,
             }));
         }
         match next {
@@ -546,20 +517,25 @@ impl TicketSystem {
         }
     }
 
-    /// Set a ticket's assignee. Used by the loop to pin a Path-B ticket
-    /// to the agent that just claimed it.
-    pub(crate) fn set_assignee(
+    /// Append a label to a ticket. Used by the loop to pin a Path-B
+    /// ticket to the agent that just claimed it: subsequent Path-A
+    /// lookups find the ticket via `has_label(agent_name)`. No-op when
+    /// the label is already present.
+    pub(crate) fn add_label(
         &self,
         key: &str,
-        assignee: impl Into<String>,
+        label: impl Into<String>,
     ) -> Result<(), TicketError> {
+        let label = label.into();
         let mut store = self.tickets.lock().unwrap();
         let ticket = store
             .get_mut(key)
             .ok_or_else(|| TicketError::TicketMissing {
                 key: key.to_string(),
             })?;
-        ticket.assignee = Some(assignee.into());
+        if !ticket.labels.iter().any(|l| l == &label) {
+            ticket.labels.push(label);
+        }
         Ok(())
     }
 
@@ -733,7 +709,7 @@ impl TicketSystem {
     /// May be called before or after `run()` / `run_dry()`. When called
     /// after `run()`, the new agent starts polling for tickets within
     /// roughly one `IDLE_POLL_INTERVAL` (~100 ms).
-    pub fn add(&self, mut agent: Agent) -> Agent {
+    pub fn agent(&self, mut agent: Agent) -> Agent {
         self.bind_agent(&mut agent);
         agent
     }
@@ -777,7 +753,7 @@ impl TicketSystem {
     /// Tickets that finished without a recorded result are skipped.
     /// Backing helper for `Running::run_dry`.
     pub(crate) fn collect_results(&self) -> Vec<TicketResult> {
-        self.filter(Ticket::is_done)
+        self.filter(|t| t.status() == "done")
             .into_iter()
             .filter_map(|t| t.result)
             .collect()
@@ -863,7 +839,7 @@ fn stamp_transition_timestamps(ticket: &mut Ticket, next: Status, now: u64) {
 /// `work_duration` is started→terminal. Both default to zero if the
 /// relevant timestamps aren't both set.
 fn terminal_durations(ticket: &Ticket) -> (Duration, Duration) {
-    let ticket_duration = ticket.duration().unwrap_or_default();
+    let ticket_duration = ticket.elapsed().unwrap_or_default();
     let work_duration = match (ticket.started_at, ticket.finished_at.or(ticket.failed_at)) {
         (Some(start), Some(end)) => Duration::from_millis(end.saturating_sub(start)),
         _ => Duration::ZERO,
@@ -983,8 +959,7 @@ mod tests {
         let t = sys.get("TICKET-1").unwrap();
         assert_eq!(t.task, serde_json::Value::String("hello".into()));
         assert_eq!(t.reporter(), "user");
-        assert_eq!(t.status(), Status::Todo);
-        assert!(t.assignee().is_none());
+        assert_eq!(t.status(), "todo");
     }
 
     #[test]
@@ -993,17 +968,16 @@ mod tests {
         sys.task_labeled("hello", "research");
         let t = sys.get("TICKET-1").unwrap();
         assert_eq!(t.labels, vec!["research".to_string()]);
-        assert_eq!(t.status(), Status::Todo);
-        assert!(t.assignee().is_none());
+        assert_eq!(t.status(), "todo");
     }
 
     #[test]
-    fn create_with_explicit_assignee_births_ticket_inprogress() {
+    fn create_with_named_label_is_born_todo_and_carries_label() {
         let sys = TicketSystem::new();
-        sys.ticket(Ticket::new("specific work for alice").assign_to("alice"));
+        sys.ticket(Ticket::new("specific work for alice").label("alice"));
         let t = sys.get("TICKET-1").unwrap();
-        assert_eq!(t.assignee(), Some("alice"));
-        assert_eq!(t.status(), Status::InProgress);
+        assert!(t.has_label("alice"));
+        assert_eq!(t.status(), "todo");
     }
 
     #[test]
@@ -1030,12 +1004,12 @@ mod tests {
     #[test]
     fn ticket_system_handle_is_shared_between_caller_and_added_agent() {
         let sys = TicketSystem::new();
-        let alice = sys.add(Agent::new().name("alice"));
+        let alice = sys.agent(Agent::new().name("alice"));
         // Alice's task lands in the same queue.
         alice.task("from alice");
         sys.task("from system");
         let all_keys: Vec<String> = sys
-            .filter(Ticket::is_todo)
+            .filter(|t| t.status() == "todo")
             .iter()
             .map(|t| t.key().to_string())
             .collect();
@@ -1046,10 +1020,10 @@ mod tests {
     fn agent_must_be_bound_before_task() {
         let alice = Agent::new().name("alice");
         let sys = TicketSystem::new();
-        let alice = sys.add(alice);
+        let alice = sys.agent(alice);
         // Bound — task() works, lands in the shared queue.
         alice.task("first").task("second");
-        assert_eq!(sys.count(Ticket::is_todo), 2);
+        assert_eq!(sys.count(|t| t.status() == "todo"), 2);
     }
 
     #[test]
@@ -1160,8 +1134,8 @@ mod tests {
         sys.update_status("TICKET-1", Status::InProgress).unwrap();
         sys.update_status("TICKET-1", Status::Done).unwrap();
         sys.force_status("TICKET-2", Status::Failed).unwrap();
-        let done = sys.filter(Ticket::is_done);
-        let failed = sys.filter(Ticket::is_failed);
+        let done = sys.filter(|t| t.status() == "done");
+        let failed = sys.filter(|t| t.status() == "failed");
         assert_eq!(done.len(), 1);
         assert_eq!(done[0].key(), "TICKET-1");
         assert_eq!(failed.len(), 1);
@@ -1289,14 +1263,14 @@ mod tests {
     }
 
     #[test]
-    fn workspace_created_event_carries_assignee_when_pinned() {
+    fn workspace_created_event_carries_labels_when_pinned() {
         let dir = tempfile::tempdir().unwrap();
         let sys = TicketSystem::new().workspace(dir.path().to_path_buf());
-        sys.ticket(Ticket::new("specific").assign_to("alice"));
+        sys.ticket(Ticket::new("specific").label("alice"));
         let lines = read_tickets_log(dir.path());
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0]["event"], "created");
-        assert_eq!(lines[0]["assignee"], "alice");
+        assert_eq!(lines[0]["labels"], serde_json::json!(["alice"]));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 {
   "name": "read_tickets_tool",
   "summary": [
-    "Read tickets from the queue: look up by key, list by status or assignee, or search task bodies.",
+    "Read tickets from the queue: look up by key, list by status or label, or search task bodies.",
     "Returns a markdown ticket block (`get`) or a bulleted summary list (`list`, `search`)."
   ],
   "constraints": [
@@ -15,12 +15,11 @@
     "To find code or files in the working directory — use `grep_tool` / `glob_tool`."
   ],
   "cautions": [
-    "IMPORTANT: tickets the agent has not yet picked up have no `assignee` — `list` with `assignee` filter excludes them.",
     "IMPORTANT: `search` matches the task body only — labels and result text are not searched."
   ],
   "output": [
-    "`get`: a markdown block with key, status, reporter, assignee, labels, task body, and result.",
-    "`list` / `search`: bullet lines `- KEY [STATUS] [labels] @assignee — task preview`.",
+    "`get`: a markdown block with key, status, reporter, labels, task body, and result.",
+    "`list` / `search`: bullet lines `- KEY [STATUS] [labels] — task preview`.",
     "`(no matching tickets)` when nothing matches."
   ],
   "read_only": true,
@@ -29,7 +28,7 @@
     "properties": {
       "action": {
         "type": "string",
-        "description": "Read mode: `get` (one ticket), `list` (filter by status / assignee), `search` (free-text)."
+        "description": "Read mode: `get` (one ticket), `list` (filter by status / label), `search` (free-text)."
       },
       "key": {
         "type": "string",
@@ -37,11 +36,11 @@
       },
       "status": {
         "type": "string",
-        "description": "Filter for `list`: one of `Todo`, `InProgress`, `Done`, `Failed`. Combine with `assignee` to narrow further."
+        "description": "Filter for `list`: one of `Todo`, `InProgress`, `Done`, `Failed`. Combine with `label` to narrow further."
       },
-      "assignee": {
+      "label": {
         "type": "string",
-        "description": "Filter for `list`: only tickets assigned to this name. Tickets with no assignee are never returned by this filter."
+        "description": "Filter for `list`: only tickets carrying this label (case-sensitive). Pass an agent's name to find that agent's pinned tickets."
       },
       "query": {
         "type": "string",

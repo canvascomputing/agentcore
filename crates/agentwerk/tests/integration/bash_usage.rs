@@ -47,7 +47,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .tool(ls)
         .tool(cat)
         .tool(wc);
-    tickets.add(agent);
+    tickets.agent(agent);
     tickets.task_schema(
         "List the files in the current directory, read the Cargo.toml file, \
          and count its lines. Report the result.",

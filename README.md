@@ -266,7 +266,7 @@ agent.task(serde_json::json!({ "file": "Cargo.toml", "find": "version" }));
 
 ## Tickets
 
-A `Ticket` is a task plus the metadata the system uses to route, schedule, and track it: labels, schema, assignee, status. The `TicketSystem` is agentwerk's core data structure: a shared queue that distributes tickets across one or more agents. Labels route work to a pool of matching agents; an explicit assignee pins a ticket to a single named agent.
+A `Ticket` is a task plus the metadata the system uses to route, schedule, and track it: labels, schema, status. The `TicketSystem` is agentwerk's core data structure: a shared queue that distributes tickets across one or more agents. Labels route work to a pool of matching agents; labelling a ticket with an agent's name pins it to that agent.
 
 ### Construct
 
@@ -276,13 +276,13 @@ Create a system and register the agents that will work it.
 use agentwerk::TicketSystem;
 
 let tickets = TicketSystem::new().workspace("./.agentwerk");
-tickets.add(agent);
+tickets.agent(agent);
 ```
 
 | Method | Description |
 |--------|-------------|
 | `TicketSystem::new()` | Create a new ticket system that agents can share. |
-| `add(agent)` | Register an agent with the system. |
+| `agent(agent)` | Register an agent with the system. |
 | `interrupt_signal(signal)` | Override the cancel signal shared across agents. |
 | `workspace(dir)` | Set the workspace directory where memory, ticket results, and the ticket logs are persisted. |
 
@@ -309,6 +309,34 @@ tickets.ticket(built);
 | `task_schema_labeled(task, schema, label)` | Create a labeled task whose result must validate against `schema`. |
 | `ticket(ticket)` | Add a caller-built `Ticket` to the queue. |
 
+### Ticket
+
+A `Ticket` packages the task body with caller-set metadata (labels, schema) and system-managed fields stamped during the run (key, status, timestamps, result). Build one to queue with `tickets.ticket(...)`, and read its state with the accessors below.
+
+**Build**
+
+| Method | Description |
+|--------|-------------|
+| `Ticket::new(task)` | Create a ticket carrying `task` as its body. |
+| `label(l)` / `labels([..])` | Add labels for label-scoped routing. To pin the ticket to a specific agent, include the agent's name as a label. |
+| `schema(s)` | Attach a result schema the answer must validate against. |
+
+**Read**
+
+```rust
+let ticket = tickets.find(|t| t.status() == "done" && t.has_label("report")).unwrap();
+let answer = ticket.result_string().unwrap();
+```
+
+| Method | Description |
+|--------|-------------|
+| `key()` | Return the system-assigned ticket key. |
+| `status()` | Return the current status as `"todo"`, `"in_progress"`, `"done"`, or `"failed"`. |
+| `result()` | Return the recorded `TicketResult`, if any. |
+| `result_string()` | Return the result payload rendered as a string. |
+| `elapsed()` | Return the elapsed time from creation to terminal status. |
+| `has_label(l)` | Return whether the ticket carries label `l`. To check whether a ticket is pinned to an agent, pass the agent's name. |
+
 ### Run
 
 Start in the background with `run()`, or block until every queued task finishes with `run_dry()`.
@@ -327,7 +355,7 @@ let results = tickets.run_dry().await;
 Look up finished tickets, filter the queue, or read aggregate statistics.
 
 ```rust
-let report = tickets.find(|t| t.is_done() && t.has_label("report"));
+let report = tickets.find(|t| t.status() == "done" && t.has_label("report"));
 let s = tickets.stats();
 ```
 

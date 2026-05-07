@@ -22,8 +22,8 @@
     "ALWAYS finish the current ticket with `write_result_tool` before the response ends. Returning text without a result leaves the ticket `InProgress` and the loop will re-pick it."
   ],
   "output": [
-    "Reads (`get`): markdown ticket block with key, status, reporter, assignee, labels, task body, result.",
-    "Reads (`list` / `search`): bullet lines `- KEY [STATUS] [labels] @assignee — task preview`. `(no matching tickets)` when empty.",
+    "Reads (`get`): markdown ticket block with key, status, reporter, labels, task body, result.",
+    "Reads (`list` / `search`): bullet lines `- KEY [STATUS] [labels] — task preview`. `(no matching tickets)` when empty.",
     "Writes: plain text confirmation, or an error describing the failed action."
   ],
   "read_only": false,
@@ -42,9 +42,9 @@
         "type": "string",
         "description": "For `list`: filter by status. One of `Todo`, `InProgress`, `Done`, `Failed`."
       },
-      "assignee": {
+      "label": {
         "type": "string",
-        "description": "For `list`: filter by assignee (excludes unassigned tickets). For `create` (optional): a single label OR an agent name. If it matches a registered agent, the ticket is born `InProgress` with that assignee (Path A). Otherwise it is appended to `labels` (Path B)."
+        "description": "For `list`: filter to tickets carrying this label (case-sensitive)."
       },
       "query": {
         "type": "string",
@@ -56,7 +56,7 @@
       "labels": {
         "type": "array",
         "items": { "type": "string" },
-        "description": "For `create` or `edit` (optional): label scope. Determines which agents can pick up the ticket via Path B (label intersection)."
+        "description": "For `create` or `edit` (optional): label scope. Determines which agents pick up the ticket. Including an agent's name as a label pins the ticket to that agent."
       },
       "schema": {
         "type": "object",

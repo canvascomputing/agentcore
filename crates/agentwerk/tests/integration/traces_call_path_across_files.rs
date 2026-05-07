@@ -93,7 +93,7 @@ async fn traces_three_hop_call_path() -> std::result::Result<(), Box<dyn std::er
         .tool(GlobTool)
         .tool(ListDirectoryTool)
         .tool(ReadFileTool);
-    tickets.add(agent);
+    tickets.agent(agent);
     tickets.task_schema(
         "Starting from the function `entry`, follow each function call \
          through the source files and report the full ordered call chain \

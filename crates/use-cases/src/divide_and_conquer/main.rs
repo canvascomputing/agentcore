@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use agentwerk::providers::{model_from_env, provider_from_env};
 use agentwerk::tools::ManageTicketsTool;
-use agentwerk::{Agent, Event, EventKind, Schema, Status, Ticket, TicketSystem, Tool, ToolResult};
+use agentwerk::{Agent, Event, EventKind, Schema, Ticket, TicketSystem, Tool, ToolResult};
 use serde_json::{json, Value};
 
 const ROLE: &str = include_str!("prompts/worker.role.md");
@@ -53,7 +53,7 @@ async fn main() {
 
     let event_handler = build_event_handler(args.verbose, style.clone(), partitions.len());
     for w in 0..workers {
-        tickets.add(
+        tickets.agent(
             Agent::new()
                 .name(format!("worker_{w}"))
                 .provider(Arc::clone(&provider))
@@ -153,8 +153,8 @@ fn aggregate_and_report(
 /// against the `idx=` line in the task body so a misrouted result
 /// can't quietly slot into the wrong partition.
 fn extract_partial(ticket: &Ticket, total: usize) -> Result<(usize, i128), String> {
-    if ticket.status() != Status::Done {
-        return Err(format!("{:?}", ticket.status()));
+    if ticket.status() != "done" {
+        return Err(ticket.status().to_string());
     }
     let attached = ticket.result().ok_or("no result attached")?;
     let idx = attached

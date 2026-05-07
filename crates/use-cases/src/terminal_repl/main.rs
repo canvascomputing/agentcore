@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use agentwerk::providers::{model_from_env, provider_from_env};
 use agentwerk::tools::{GlobTool, GrepTool, ListDirectoryTool, ReadFileTool};
-use agentwerk::{Agent, Event, EventKind, Memory, Status, TicketSystem};
+use agentwerk::{Agent, Event, EventKind, Memory, TicketSystem};
 
 const ROLE: &str = include_str!("prompts/repl.role.md");
 
@@ -54,7 +54,7 @@ async fn main() {
     let memory_dir = cwd.join(".agentwerk");
     let memory = Memory::open(&memory_dir).expect("open memory store");
 
-    let _agent = tickets.add(
+    let _agent = tickets.agent(
         Agent::new()
             .name("orchestrator")
             .provider(Arc::clone(&provider))
@@ -127,8 +127,8 @@ async fn main() {
 
         let stats = tickets.stats();
         let outcome = match tickets.tickets().last().map(|t| t.status()) {
-            Some(Status::Done) => "completed",
-            Some(Status::Failed) => "failed",
+            Some("done") => "completed",
+            Some("failed") => "failed",
             _ if cancelled => "cancelled",
             _ => "incomplete",
         };

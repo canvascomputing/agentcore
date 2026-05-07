@@ -73,7 +73,7 @@ pub(super) fn resolve_current_key(
     let agent_name = ctx.agent_name_str().ok_or_else(|| {
         ToolResult::error("Missing `key` and no agent_name set on this tool context")
     })?;
-    match ticket_system.find(|t| t.is_in_progress() && t.is_assigned_to(agent_name)) {
+    match ticket_system.find(|t| t.status() == "in_progress" && t.has_label(agent_name)) {
         Some(t) => Ok(t.key().to_string()),
         None => Err(ToolResult::error(
             "Missing `key` and no current ticket assigned to this agent",
@@ -88,12 +88,8 @@ pub(super) fn ticket_error_message(err: TicketError) -> String {
 fn render_ticket(t: &Ticket) -> String {
     let mut out = String::new();
     out.push_str(&format!("# {}\n", t.key()));
-    out.push_str(&format!("- status: {}\n", status_label(t.status())));
+    out.push_str(&format!("- status: {}\n", status_label(t.status)));
     out.push_str(&format!("- reporter: {}\n", t.reporter()));
-    out.push_str(&format!(
-        "- assignee: {}\n",
-        t.assignee().unwrap_or("(none)")
-    ));
     let labels_label = if t.labels.is_empty() {
         "(none)".to_string()
     } else {
@@ -152,23 +148,19 @@ fn truncate_for_preview(s: &str, max: usize) -> String {
     }
 }
 
-type SummaryRow<'a> = (&'a str, &'a str, Status, Option<&'a str>, &'a [String]);
+type SummaryRow<'a> = (&'a str, &'a str, Status, &'a [String]);
 
 fn render_summary_list(tickets: &[SummaryRow<'_>]) -> String {
     let mut out = String::new();
-    for (key, task_preview, status, assignee, labels) in tickets {
+    for (key, task_preview, status, labels) in tickets {
         let labels_label = if labels.is_empty() {
             String::new()
         } else {
             format!("[{}] ", labels.join(","))
         };
         out.push_str(&format!(
-            "- {key} [{status}] {labels_label}{assignee_label} — {task_preview}\n",
+            "- {key} [{status}] {labels_label}— {task_preview}\n",
             status = status_label(*status),
-            assignee_label = match assignee {
-                Some(a) => format!("@{a}"),
-                None => "(unassigned)".to_string(),
-            },
         ));
     }
     out
@@ -194,7 +186,7 @@ fn action_get(ticket_system: &TicketSystem, input: &Value, ctx: &ToolContext) ->
 }
 
 fn action_list(ticket_system: &TicketSystem, input: &Value) -> ToolResult {
-    let assignee = input["assignee"].as_str().map(String::from);
+    let label = input["label"].as_str().map(String::from);
     let status = input["status"].as_str().map(parse_status_for_list);
     let status = match status {
         Some(Ok(s)) => Some(s),
@@ -204,14 +196,14 @@ fn action_list(ticket_system: &TicketSystem, input: &Value) -> ToolResult {
 
     let pool: Vec<Ticket> = ticket_system.filter(|t| {
         let status_ok = match status {
-            Some(s) => t.status() == s,
+            Some(s) => t.status == s,
             None => true,
         };
-        let assignee_ok = match assignee.as_deref() {
-            Some(a) => t.is_assigned_to(a),
+        let label_ok = match label.as_deref() {
+            Some(l) => t.has_label(l),
             None => true,
         };
-        status_ok && assignee_ok
+        status_ok && label_ok
     });
 
     if pool.is_empty() {
@@ -226,15 +218,7 @@ fn action_list(ticket_system: &TicketSystem, input: &Value) -> ToolResult {
         .iter()
         .take(50)
         .zip(previews.iter())
-        .map(|(t, p)| {
-            (
-                t.key(),
-                p.as_str(),
-                t.status(),
-                t.assignee(),
-                t.labels.as_slice(),
-            )
-        })
+        .map(|(t, p)| (t.key(), p.as_str(), t.status, t.labels.as_slice()))
         .collect();
     ToolResult::success(render_summary_list(&rows))
 }
@@ -257,15 +241,7 @@ fn action_search(ticket_system: &TicketSystem, input: &Value) -> ToolResult {
         .iter()
         .take(50)
         .zip(previews.iter())
-        .map(|(t, p)| {
-            (
-                t.key(),
-                p.as_str(),
-                t.status(),
-                t.assignee(),
-                t.labels.as_slice(),
-            )
-        })
+        .map(|(t, p)| (t.key(), p.as_str(), t.status, t.labels.as_slice()))
         .collect();
     ToolResult::success(render_summary_list(&rows))
 }
@@ -297,17 +273,9 @@ fn action_create(ticket_system: &TicketSystem, input: &Value, ctx: &ToolContext)
         _ => None,
     };
 
-    let assignee = input
-        .get("assignee")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-
     let mut ticket = Ticket::new(task).labels(labels);
     if let Some(schema) = schema {
         ticket = ticket.schema(schema);
-    }
-    if let Some(who) = assignee {
-        ticket = ticket.assign_to(who);
     }
 
     let reporter = ctx
@@ -449,13 +417,12 @@ mod tests {
             .agent_name(agent.to_string())
     }
 
-    /// Insert one Todo ticket, force it to InProgress, assign to `agent`,
+    /// Insert one Todo ticket, force it to InProgress, label with `agent`,
     /// so `sys.find(...)` resolves it as the current ticket for `agent`.
     fn shared_with_one_ticket(agent: &str) -> (Arc<TicketSystem>, String) {
         let sys = TicketSystem::new();
-        let key = sys.insert(Ticket::new("body"), "tester".into());
+        let key = sys.insert(Ticket::new("body").label(agent), "tester".into());
         sys.force_status(&key, Status::InProgress).unwrap();
-        sys.set_assignee(&key, agent).unwrap();
         (sys, key)
     }
 
@@ -530,12 +497,11 @@ mod tests {
         assert!(matches!(result, ToolResult::Success(_)));
         let t = sys.get("TICKET-1").unwrap();
         assert_eq!(t.labels, vec!["research".to_string()]);
-        assert!(t.assignee().is_none());
-        assert_eq!(t.status(), Status::Todo);
+        assert_eq!(t.status(), "todo");
     }
 
     #[tokio::test]
-    async fn write_create_with_explicit_assignee_births_inprogress() {
+    async fn write_create_with_named_label_routes_to_agent() {
         let sys = TicketSystem::new();
         let ctx = ctx_with(Arc::clone(&sys), "alice");
         let result = call(
@@ -543,15 +509,15 @@ mod tests {
             serde_json::json!({
                 "action": "create",
                 "task": "new",
-                "assignee": "alice"
+                "labels": ["alice"]
             }),
             &ctx,
         )
         .await;
         assert!(matches!(result, ToolResult::Success(_)));
         let t = sys.get("TICKET-1").unwrap();
-        assert_eq!(t.assignee(), Some("alice"));
-        assert_eq!(t.status(), Status::InProgress);
+        assert!(t.has_label("alice"));
+        assert_eq!(t.status(), "todo");
     }
 
     #[tokio::test]
