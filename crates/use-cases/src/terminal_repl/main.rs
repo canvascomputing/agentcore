@@ -51,7 +51,7 @@ async fn main() {
         .max_steps(40);
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let memory_dir = cwd.join(".agentwerk-memory");
+    let memory_dir = cwd.join(".agentwerk");
     let memory = Memory::open(&memory_dir).expect("open memory store");
 
     let _agent = tickets.add(
