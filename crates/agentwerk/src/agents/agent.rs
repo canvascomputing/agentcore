@@ -17,7 +17,7 @@ use crate::prompts::{default_context, PromptBuilder, Section};
 use crate::providers::{Provider, ProviderToolDefinition};
 use crate::tools::{MemoryTool, ToolLike, ToolRegistry, WriteResultTool};
 
-use super::memory::Memory;
+use super::memory::{IntoMemory, Memory};
 
 use super::policy::Policies;
 use super::stats::Stats;
@@ -167,21 +167,17 @@ impl Agent {
         self
     }
 
-    /// Drop every event, opting out of the default stderr logger.
-    pub fn silent(mut self) -> Self {
-        self.event_handler = Some(Arc::new(|_: Event| {}));
-        self
-    }
-
-    /// Bind this agent to a shared `Memory`. Registers `MemoryTool` on
-    /// the agent's tool registry and arranges for the store's entries to be
-    /// concatenated into the system prompt under `## Memory` at the top of
-    /// every ticket. Pass the same `Arc<Memory>` to multiple agents to share
-    /// memory across them, the same way `ticket_system(&shared)` shares a
-    /// queue. Off by default; each ticket starts without a memory section
-    /// when no store is bound.
-    pub fn memory(mut self, store: &Arc<Memory>) -> Self {
-        let store = Arc::clone(store);
+    /// Bind this agent to a `Memory` store. Accepts either an `&Arc<Memory>`
+    /// (to share one store across multiple agents, the same way
+    /// `ticket_system(&shared)` shares a queue) or a path to a directory the
+    /// store should be rooted at (opens a fresh store under the hood, mirroring
+    /// `TicketSystem::workspace(dir)`). Registers `MemoryTool` on the agent's
+    /// tool registry and arranges for the store's entries to be concatenated
+    /// into the system prompt under `## Memory` at the top of every ticket.
+    /// Off by default; each ticket starts without a memory section when no
+    /// store is bound. Panics on IO failure when opening from a path.
+    pub fn memory<M: IntoMemory>(mut self, store: M) -> Self {
+        let store = store.into_memory().expect("open memory store");
         self.tools.register(MemoryTool::new(Arc::clone(&store)));
         self.memory = Some(store);
         self
@@ -307,7 +303,7 @@ impl Agent {
 
     /// Enqueue a ticket carrying `task` and attached to `label` for
     /// Path B routing. To pin a ticket directly to an agent (Path A),
-    /// build it explicitly: `agent.create(Ticket::new(...).assign_to("alice"))`.
+    /// build it explicitly: `agent.ticket(Ticket::new(...).assign_to("alice"))`.
     pub fn task_labeled<T: Serialize>(&self, task: T, label: impl Into<String>) -> &Self {
         let ticket = Ticket::new(task).label(label);
         self.dispatch(ticket);
@@ -338,7 +334,7 @@ impl Agent {
     /// reporter, created_at, status, result) are overwritten unless the
     /// caller set `assignee` on the ticket — that case births the ticket
     /// `InProgress` to enable Path A routing.
-    pub fn create(&self, ticket: Ticket) -> &Self {
+    pub fn ticket(&self, ticket: Ticket) -> &Self {
         self.dispatch(ticket);
         self
     }
@@ -587,7 +583,7 @@ mod tests {
             .template_variable("topic", "rust")
             .ticket_system(&sys);
         let value = serde_json::json!({"q": "Find {topic}"});
-        agent.create(Ticket::new(value.clone()));
+        agent.ticket(Ticket::new(value.clone()));
         let stored = sys.first().expect("ticket should have been enqueued");
         assert_eq!(stored.task, value);
     }
@@ -612,6 +608,20 @@ mod tests {
             names.iter().any(|n| n == "memory_tool"),
             "memory_tool should be registered: {names:?}"
         );
+    }
+
+    #[test]
+    fn memory_opens_a_fresh_store_when_passed_a_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = Agent::new().memory(dir.path());
+        let names: Vec<String> = agent
+            .tool_definitions()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert!(names.iter().any(|n| n == "memory_tool"));
+        agent.memory_handle().unwrap().add("from path").unwrap();
+        assert!(dir.path().join("memory.jsonl").exists());
     }
 
     #[test]

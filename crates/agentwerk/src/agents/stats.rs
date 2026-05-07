@@ -90,8 +90,8 @@ impl Stats {
 
     /// Live counters scoped to one ticket label. Lazy-init on first
     /// access; subsequent calls return the same `Arc`. Reads use the
-    /// same accessors as the run-wide `Stats`; `run_duration()` is
-    /// always `None` on a slice (run wall-clock stays global).
+    /// same accessors as the run-wide `Stats`; `elapsed()` is always
+    /// `None` on a slice (run timing stays global).
     pub fn stats_for_label(&self, label: &str) -> Arc<Stats> {
         let mut map = self.label_stats.lock().unwrap();
         map.entry(label.to_string())
@@ -135,26 +135,17 @@ impl Stats {
         self.tickets_failed.load(Ordering::Relaxed)
     }
 
-    /// Wall-clock duration from the first `record_started` call to
-    /// the run-watcher firing (`mark_finished`). `None` while the run
-    /// hasn't started, or while it's still running.
-    pub fn run_duration(&self) -> Option<Duration> {
-        let s = self.started_at.load(Ordering::Relaxed);
-        let f = self.finished_at.load(Ordering::Relaxed);
-        if s == 0 || f == 0 || f < s {
-            None
-        } else {
-            Some(Duration::from_millis(f - s))
-        }
-    }
-
-    /// Live elapsed duration since the first `record_started` call.
-    /// `None` until the run has started; counterpart to `run_duration`,
-    /// which only resolves after `mark_finished`.
+    /// Elapsed duration since the first `record_started` call. Live while
+    /// the run is in progress; freezes at `finished_at - started_at` once
+    /// `mark_finished` has fired. `None` until the run has started.
     pub fn elapsed(&self) -> Option<Duration> {
         let s = self.started_at.load(Ordering::Relaxed);
         if s == 0 {
             return None;
+        }
+        let f = self.finished_at.load(Ordering::Relaxed);
+        if f != 0 && f >= s {
+            return Some(Duration::from_millis(f - s));
         }
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -196,7 +187,7 @@ impl Stats {
 
     /// Sum of finished tickets' started→terminal spans. With
     /// concurrent agents this aggregates work across all of them, so
-    /// it can exceed `run_duration`.
+    /// it can exceed `elapsed`.
     pub fn total_work_duration(&self) -> Duration {
         Duration::from_secs(self.total_work_duration.load(Ordering::Relaxed))
     }
@@ -284,7 +275,7 @@ mod tests {
         assert_eq!(s.tickets_failed(), 0);
         assert_eq!(s.total_ticket_duration(), Duration::ZERO);
         assert_eq!(s.total_work_duration(), Duration::ZERO);
-        assert!(s.run_duration().is_none());
+        assert!(s.elapsed().is_none());
         assert!(s.avg_ticket_duration().is_none());
         assert!(s.success_rate().is_none());
     }
@@ -328,19 +319,22 @@ mod tests {
         s.record_started(1_000);
         s.record_started(2_000);
         s.record_started(3_000);
-        // run_duration needs both started + finished:
         s.mark_finished(4_500);
-        assert_eq!(s.run_duration(), Some(Duration::from_millis(3500)));
+        assert_eq!(s.elapsed(), Some(Duration::from_millis(3500)));
     }
 
     #[test]
-    fn run_duration_none_until_finished() {
+    fn elapsed_freezes_at_finish() {
         let s = Stats::new();
-        assert!(s.run_duration().is_none());
+        assert!(s.elapsed().is_none());
         s.record_started(1_000);
-        assert!(s.run_duration().is_none()); // not finished yet
+        // Live before finish: anchored at started_at = 1_000ms epoch, so the
+        // delta to "now" is enormous. We just check it's some duration.
+        assert!(s.elapsed().is_some());
         s.mark_finished(2_500);
-        assert_eq!(s.run_duration(), Some(Duration::from_millis(1500)));
+        assert_eq!(s.elapsed(), Some(Duration::from_millis(1500)));
+        // Stays frozen on a subsequent call.
+        assert_eq!(s.elapsed(), Some(Duration::from_millis(1500)));
     }
 
     #[test]
@@ -389,16 +383,16 @@ mod tests {
     }
 
     #[test]
-    fn stats_for_label_slice_run_duration_is_none() {
+    fn stats_for_label_slice_elapsed_is_none() {
         let s = Stats::new();
         let slice = s.stats_for_label("scan");
         slice.record_done(Duration::from_secs(2), Duration::from_secs(1));
-        assert!(slice.run_duration().is_none());
+        assert!(slice.elapsed().is_none());
         assert_eq!(slice.tickets_done(), 1);
     }
 
     #[test]
-    fn total_work_duration_can_exceed_run_duration_with_concurrency() {
+    fn total_work_duration_can_exceed_elapsed_with_concurrency() {
         // Two tickets, each 5s of work, finished in a 6s window —
         // models 2 agents working in parallel.
         let s = Stats::new();
@@ -406,7 +400,7 @@ mod tests {
         s.record_done(Duration::from_secs(5), Duration::from_secs(5));
         s.record_done(Duration::from_secs(5), Duration::from_secs(5));
         s.mark_finished(7_000);
-        assert_eq!(s.run_duration(), Some(Duration::from_secs(6)));
+        assert_eq!(s.elapsed(), Some(Duration::from_secs(6)));
         assert_eq!(s.total_work_duration(), Duration::from_secs(10));
     }
 }

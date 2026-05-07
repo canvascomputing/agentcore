@@ -8,7 +8,7 @@ pub mod schemas;
 pub mod tools;
 
 pub use agents::{
-    Agent, Memory, Running, Stats, Status, Ticket, TicketResult, TicketSystem,
+    Agent, IntoMemory, Memory, Running, Stats, Status, Ticket, TicketResult, TicketSystem,
 };
 pub use event::{default_logger, Event, EventKind, PolicyKind, ToolFailureKind};
 pub use schemas::{format_violations, Schema, SchemaParseError, SchemaViolation};

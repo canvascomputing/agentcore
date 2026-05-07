@@ -22,13 +22,13 @@
 
 ---
 
-# Installation
+## Installation
 
 ```bash
 cargo add agentwerk
 ```
 
-# Quick Start
+## Quick Start
 
 ```rust
 use agentwerk::providers::{model_from_env, provider_from_env};
@@ -51,7 +51,7 @@ async fn main() {
 }
 ```
 
-# Use Cases
+## Use Cases
 
 Example applications living under `crates/use-cases/`:
 
@@ -74,7 +74,7 @@ make use_case name=<name>    # run one
 - [Providers](#providers): LLM backends agents send requests to.
 - [Agents](#agents): Workers that pick up tickets and produce results.
 - [Prompting](#prompting): How role, context, and task shape the model's input.
-- [Ticket Systems](#ticket-systems): Shared queues that route tickets to agents.
+- [Tickets](#tickets): Shared queues that route tickets to agents.
 - [Tools](#tools): Capabilities agents call to take action.
 - [Memory](#memory): Durable facts the model curates across tickets.
 - [Schemas](#schemas): JSON schemas that validate ticket results.
@@ -104,40 +104,95 @@ let model = model_from_env()?;
 
 ## Agents
 
-An `Agent` is a worker that solves one task at a time. A **task** is the work you hand it: a question, an instruction, or a structured request. Each task becomes a **ticket**: a record that tracks the work from start to finish and holds the final answer. The agent picks up a ticket, calls any tools it has been given (read a file, run a command, search memory), and writes the answer back onto the ticket.
+An `Agent` is a worker that solves one task at a time. A **task** is the work assigned to the agent: a question, an instruction, or a structured request. Each task becomes a **ticket**: a record that tracks the work from start to finish and holds the final answer. The agent picks up a ticket, invokes the tools it has been registered with (read a file, run a command, search memory), and writes the result back onto the ticket.
+
+### Identity
+
+Assign the agent a name and the labels it accepts work for.
 
 ```rust
 let agent = Agent::new()
     .name("worker_0")
-    .provider(provider)
-    .model(&model)
-    .role("You are an arithmetic worker.")
-    .label("worker")
-    .task("Compute 2+2.");
+    .label("math");
 ```
 
-### Build
+| Method | Description |
+|--------|-------------|
+| `Agent::new()` | Create a new agent builder. |
+| `name(s)` | Set the identifier used for routing and events. |
+| `label(l)` / `labels([..])` | Restrict the agent to tickets carrying matching labels. |
 
-Configure an agent: identity, provider, prompt, tools, events, and memory.
+### Provider
 
-| | Method | Description |
-|-|--------|-------------|
-| **Construct** | `Agent::new()` | Create a new agent builder. |
-| **Identity** | `name(s)` | Set the identifier used for routing and events. |
-| | `label(l)` / `labels([..])` | Restrict the agent to tickets carrying matching labels. |
-| **Provider** | `provider(p)` | Set the LLM provider. |
-| | `model(m)` | Set the model the provider runs. |
-| **Prompt** | `role(text)` | Set the role prompt. |
-| | `context(text)` | Replace the default context block with custom markdown. |
-| **Tools** | `tool(t)` / `tools([..])` | Register a tool the agent may call. |
-| | `working_dir(p)` | Set the directory tools resolve paths against. |
-| **Events** | `event_handler(fn)` | Set a custom event observer. |
-| | `silent()` | Drop every event instead of logging it. |
-| **Memory** | `memory(&store)` | Create a `Memory` so facts persist across tickets and restarts. |
+Select the LLM service and model the agent uses.
+
+```rust
+let agent = Agent::new()
+    .provider(provider)
+    .model(&model);
+```
+
+| Method | Description |
+|--------|-------------|
+| `provider(p)` | Set the LLM provider. |
+| `model(m)` | Set the model the provider runs. |
+
+### Tools
+
+Register the tools the agent may call, and set the directory those tools resolve paths against.
+
+```rust
+use agentwerk::tools::{ReadFileTool, GrepTool};
+
+let agent = Agent::new()
+    .tool(ReadFileTool)
+    .tool(GrepTool)
+    .working_dir("./src");
+```
+
+| Method | Description |
+|--------|-------------|
+| `tool(t)` / `tools([..])` | Register a tool the agent may call. |
+| `working_dir(p)` | Set the directory tools resolve paths against. |
+
+### Events
+
+Observe agent activity. When no handler is set the default logger prints lifecycle events to stderr.
+
+```rust
+use std::sync::Arc;
+
+let agent = Agent::new()
+    .event_handler(Arc::new(|event| eprintln!("{event:?}")));
+```
+
+| Method | Description |
+|--------|-------------|
+| `event_handler(fn)` | Set a custom event observer. |
+
+### Memory
+
+Bind the agent to a memory store so facts persist across tickets and restarts.
+
+```rust
+use agentwerk::Memory;
+
+// Pass a path to open a fresh store under that directory:
+let agent = Agent::new().memory("./.agentwerk");
+
+// Or share one store across multiple agents:
+let memory = Memory::open("./.agentwerk")?;
+let alice = Agent::new().memory(&memory);
+let bob = Agent::new().memory(&memory);
+```
+
+| Method | Description |
+|--------|-------------|
+| `memory(into)` | Bind the agent to a memory store for facts that persist across tickets. Accepts a path (opens a fresh store) or an `&Arc<Memory>` (shares an existing store across agents). |
 
 ### Run
 
-Start an agent with `run`, queue tasks while it's working, finish with `run_dry` and read the results.
+Start the agent with `run()`, submit tasks while it works, then drain the queue with `run_dry()` and read the results.
 
 ```rust
 let agent = Agent::new()
@@ -151,24 +206,25 @@ agent.task_labeled("Compute 3+3.", "math");
 let results = agent.run_dry().await;
 ```
 
-`run()` starts the agent in the background. While it is running, `task` calls queue more work. `run_dry` waits for the queue to drain, stops the agent, and returns every finished task in a `TicketResult`.
-
-Methods called after the agent is built:
-
-| | Method | Description |
-|-|--------|-------------|
-| **Tasks** | `task(task)` | Create a task for the agent. |
-| | `task_labeled(task, label)` | Create a task tagged with `label` for label-scoped routing. |
-| | `task_schema(task, schema)` | Create a task whose result must validate against `schema`. |
-| | `task_schema_labeled(task, schema, label)` | Create a labelled task whose result must validate against `schema`. |
-| | `create(ticket)` | Add a `Ticket` to the queue. |
-| **Run** | `run()` | Start working and wait for incoming tickets. |
-| | `run_dry().await` | Work until every queued task finishes and return every `TicketResult`. |
-
+| Method | Description |
+|--------|-------------|
+| `task(task)` | Create a task for the agent. |
+| `task_labeled(task, label)` | Create a task tagged with `label` for label-scoped routing. |
+| `task_schema(task, schema)` | Create a task whose result must validate against `schema`. |
+| `task_schema_labeled(task, schema, label)` | Create a labeled task whose result must validate against `schema`. |
+| `ticket(ticket)` | Add a caller-built `Ticket` to the agent's queue. |
+| `run()` | Start working and wait for incoming tickets. |
+| `run_dry().await` | Work until every queued task finishes and return every `TicketResult`. |
 
 ## Prompting
 
-You define every prompt in three parts: `role` (who the agent is), `context` (the situation it works in), and `task` (the specific work it has to perform). The shape comes from the [prompting framework](https://github.com/canvascomputing/prompting).
+Every prompt has three parts: `role` (who the agent is), `context` (the situation it operates in), and `task` (the specific work it must perform). The structure follows the [prompting framework](https://github.com/canvascomputing/prompting).
+
+| Method | Description |
+|--------|-------------|
+| `role(text)` | Define who the agent is to narrow tone and domain. |
+| `context(text)` | Provide the runtime facts that ground the agent in its session. |
+| `task(task)` | State the work the agent must do, with an action verb and observable success criteria. |
 
 ### Role
 
@@ -180,7 +236,7 @@ let agent = Agent::new().role("You are an arithmetic worker. Show your work.");
 
 ### Context
 
-The context is the briefing the agent reads at the start of every ticket. When `context(text)` is not set, agentwerk fills in a default block of runtime facts:
+The context is the briefing the agent reads at the start of every ticket. When `context(text)` is not set, agentwerk supplies a default block of runtime facts:
 
 ```markdown
 - Working directory: /Users/me/code/repo
@@ -208,42 +264,97 @@ agent.task("Compute 2+2.");
 agent.task(serde_json::json!({ "file": "Cargo.toml", "find": "version" }));
 ```
 
-## Ticket Systems
+## Tickets
 
-A `TicketSystem` is the shared queue that connects multiple agents. You drop tasks in; the system hands each ticket to an agent that can take it. **Labels** are the primary way to distribute work: tag a ticket with a label, register one or more agents for that label, and the system spreads matching tickets across that pool. If a ticket has to go to one specific agent, you can assign it by name instead.
+A `Ticket` is a task plus the metadata the system uses to route, schedule, and track it: labels, schema, assignee, status. The `TicketSystem` is agentwerk's core data structure: a shared queue that distributes tickets across one or more agents. Labels route work to a pool of matching agents; an explicit assignee pins a ticket to a single named agent.
+
+### Construct
+
+Create a system and register the agents that will work it.
 
 ```rust
 use agentwerk::TicketSystem;
 
-let tickets = TicketSystem::new();
-
-tickets.task("Summarise the Cargo.toml of this project.");
+let tickets = TicketSystem::new().workspace("./.agentwerk");
 tickets.add(agent);
-
-let result = tickets.run_dry().await;
 ```
 
-| | Method | Description |
-|-|--------|-------------|
-| **Construct** | `TicketSystem::new()` | Create a new ticket system that agents can share. |
-| | `add(agent)` | Register an agent with the system. |
-| | `interrupt_signal(signal)` | Override the cancel signal shared across agents. |
-| | `workspace(dir)` | Set the workspace directory where memory, ticket results, and the ticket logs are persisted. |
-| **Tasks** | `task(task)` | Create a task. |
-| | `task_labeled(task, label)` | Create a task tagged with `label` for label-scoped routing. |
-| | `task_schema(task, schema)` | Create a task whose result must validate against `schema`. |
-| | `task_schema_labeled(task, schema, label)` | Create a labelled task whose result must validate against `schema`. |
-| | `create(ticket)` | Add a caller-built `Ticket` to the queue. |
-| **Run** | `run()` | Start a background run and return a `Running` handle. |
-| | `run_dry().await` | Run until every queued task finishes and return every `TicketResult`. |
-| **Inspect** | `get(key)` / `tickets()` / `first()` | Look up finished tickets. |
-| | `search(query)` | Return tickets whose task body matches `query`, case-insensitively. |
-| | `filter(predicate)` | Return tickets matching `predicate`, in creation order. |
-| | `find(predicate)` | Return the first ticket matching `predicate`. |
-| | `count(predicate)` | Return the count of tickets matching `predicate`. |
-| | `stats()` | Return current statistics. |
-| **Status** | `update_status(key, status)` | Transition a ticket through the state machine. |
-| | `force_status(key, status)` | Force a ticket to `status`, bypassing the state machine. |
+| Method | Description |
+|--------|-------------|
+| `TicketSystem::new()` | Create a new ticket system that agents can share. |
+| `add(agent)` | Register an agent with the system. |
+| `interrupt_signal(signal)` | Override the cancel signal shared across agents. |
+| `workspace(dir)` | Set the workspace directory where memory, ticket results, and the ticket logs are persisted. |
+
+### Tasks
+
+Submit tasks to the queue. Use the `task*` shortcuts for common shapes, or build a `Ticket` and pass it to `ticket`.
+
+```rust
+use agentwerk::Ticket;
+
+tickets.task("Compute 2+2.");
+tickets.task_labeled("Write a report.", "report");
+
+let built = Ticket::new("Summarise the Cargo.toml of this project.")
+    .label("summary");
+tickets.ticket(built);
+```
+
+| Method | Description |
+|--------|-------------|
+| `task(task)` | Create a task. |
+| `task_labeled(task, label)` | Create a task tagged with `label` for label-scoped routing. |
+| `task_schema(task, schema)` | Create a task whose result must validate against `schema`. |
+| `task_schema_labeled(task, schema, label)` | Create a labeled task whose result must validate against `schema`. |
+| `ticket(ticket)` | Add a caller-built `Ticket` to the queue. |
+
+### Run
+
+Start in the background with `run()`, or block until every queued task finishes with `run_dry()`.
+
+```rust
+let results = tickets.run_dry().await;
+```
+
+| Method | Description |
+|--------|-------------|
+| `run()` | Start a background run and return a `Running` handle. |
+| `run_dry().await` | Run until every queued task finishes and return every `TicketResult`. |
+
+### Inspect
+
+Look up finished tickets, filter the queue, or read aggregate statistics.
+
+```rust
+let report = tickets.find(|t| t.is_done() && t.has_label("report"));
+let s = tickets.stats();
+```
+
+| Method | Description |
+|--------|-------------|
+| `get(key)` | Look up a finished ticket by key. |
+| `tickets()` | List every finished ticket. |
+| `first()` | Look up the first finished ticket. |
+| `search(query)` | Find tickets whose task body matches `query`, case-insensitively. |
+| `filter(predicate)` | Select tickets matching `predicate`, in creation order. |
+| `find(predicate)` | Find the first ticket matching `predicate`. |
+| `count(predicate)` | Count tickets matching `predicate`. |
+| `stats()` | Read current statistics. |
+
+### Status
+
+Move a ticket through the state machine with `update_status`.
+
+```rust
+use agentwerk::Status;
+
+tickets.update_status("TICKET-1", Status::InProgress)?;
+```
+
+| Method | Description |
+|--------|-------------|
+| `update_status(key, status)` | Transition a ticket through the state machine. |
 
 ### Policies
 
@@ -252,13 +363,13 @@ Configure execution policies on a ticket system. A breach fires `EventKind::Poli
 ```rust
 let tickets = TicketSystem::new()
     .max_steps(40)
-    .max_time(std::time::Duration::from_secs(300));
+    .max_time(std::time::Duration::from_secs(300))
     .max_input_tokens(200_000)
     .max_output_tokens(50_000)
     .max_request_tokens(8_000)
     .max_schema_retries(3)
     .max_request_retries(3)
-    .request_retry_delay(std::time::Duration::from_millis(500))
+    .request_retry_delay(std::time::Duration::from_millis(500));
 ```
 
 | Method | Description |
@@ -274,7 +385,30 @@ let tickets = TicketSystem::new()
 
 ## Tools
 
-A tool is a capability you give an agent so it can take action while solving a ticket: read a file, run a shell command, fetch a URL. Each tool declares a JSON-Schema for its inputs and a handler the agent runs when it picks the tool.
+Tools enable an agent to take action while solving a ticket: read a file, run a shell command, fetch a URL. The crate provides a set of built-in tools, and you can register your own.
+
+### Built-in tools
+
+| | Tool | Description |
+|-|------|-------------|
+| **File** | `ReadFileTool` | Reads a file with line numbers, offset, and limit. |
+| | `WriteFileTool` | Creates or overwrites a file. |
+| | `EditFileTool` | Replaces text in a file. |
+| **Search** | `GlobTool` | Finds files by pattern. |
+| | `GrepTool` | Searches file contents. |
+| | `ListDirectoryTool` | Lists files and directories. |
+| **Shell** | `BashTool` | Runs shell commands matching an allowed pattern. |
+| **Web** | `WebFetchTool` | Fetches a URL and returns its body. |
+| **Tickets** | `WriteResultTool` | Writes the agent's result for the current ticket and marks it done. |
+| | `ManageTicketsTool` | Reads the ticket queue and creates or edits tickets. |
+| | `ReadTicketsTool` | Reads the ticket queue. |
+| | `WriteTicketsTool` | Creates or edits tickets in the queue. |
+| **Memory** | `MemoryTool` | Adds, replaces, or removes entries in the agent's memory. |
+| **Discovery** | `ToolSearchTool` | Discovers tools registered with `Tool::defer(true)`. |
+
+### Custom tools
+
+Each tool declares a JSON-Schema for its inputs and a handler the agent runs when it picks the tool.
 
 ```rust
 use agentwerk::{Tool, ToolResult};
@@ -293,29 +427,11 @@ let greet = Tool::new("greet", "Say hello")
     }));
 ```
 
-`.read_only(true)` lets the loop run a tool concurrently with other read-only calls in the same step.
-
-### Built-in tools
-
-| | Tool | Description |
-|-|------|-------------|
-| **File** | `ReadFileTool` | Reads a file with line numbers, offset, and limit. |
-| | `WriteFileTool` | Creates or overwrites a file. |
-| | `EditFileTool` | Replaces text in a file. |
-| **Search** | `GlobTool` | Finds files by pattern. |
-| | `GrepTool` | Searches file contents. |
-| | `ListDirectoryTool` | Lists files and folders. |
-| **Shell** | `BashTool` | Runs shell commands matching an allowed pattern. |
-| **Web** | `WebFetchTool` | Fetches a URL and returns its body. |
-| **Tickets** | `WriteResultTool` | Writes the agent's result for the current ticket and marks it done. |
-| | `ManageTicketsTool` | Reads the ticket queue and creates or edits tickets. |
-| | `ReadTicketsTool` / `WriteTicketsTool` | Provide read-only and write-only access to the ticket queue. |
-| **Memory** | `MemoryTool` | Adds, replaces, or removes entries in the agent's memory. |
-| **Discovery** | `ToolSearchTool` | Discovers tools registered with `Tool::defer(true)`. |
+`.read_only(true)` allows the agent to run a tool concurrently with other read-only calls in the same step.
 
 ## Memory
 
-`Memory` lets an agent carry knowledge from one task to the next, even across process restarts. It is a file-backed store the agent curates through `MemoryTool`.
+`Memory` allows an agent to retain knowledge from one task to the next, even across process restarts. It is a file-backed store the agent curates through `MemoryTool`.
 
 ```rust
 use agentwerk::{Agent, Memory};
@@ -342,7 +458,7 @@ Methods on `Memory`:
 | | Method | Description |
 |-|--------|-------------|
 | **Open** | `Memory::open(dir)` | Open or create a store at `dir`. |
-| **Read** | `entries()` | Return a clone of the current entries, in insertion order. |
+| **Read** | `entries()` | List the current entries, in insertion order. |
 | **Mutate** | `add(content)` | Append a new entry. |
 | | `replace(old_text, content)` | Swap the unique entry containing `old_text`. |
 | | `remove(old_text)` | Drop the unique entry containing `old_text`. |
@@ -350,42 +466,23 @@ Methods on `Memory`:
 
 ## Schemas
 
-A `Schema` constrains the shape of a ticket's result. Attach a JSON-Schema document to a ticket and the agent's answer must validate against it before the ticket can finish.
+A `Schema` says what a ticket's result must look like. Attach a JSON-Schema document to a ticket and the agent's answer must validate against it before the ticket can finish.
 
 ```rust
 use agentwerk::Schema;
 
 let schema = Schema::parse(json!({
     "type": "object",
-    "properties": {
-        "title":    { "type": "string", "minLength": 1 },
-        "research": { "type": "string", "maxLength": 500 }
-    },
-    "required": ["title", "research"]
+    "properties": { "title": { "type": "string" } },
+    "required": ["title"]
 }))?;
-```
 
-Via the `task_schema*` shorthands:
-
-```rust
-tickets.task_schema_labeled(body, schema, "report");
-```
-
-Via a fully-built `Ticket`. Chain `.schema(...)` with `.label(...)` for label routing, or with `.assign_to(...)` to pin to a named agent:
-
-```rust
-use agentwerk::Ticket;
-
-// Label routing: any agent labelled "report" picks it up.
-tickets.create(Ticket::new(body.clone()).schema(schema.clone()).label("report"));
-
-// Direct assignment: pinned to a named agent.
-tickets.create(Ticket::new(body).schema(schema).assign_to("report_writer"));
+tickets.task_schema("Write a report.", schema);
 ```
 
 ## Events
 
-Events give you visibility into everything that happens while agents work: which tickets they pick up, which tools they call, when provider requests start, finish, or fail. Register an event handler to log them, show progress, or measure throughput.
+Events report everything that happens while agents work: which tickets they pick up, which tools they call, when provider requests start, finish, or fail. Register an event handler to log them, report progress, or measure throughput.
 
 ```rust
 use std::sync::Arc;
@@ -425,7 +522,7 @@ let handler = Arc::new(|event: Event| match &event.kind {
 
 ## Stats
 
-`Stats` summarise what happened while agents worked: tickets finished, tokens consumed, tool calls made, time spent. Read them while agents are working, or after they finish. Labels group tickets into categories, and filtering by label scopes the numbers to one of those categories.
+`Stats` summarise what happened while agents worked: tickets finished, tokens consumed, tool calls made, time spent. Read them while agents are working, or after they finish. Labels group tickets into categories, and filtering by label scopes the figures to a single category.
 
 ```rust
 let s = tickets.stats();
@@ -437,8 +534,7 @@ println!("scan: {} done", scan.tickets_done());
 
 | | Method | Description |
 |-|--------|-------------|
-| **Run** | `run_duration()` | Return the elapsed time from the first ticket starting to the last finishing, or `None` while agents are still working. |
-| | `elapsed()` | Return the live elapsed time since the first ticket started, or `None` until the first ticket starts. |
+| **Run** | `elapsed()` | Return the elapsed time since the first ticket started — live while agents work, frozen at the run total once the loop finishes. `None` until the first ticket starts. |
 | | `total_work_duration()` | Return the sum of every finished ticket's start-to-end span. |
 | **Tickets** | `tickets_created()` | Return the count of tickets created. |
 | | `tickets_done()` | Return the count of tickets that finished successfully. |

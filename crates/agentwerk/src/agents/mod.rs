@@ -10,7 +10,7 @@ pub mod stats;
 pub mod tickets;
 
 pub use agent::Agent;
-pub use memory::Memory;
+pub use memory::{IntoMemory, Memory};
 pub use policy::Policies;
 pub use running::Running;
 pub use stats::{LoopStats, Stats};

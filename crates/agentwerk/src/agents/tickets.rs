@@ -383,7 +383,7 @@ impl TicketSystem {
     /// reporter, created_at, status, result) are overwritten unless
     /// `assignee` was explicitly set on the ticket — that case births the
     /// ticket `InProgress` to enable Path A routing.
-    pub fn create(&self, ticket: Ticket) -> &Self {
+    pub fn ticket(&self, ticket: Ticket) -> &Self {
         self.dispatch(ticket);
         self
     }
@@ -483,8 +483,9 @@ impl TicketSystem {
 
     /// Bypass the state machine. Reserved for the loop's recovery paths
     /// (e.g. `MaxSchemaRetries` trip → Failed) so a stuck ticket doesn't
-    /// get re-picked indefinitely via Path A.
-    pub fn force_status(&self, key: &str, status: Status) -> Result<(), TicketError> {
+    /// get re-picked indefinitely via Path A. Crate-internal: developers
+    /// drive transitions through the normal lifecycle, not this primitive.
+    pub(crate) fn force_status(&self, key: &str, status: Status) -> Result<(), TicketError> {
         let now = now_millis();
         let outcome = {
             let mut store = self.tickets.lock().unwrap();
@@ -894,7 +895,7 @@ fn fire_transition_recorder(
 
 /// Mirror a terminal transition onto every per-label slice the ticket
 /// carries. `record_started` is intentionally not mirrored: per-label
-/// `started_at` stays zero so `run_duration()` reads `None` on a slice.
+/// `started_at` stays zero so `elapsed()` reads `None` on a slice.
 fn fire_label_transition(
     stats: &Stats,
     next: Status,
@@ -999,7 +1000,7 @@ mod tests {
     #[test]
     fn create_with_explicit_assignee_births_ticket_inprogress() {
         let sys = TicketSystem::new();
-        sys.create(Ticket::new("specific work for alice").assign_to("alice"));
+        sys.ticket(Ticket::new("specific work for alice").assign_to("alice"));
         let t = sys.get("TICKET-1").unwrap();
         assert_eq!(t.assignee(), Some("alice"));
         assert_eq!(t.status(), Status::InProgress);
@@ -1009,7 +1010,7 @@ mod tests {
     fn create_with_label_and_schema_is_stored_verbatim() {
         let sys = TicketSystem::new();
         let schema = crate::schemas::Schema::parse(serde_json::json!({"type": "string"})).unwrap();
-        sys.create(Ticket::new("x").label("urgent").schema(schema));
+        sys.ticket(Ticket::new("x").label("urgent").schema(schema));
         let t = sys.get("TICKET-1").unwrap();
         assert_eq!(t.labels, vec!["urgent".to_string()]);
         assert!(t.schema.is_some());
@@ -1184,9 +1185,9 @@ mod tests {
     #[test]
     fn stats_for_label_counts_creation_per_label() {
         let sys = TicketSystem::new();
-        sys.create(Ticket::new("a").labels(["scan", "high"]));
-        sys.create(Ticket::new("b").label("scan"));
-        sys.create(Ticket::new("c"));
+        sys.ticket(Ticket::new("a").labels(["scan", "high"]));
+        sys.ticket(Ticket::new("b").label("scan"));
+        sys.ticket(Ticket::new("c"));
         let stats = sys.stats();
         assert_eq!(stats.tickets_created(), 3);
         assert_eq!(stats.stats_for_label("scan").tickets_created(), 2);
@@ -1197,8 +1198,8 @@ mod tests {
     #[test]
     fn stats_for_label_counts_terminal_transitions_per_label() {
         let sys = TicketSystem::new();
-        sys.create(Ticket::new("a").labels(["scan", "high"]));
-        sys.create(Ticket::new("b").label("scan"));
+        sys.ticket(Ticket::new("a").labels(["scan", "high"]));
+        sys.ticket(Ticket::new("b").label("scan"));
         sys.update_status("TICKET-1", Status::InProgress).unwrap();
         sys.update_status("TICKET-1", Status::Done).unwrap();
         sys.update_status("TICKET-2", Status::InProgress).unwrap();
@@ -1217,7 +1218,7 @@ mod tests {
     #[test]
     fn stats_for_label_force_status_path_records_per_label() {
         let sys = TicketSystem::new();
-        sys.create(Ticket::new("a").label("scan"));
+        sys.ticket(Ticket::new("a").label("scan"));
         sys.force_status("TICKET-1", Status::Failed).unwrap();
         assert_eq!(sys.stats().stats_for_label("scan").tickets_failed(), 1);
     }
@@ -1225,7 +1226,7 @@ mod tests {
     #[test]
     fn stats_for_label_unaffected_by_no_label_ticket() {
         let sys = TicketSystem::new();
-        sys.create(Ticket::new("a"));
+        sys.ticket(Ticket::new("a"));
         sys.update_status("TICKET-1", Status::InProgress).unwrap();
         sys.update_status("TICKET-1", Status::Done).unwrap();
         assert_eq!(sys.stats().tickets_done(), 1);
@@ -1291,7 +1292,7 @@ mod tests {
     fn workspace_created_event_carries_assignee_when_pinned() {
         let dir = tempfile::tempdir().unwrap();
         let sys = TicketSystem::new().workspace(dir.path().to_path_buf());
-        sys.create(Ticket::new("specific").assign_to("alice"));
+        sys.ticket(Ticket::new("specific").assign_to("alice"));
         let lines = read_tickets_log(dir.path());
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0]["event"], "created");

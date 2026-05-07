@@ -1173,8 +1173,7 @@ mod tests {
                 .provider(provider.clone() as Arc<dyn Provider>)
                 .model("mock")
                 .role("test")
-                .tool(ManageTicketsTool)
-                .silent(),
+                .tool(ManageTicketsTool),
         );
         tickets.task("first");
         tickets.task("second");
@@ -1213,8 +1212,7 @@ mod tests {
                 .provider(provider.clone() as Arc<dyn Provider>)
                 .model("mock")
                 .role("test")
-                .memory(&store)
-                .silent(),
+                .memory(&store),
         );
         tickets.task("first");
         tickets.task("second");
@@ -1265,8 +1263,7 @@ mod tests {
                 .provider(provider.clone() as Arc<dyn Provider>)
                 .model("mock")
                 .role("test")
-                .memory(&store)
-                .silent(),
+                .memory(&store),
         );
         tickets.task("hi");
         let _ = tickets.run_dry().await;
@@ -1314,8 +1311,7 @@ mod tests {
                 .provider(p_a.clone() as Arc<dyn Provider>)
                 .model("mock")
                 .role("test")
-                .memory(&store)
-                .silent(),
+                .memory(&store),
         );
         tickets.add(
             Agent::new()
@@ -1324,8 +1320,7 @@ mod tests {
                 .provider(p_b.clone() as Arc<dyn Provider>)
                 .model("mock")
                 .role("test")
-                .memory(&store)
-                .silent(),
+                .memory(&store),
         );
 
         tickets.task_labeled("alice work", "a");
@@ -1377,10 +1372,9 @@ mod tests {
                 .provider(provider.clone() as Arc<dyn Provider>)
                 .model("mock")
                 .role("test")
-                .silent()
                 .tool(ManageTicketsTool),
         );
-        tickets.create(Ticket::new("hello").assign_to("late"));
+        tickets.ticket(Ticket::new("hello").assign_to("late"));
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
@@ -1424,10 +1418,9 @@ mod tests {
                 .provider(provider as Arc<dyn Provider>)
                 .model("mock")
                 .role("test")
-                .silent()
                 .tool(ManageTicketsTool),
         );
-        tickets.create(Ticket::new("x").assign_to("late"));
+        tickets.ticket(Ticket::new("x").assign_to("late"));
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
@@ -1474,7 +1467,6 @@ mod tests {
                 .provider(provider as Arc<dyn Provider>)
                 .model("mock")
                 .role("test")
-                .silent()
                 .tool(ManageTicketsTool),
         );
 
@@ -1542,7 +1534,6 @@ mod tests {
                 .provider(provider as Arc<dyn Provider>)
                 .model("mock")
                 .role("test")
-                .silent()
                 .tool(ManageTicketsTool),
         );
 
@@ -1574,7 +1565,6 @@ mod tests {
                 .provider(provider as Arc<dyn Provider>)
                 .model("mock")
                 .role("test")
-                .silent()
                 .tool(ManageTicketsTool),
         );
 

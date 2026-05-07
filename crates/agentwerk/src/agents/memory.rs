@@ -31,7 +31,8 @@ struct MemoryRecord {
 /// in shape: the caller constructs one `Arc<Memory>` and binds it to one or
 /// more agents through `Agent::memory(&store)`. Two agents pointed at the same
 /// `Arc` share `memory.jsonl`; two agents pointed at different stores see
-/// independent memory.
+/// independent memory. For the single-agent case, [`Agent::memory`] also takes
+/// a path directly: it opens the store under the hood.
 pub struct Memory {
     memory_dir: PathBuf,
     entries: Mutex<Vec<MemoryRecord>>,
@@ -164,6 +165,43 @@ impl Memory {
             .map_err(|e| format!("Failed to persist memory: {e}"))?;
         *self.entries.lock().unwrap() = cleaned;
         Ok(())
+    }
+}
+
+/// What [`Agent::memory`] accepts. A `&Arc<Memory>` shares an existing store
+/// across agents; a path opens a fresh store rooted at that directory. The
+/// path forms map straight onto [`Memory::open`].
+pub trait IntoMemory {
+    fn into_memory(self) -> io::Result<Arc<Memory>>;
+}
+
+impl IntoMemory for &Arc<Memory> {
+    fn into_memory(self) -> io::Result<Arc<Memory>> {
+        Ok(Arc::clone(self))
+    }
+}
+
+impl IntoMemory for PathBuf {
+    fn into_memory(self) -> io::Result<Arc<Memory>> {
+        Memory::open(self)
+    }
+}
+
+impl IntoMemory for &PathBuf {
+    fn into_memory(self) -> io::Result<Arc<Memory>> {
+        Memory::open(self)
+    }
+}
+
+impl IntoMemory for &Path {
+    fn into_memory(self) -> io::Result<Arc<Memory>> {
+        Memory::open(self)
+    }
+}
+
+impl IntoMemory for &str {
+    fn into_memory(self) -> io::Result<Arc<Memory>> {
+        Memory::open(self)
     }
 }
 
