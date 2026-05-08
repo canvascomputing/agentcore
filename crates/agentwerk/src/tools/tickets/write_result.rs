@@ -148,6 +148,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_empty_object_when_no_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sys, key) = one_ticket("alice");
+        let sys = Arc::clone(&sys).workspace(dir.path().to_path_buf());
+        let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
+        let outcome = WriteResultTool
+            .call(serde_json::json!({"result": {}}), &ctx)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ToolResult::Error(_)));
+        let t = sys.get(&key).unwrap();
+        assert_eq!(t.status, Status::InProgress);
+        assert!(!dir.path().join("results.jsonl").exists());
+    }
+
+    #[tokio::test]
+    async fn rejects_empty_array_when_no_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sys, key) = one_ticket("alice");
+        let sys = Arc::clone(&sys).workspace(dir.path().to_path_buf());
+        let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
+        let outcome = WriteResultTool
+            .call(serde_json::json!({"result": []}), &ctx)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ToolResult::Error(_)));
+        let t = sys.get(&key).unwrap();
+        assert_eq!(t.status, Status::InProgress);
+        assert!(!dir.path().join("results.jsonl").exists());
+    }
+
+    #[tokio::test]
     async fn accepts_structured_value_when_no_schema() {
         let dir = tempfile::tempdir().unwrap();
         let (sys, key) = one_ticket("alice");

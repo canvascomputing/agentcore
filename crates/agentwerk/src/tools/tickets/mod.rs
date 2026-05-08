@@ -356,6 +356,12 @@ pub(super) fn write_result(
             Value::String(s) if s.is_empty() => {
                 return ToolResult::error("`result` must not be an empty string");
             }
+            Value::Object(m) if m.is_empty() => {
+                return ToolResult::error("`result` must not be an empty object");
+            }
+            Value::Array(a) if a.is_empty() => {
+                return ToolResult::error("`result` must not be an empty array");
+            }
             _ => {}
         }
     }
