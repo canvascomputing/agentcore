@@ -18,7 +18,7 @@
     "IMPORTANT: results are capped (`max_results`, default 100); if you suspect more, raise the cap or narrow `pattern` rather than re-running."
   ],
   "output": [
-    "Plain text. Format depends on `output_mode`: `files` (default) — one path per line; `content` — `<path>:<line_no>: <line>` plus optional context; `count` — `<path>: <count>` per file.",
+    "Plain text. Format depends on `output_mode`: `files` (default) — one path per line; `content` — match lines use `<path>:<line_no>:<col>: <line>` (1-based column of first match), context-only lines use `<path>:<line_no>: <line>`; `count` — `<path>: <count>` per file.",
     "Empty string when nothing matches."
   ],
   "read_only": true,

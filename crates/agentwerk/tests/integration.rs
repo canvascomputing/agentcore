@@ -16,6 +16,9 @@ mod file_exploration;
 #[path = "integration/glob_finds_nested_files.rs"]
 mod glob_finds_nested_files;
 
+#[path = "integration/grep_content_output.rs"]
+mod grep_content_output;
+
 #[path = "integration/grep_finds_code_pattern.rs"]
 mod grep_finds_code_pattern;
 

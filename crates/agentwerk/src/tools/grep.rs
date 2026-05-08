@@ -110,12 +110,15 @@ fn search_content(
         let lines: Vec<&str> = content.lines().collect();
         let rel = relative_path(file_path, base);
 
-        let match_indices: Vec<usize> = lines
+        let match_map: std::collections::BTreeMap<usize, usize> = lines
             .iter()
             .enumerate()
-            .filter(|(_, line)| line_matches(line, needle, case_insensitive))
-            .map(|(i, _)| i)
+            .filter_map(|(i, line)| {
+                line_matches(line, needle, case_insensitive).map(|col| (i, col))
+            })
             .collect();
+
+        let match_indices: Vec<usize> = match_map.keys().copied().collect();
 
         let mut emitted = std::collections::BTreeSet::new();
         for &idx in &match_indices {
@@ -125,7 +128,11 @@ fn search_content(
                 if !emitted.insert(li) {
                     continue;
                 }
-                output.push(format!("{}:{}: {}", rel, li + 1, line));
+                if let Some(&col) = match_map.get(&li) {
+                    output.push(format!("{}:{}:{}: {}", rel, li + 1, col, line));
+                } else {
+                    output.push(format!("{}:{}: {}", rel, li + 1, line));
+                }
                 if output.len() >= max_results {
                     break 'outer;
                 }
@@ -153,7 +160,7 @@ fn search_count(
 
         let n = content
             .lines()
-            .filter(|line| line_matches(line, needle, case_insensitive))
+            .filter(|line| line_matches(line, needle, case_insensitive).is_some())
             .count();
         if n > 0 {
             counts.push(format!("{}: {n} matches", relative_path(file_path, base)));
@@ -183,7 +190,7 @@ fn search_files(
 
         if content
             .lines()
-            .any(|line| line_matches(line, needle, case_insensitive))
+            .any(|line| line_matches(line, needle, case_insensitive).is_some())
         {
             matched.push(relative_path(file_path, base));
             if matched.len() >= max_results {
@@ -195,12 +202,14 @@ fn search_files(
     matched.join("\n")
 }
 
-fn line_matches(line: &str, needle: &str, case_insensitive: bool) -> bool {
-    if case_insensitive {
-        line.to_lowercase().contains(needle)
+/// Returns the 1-based column of the first match, or `None` if there is no match.
+fn line_matches(line: &str, needle: &str, case_insensitive: bool) -> Option<usize> {
+    let byte_offset = if case_insensitive {
+        line.to_lowercase().find(needle)
     } else {
-        line.contains(needle)
-    }
+        line.find(needle)
+    };
+    byte_offset.map(|off| off + 1)
 }
 
 fn relative_path(path: &Path, base: &Path) -> String {
@@ -333,10 +342,127 @@ mod tests {
         let (ToolResult::Success(content)
         | ToolResult::Error(content)
         | ToolResult::SchemaError(content)) = &result;
-        // Should include the matching line and context
+        // Should include the matching line with column info
         assert!(content.contains("Hello world"));
+        // "Hello world" starts at column 15 in `    println!("Hello world");`
+        assert!(
+            content.contains(":2:15: "),
+            "Expected match line to include :2:15: but got:\n{content}"
+        );
         // With 1 context line, should also include fn main() line (line before)
         assert!(content.contains("fn main()"));
+    }
+
+    #[tokio::test]
+    async fn content_mode_includes_column_of_first_match() {
+        let tmp = setup_test_dir();
+        let tool = GrepTool;
+        let ctx = test_ctx(tmp.path());
+
+        let result = tool
+            .call(
+                serde_json::json!({
+                    "pattern": "Hello world",
+                    "output_mode": "content"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let (ToolResult::Success(content)
+        | ToolResult::Error(content)
+        | ToolResult::SchemaError(content)) = &result;
+        // `    println!("Hello world");` — "Hello world" starts at byte 15 (1-based)
+        let line = content
+            .lines()
+            .next()
+            .expect("should have at least one line");
+        let parts: Vec<&str> = line.splitn(4, ':').collect();
+        assert_eq!(parts.len(), 4, "Expected path:line:col: content");
+        assert_eq!(parts[2], "15", "Column of 'Hello world' should be 15");
+    }
+
+    #[tokio::test]
+    async fn context_lines_omit_column() {
+        let tmp = setup_test_dir();
+        let tool = GrepTool;
+        let ctx = test_ctx(tmp.path());
+
+        let result = tool
+            .call(
+                serde_json::json!({
+                    "pattern": "Hello world",
+                    "output_mode": "content",
+                    "context_lines": 1
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let (ToolResult::Success(content)
+        | ToolResult::Error(content)
+        | ToolResult::SchemaError(content)) = &result;
+        for line in content.lines() {
+            if line.contains("Hello world") {
+                // Match line: 4-part format
+                let parts: Vec<&str> = line.splitn(4, ':').collect();
+                assert_eq!(
+                    parts.len(),
+                    4,
+                    "Match line should be path:line:col: content, got: {line}"
+                );
+            } else {
+                // Context line: 3-part format (path:line: content)
+                let parts: Vec<&str> = line.splitn(3, ':').collect();
+                assert_eq!(
+                    parts.len(),
+                    3,
+                    "Context line should be path:line: content, got: {line}"
+                );
+                // The second part should be a valid line number
+                assert!(
+                    parts[1].trim().parse::<usize>().is_ok(),
+                    "Second part of context line should be a line number, got: {}",
+                    parts[1]
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn case_insensitive_column_matches_original_position() {
+        let tmp = setup_test_dir();
+        let tool = GrepTool;
+        let ctx = test_ctx(tmp.path());
+
+        let result = tool
+            .call(
+                serde_json::json!({
+                    "pattern": "hello world",
+                    "case_insensitive": true,
+                    "output_mode": "content"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let (ToolResult::Success(content)
+        | ToolResult::Error(content)
+        | ToolResult::SchemaError(content)) = &result;
+        let line = content
+            .lines()
+            .next()
+            .expect("should have at least one line");
+        let parts: Vec<&str> = line.splitn(4, ':').collect();
+        assert_eq!(parts.len(), 4);
+        // Column should match the position of "Hello world" in the original (not lowercased) line
+        assert_eq!(
+            parts[2], "15",
+            "Column under case-insensitive search should be 15"
+        );
     }
 
     #[tokio::test]
@@ -371,9 +497,13 @@ mod tests {
         let (ToolResult::Success(content)
         | ToolResult::Error(content)
         | ToolResult::SchemaError(content)) = &result;
-        // Content lines have format "file:line_no: content"
+        // Match lines (no context) have format "file:line_no:col: content"
         for line in content.lines() {
-            assert!(line.contains(':'), "Expected colon in content line: {line}");
+            let parts: Vec<&str> = line.splitn(4, ':').collect();
+            assert!(
+                parts.len() == 4,
+                "Expected 4-part format (path:line:col: content) but got: {line}"
+            );
         }
 
         // count mode
