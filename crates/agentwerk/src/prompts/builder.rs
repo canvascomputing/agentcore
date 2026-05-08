@@ -30,7 +30,7 @@ pub struct Prompt {
 pub struct PromptBuilder {
     context: Option<Section>,
     role: Option<Section>,
-    memory: Option<Section>,
+    knowledge: Option<Section>,
     task: Option<Section>,
     directives: Vec<Section>,
 }
@@ -47,8 +47,8 @@ impl PromptBuilder {
         self
     }
 
-    pub fn memory(mut self, body: impl Into<Cow<'static, str>>) -> Self {
-        self.memory = Some(Section::memory(body));
+    pub fn knowledge(mut self, body: impl Into<Cow<'static, str>>) -> Self {
+        self.knowledge = Some(Section::knowledge(body));
         self
     }
 
@@ -77,10 +77,10 @@ impl PromptBuilder {
                 system_parts.push(r);
             }
         }
-        if let Some(memory) = self.memory {
-            let m = memory.render();
-            if !m.is_empty() {
-                system_parts.push(m);
+        if let Some(knowledge) = self.knowledge {
+            let k = knowledge.render();
+            if !k.is_empty() {
+                system_parts.push(k);
             }
         }
         for d in self.directives {
@@ -144,20 +144,22 @@ mod tests {
     }
 
     #[test]
-    fn memory_appends_after_role_in_system() {
+    fn knowledge_appends_after_role_in_system() {
         let p = PromptBuilder::default()
             .role("You are an agent.")
-            .memory("note one\n§\nnote two")
+            .knowledge("- **config** — Port 8080")
             .build();
         assert_eq!(
             p.system,
-            "You are an agent.\n\n## Memory\n\nnote one\n§\nnote two"
+            "You are an agent.\n\n## Knowledge\n\n- **config** — Port 8080"
         );
     }
 
     #[test]
-    fn memory_alone_renders_in_system() {
-        let p = PromptBuilder::default().memory("note one").build();
-        assert_eq!(p.system, "## Memory\n\nnote one");
+    fn knowledge_alone_renders_in_system() {
+        let p = PromptBuilder::default()
+            .knowledge("- **config** — Port 8080")
+            .build();
+        assert_eq!(p.system, "## Knowledge\n\n- **config** — Port 8080");
     }
 }

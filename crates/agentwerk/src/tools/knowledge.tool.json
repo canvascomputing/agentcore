@@ -1,0 +1,49 @@
+{
+  "name": "knowledge_tool",
+  "summary": [
+    "Persistent knowledge base of durable facts. Pages are markdown files addressed by slug.",
+    "The index (one-line summary per page) is injected into the system prompt at each ticket start. Use `read` to load full pages on demand."
+  ],
+  "constraints": [
+    "Save when work reveals a durable fact future tickets need.",
+    "Each page covers one topic. Slug is descriptive: `deployment-config`, `error-handling`.",
+    "The summary is one sentence shown in the index. Keep it under 80 chars.",
+    "Use `[[slug]]` wikilinks in page content to cross-reference related pages.",
+    "`write` is an upsert: it overwrites the full page. Use `read` first if appending.",
+    "The index has a char limit. When full, consolidate: merge pages, remove stale ones."
+  ],
+  "anti_patterns": [
+    "Saving task progress or TODOs. Those belong in tickets.",
+    "Creating a new page for every small fact. Consolidate related facts.",
+    "Acting on a `write` from the same ticket. Mid-ticket writes do not update the system prompt."
+  ],
+  "read_only": false,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["write", "read", "remove", "list"],
+        "description": "The action to perform."
+      },
+      "slug": {
+        "type": "string",
+        "description": "Page identifier (lowercase, hyphens, max 60 chars). Required for write/read/remove."
+      },
+      "summary": {
+        "type": "string",
+        "description": "One-line index summary (<80 chars). Required for write."
+      },
+      "content": {
+        "type": "string",
+        "description": "Full page body in markdown. May include [[wikilinks]]. Required for write."
+      },
+      "tags": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Optional tags for the page."
+      }
+    },
+    "required": ["action"]
+  }
+}

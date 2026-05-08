@@ -16,7 +16,7 @@
   <a href="#development">Development</a>
 </p>
 
-<p align="center">agentwerk builds agentic workflows around a ticket-driven execution loop, with built-in tools, memory, schema validation, retries, budget policies, and multi-provider support.</p>
+<p align="center">agentwerk builds agentic workflows around a ticket-driven execution loop, with built-in tools, a knowledge store, schema validation, retries, budget policies, and multi-provider support.</p>
 
 <p align="center"><em>agentwerk pairs "agent" with the German "Werk", a word for both factory and artwork: machinery for building agentic systems.</em></p>
 
@@ -76,7 +76,7 @@ make use_case name=<name>    # run one
 - [Prompting](#prompting): How role, context, and task shape the model's input.
 - [Tickets](#tickets): Shared queues that route tickets to agents.
 - [Tools](#tools): Capabilities agents call to take action.
-- [Memory](#memory): Durable facts the model curates across tickets.
+- [Knowledge](#knowledge): Durable facts the model curates across tickets.
 - [Schemas](#schemas): JSON schemas that validate ticket results.
 - [Events](#events): Lifecycle signals emitted while agents work.
 - [Stats](#stats): Counters and timings recorded while agents work.
@@ -104,7 +104,7 @@ let model = model_from_env()?;
 
 ## Agents
 
-An `Agent` is a worker that solves one task at a time. A **task** is the work assigned to the agent: a question, an instruction, or a structured request. Each task becomes a **ticket**: a record that tracks the work from start to finish and holds the final answer. The agent picks up a ticket, invokes the tools it has been registered with (read a file, run a command, search memory), and writes the result back onto the ticket.
+An `Agent` is a worker that solves one task at a time. A **task** is the work assigned to the agent: a question, an instruction, or a structured request. Each task becomes a **ticket**: a record that tracks the work from start to finish and holds the final answer. The agent picks up a ticket, invokes the tools it has been registered with (read a file, run a command, consult knowledge), and writes the result back onto the ticket.
 
 ### Identity
 
@@ -170,25 +170,25 @@ let agent = Agent::new()
 |--------|-------------|
 | `event_handler(fn)` | Set a custom event observer. |
 
-### Memory
+### Knowledge
 
-Bind the agent to a memory store so facts persist across tickets and restarts.
+Bind the agent to a knowledge store so facts persist across tickets and restarts. Only a compact index is injected into the system prompt; full pages are read on demand.
 
 ```rust
-use agentwerk::Memory;
+use agentwerk::Knowledge;
 
 // Pass a path to open a fresh store under that directory:
-let agent = Agent::new().memory("./.agentwerk");
+let agent = Agent::new().knowledge("./.agentwerk");
 
 // Or share one store across multiple agents:
-let memory = Memory::open("./.agentwerk")?;
-let alice = Agent::new().memory(&memory);
-let bob = Agent::new().memory(&memory);
+let knowledge = Knowledge::open("./.agentwerk")?;
+let alice = Agent::new().knowledge(&knowledge);
+let bob = Agent::new().knowledge(&knowledge);
 ```
 
 | Method | Description |
 |--------|-------------|
-| `memory(into)` | Bind the agent to a memory store for facts that persist across tickets. Accepts a path (opens a fresh store) or an `&Arc<Memory>` (shares an existing store across agents). |
+| `knowledge(into)` | Bind the agent to a knowledge store for facts that persist across tickets. Accepts a path (opens a fresh store) or an `&Arc<Knowledge>` (shares an existing store across agents). |
 
 ### Run
 
@@ -284,7 +284,7 @@ tickets.agent(agent);
 | `TicketSystem::new()` | Create a new ticket system that agents can share. |
 | `agent(agent)` | Register an agent with the system. |
 | `interrupt_signal(signal)` | Override the cancel signal shared across agents. |
-| `workspace(dir)` | Set the workspace directory where memory, ticket results, and the ticket logs are persisted. |
+| `workspace(dir)` | Set the workspace directory where knowledge, ticket results, and the ticket logs are persisted. |
 
 ### Tasks
 
@@ -417,7 +417,7 @@ Tools enable an agent to take action while solving a ticket: read a file, run a 
 | | `ManageTicketsTool` | Reads the ticket queue and creates or edits tickets. |
 | | `ReadTicketsTool` | Reads the ticket queue. |
 | | `WriteTicketsTool` | Creates or edits tickets in the queue. |
-| **Memory** | `MemoryTool` | Adds, replaces, or removes entries in the agent's memory. |
+| **Knowledge** | `KnowledgeTool` | Writes, reads, removes, or lists pages in the agent's knowledge store. |
 | **Discovery** | `ToolSearchTool` | Discovers tools registered with `Tool::defer(true)`. |
 
 ### Custom tools
@@ -443,40 +443,40 @@ let greet = Tool::new("greet", "Say hello")
 
 `.read_only(true)` allows the agent to run a tool concurrently with other read-only calls in the same step.
 
-## Memory
+## Knowledge
 
-`Memory` allows an agent to retain knowledge from one task to the next, even across process restarts. It is a file-backed store the agent curates through `MemoryTool`.
+`Knowledge` allows an agent to retain facts from one task to the next, even across process restarts. It is a page-based store the agent curates through `KnowledgeTool`. Only a compact index (one-line summary per page) goes into the system prompt; full pages are loaded on demand via the `read` action.
 
 ```rust
-use agentwerk::{Agent, Memory};
+use agentwerk::{Agent, Knowledge};
 
-let memory = Memory::open("./.agentwerk")?;
+let knowledge = Knowledge::open("./.agentwerk")?;
 
 let alice = Agent::new()
     .name("alice")
     .provider(provider.clone())
     .model(&model)
-    .memory(&memory);
+    .knowledge(&knowledge);
 
 let bob = Agent::new()
     .name("bob")
     .provider(provider)
     .model(&model)
-    .memory(&memory);
+    .knowledge(&knowledge);
 ```
 
-Both agents read and write the same `memory.jsonl` (one entry per line: `{"content": "...", "added_at": <ms>}`). Bind two agents to two different stores for independent memory.
+Both agents share the same `index.md` and `pages/` directory. Bind two agents to two different stores for independent knowledge.
 
-Methods on `Memory`:
+Methods on `Knowledge`:
 
 | | Method | Description |
 |-|--------|-------------|
-| **Open** | `Memory::open(dir)` | Open or create a store at `dir`. |
-| **Read** | `entries()` | List the current entries, in insertion order. |
-| **Mutate** | `add(content)` | Append a new entry. |
-| | `replace(old_text, content)` | Swap the unique entry containing `old_text`. |
-| | `remove(old_text)` | Drop the unique entry containing `old_text`. |
-| | `rewrite(entries)` | Replace every entry in a single call. |
+| **Open** | `Knowledge::open(dir)` | Open or create a store at `dir`. |
+| **Read** | `index()` | Return the rendered index for the system prompt. |
+| | `read_page(slug)` | Return a page's body with frontmatter stripped. |
+| **Mutate** | `write_page(slug, summary, content, tags)` | Upsert a page and its index entry. |
+| | `remove_page(slug)` | Delete a page and its index entry. |
+| | `clear()` | Remove all pages and the index. |
 
 ## Schemas
 

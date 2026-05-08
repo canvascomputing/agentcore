@@ -15,9 +15,9 @@ use serde::Serialize;
 use crate::event::{default_logger, Event};
 use crate::prompts::{default_context, PromptBuilder, Section};
 use crate::providers::{Provider, ProviderToolDefinition};
-use crate::tools::{MemoryTool, ToolLike, ToolRegistry, WriteResultTool};
+use crate::tools::{KnowledgeTool, ToolLike, ToolRegistry, WriteResultTool};
 
-use super::memory::{IntoMemory, Memory};
+use super::knowledge::{IntoKnowledge, Knowledge};
 
 use super::policy::Policies;
 use super::stats::Stats;
@@ -42,7 +42,7 @@ pub struct Agent {
     tools: ToolRegistry,
     working_dir: Option<PathBuf>,
     event_handler: Option<Arc<dyn Fn(Event) + Send + Sync>>,
-    memory: Option<Arc<Memory>>,
+    knowledge: Option<Arc<Knowledge>>,
     pub(crate) ticket_system: Weak<TicketSystem>,
 }
 
@@ -61,7 +61,7 @@ impl Default for Agent {
             tools,
             working_dir: None,
             event_handler: None,
-            memory: None,
+            knowledge: None,
             ticket_system: Weak::new(),
         }
     }
@@ -167,24 +167,25 @@ impl Agent {
         self
     }
 
-    /// Bind this agent to a `Memory` store. Accepts either an `&Arc<Memory>`
-    /// (to share one store across multiple agents, the same way
-    /// `ticket_system(&shared)` shares a queue) or a path to a directory the
-    /// store should be rooted at (opens a fresh store under the hood, mirroring
-    /// `TicketSystem::workspace(dir)`). Registers `MemoryTool` on the agent's
-    /// tool registry and arranges for the store's entries to be concatenated
-    /// into the system prompt under `## Memory` at the top of every ticket.
-    /// Off by default; each ticket starts without a memory section when no
-    /// store is bound. Panics on IO failure when opening from a path.
-    pub fn memory<M: IntoMemory>(mut self, store: M) -> Self {
-        let store = store.into_memory().expect("open memory store");
-        self.tools.register(MemoryTool::new(Arc::clone(&store)));
-        self.memory = Some(store);
+    /// Bind this agent to a `Knowledge` store. Accepts either an
+    /// `&Arc<Knowledge>` (to share one store across multiple agents, the
+    /// same way `ticket_system(&shared)` shares a queue) or a path to a
+    /// directory the store should be rooted at (opens a fresh store under
+    /// the hood, mirroring `TicketSystem::workspace(dir)`). Registers
+    /// `KnowledgeTool` on the agent's tool registry and arranges for the
+    /// store's index to be injected into the system prompt under
+    /// `## Knowledge` at the top of every ticket. Off by default; each
+    /// ticket starts without a knowledge section when no store is bound.
+    /// Panics on IO failure when opening from a path.
+    pub fn knowledge<K: IntoKnowledge>(mut self, store: K) -> Self {
+        let store = store.into_knowledge().expect("open knowledge store");
+        self.tools.register(KnowledgeTool::new(Arc::clone(&store)));
+        self.knowledge = Some(store);
         self
     }
 
-    pub(super) fn memory_handle(&self) -> Option<Arc<Memory>> {
-        self.memory.clone()
+    pub(super) fn knowledge_handle(&self) -> Option<Arc<Knowledge>> {
+        self.knowledge.clone()
     }
 
     /// Bind this agent to a shared `TicketSystem`. Drains any tickets
@@ -251,16 +252,16 @@ impl Agent {
             .expect("Agent::run requires .model(...) to be set")
     }
 
-    /// Build the system prompt. `memory` is the body the loop captured at the
-    /// top of the current ticket, or `None` if [`Self::memory`] was not set.
-    /// Tests may pass `None`.
-    pub(super) fn system_prompt(&self, memory: Option<&str>) -> String {
+    /// Build the system prompt. `knowledge` is the index body the loop
+    /// captured at the top of the current ticket, or `None` if
+    /// [`Self::knowledge`] was not set. Tests may pass `None`.
+    pub(super) fn system_prompt(&self, knowledge: Option<&str>) -> String {
         let mut b = PromptBuilder::default();
         if let Some(role) = &self.role {
             b = b.role(self.interpolate(role));
         }
-        if let Some(snap) = memory.filter(|s| !s.is_empty()) {
-            b = b.memory(snap.to_string());
+        if let Some(snap) = knowledge.filter(|s| !s.is_empty()) {
+            b = b.knowledge(snap.to_string());
         }
         b.build().system
     }
@@ -606,77 +607,91 @@ mod tests {
     }
 
     #[test]
-    fn memory_defaults_to_none() {
+    fn knowledge_defaults_to_none() {
         let agent = Agent::new();
-        assert!(agent.memory_handle().is_none());
+        assert!(agent.knowledge_handle().is_none());
     }
 
     #[test]
-    fn memory_registers_memory_tool_on_the_agent() {
+    fn knowledge_registers_knowledge_tool_on_the_agent() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Memory::open(dir.path()).unwrap();
-        let agent = Agent::new().memory(&store);
+        let store = Knowledge::open(dir.path()).unwrap();
+        let agent = Agent::new().knowledge(&store);
         let names: Vec<String> = agent
             .tool_definitions()
             .into_iter()
             .map(|d| d.name)
             .collect();
         assert!(
-            names.iter().any(|n| n == "memory_tool"),
-            "memory_tool should be registered: {names:?}"
+            names.iter().any(|n| n == "knowledge_tool"),
+            "knowledge_tool should be registered: {names:?}"
         );
     }
 
     #[test]
-    fn memory_opens_a_fresh_store_when_passed_a_path() {
+    fn knowledge_opens_a_fresh_store_when_passed_a_path() {
         let dir = tempfile::tempdir().unwrap();
-        let agent = Agent::new().memory(dir.path());
+        let agent = Agent::new().knowledge(dir.path());
         let names: Vec<String> = agent
             .tool_definitions()
             .into_iter()
             .map(|d| d.name)
             .collect();
-        assert!(names.iter().any(|n| n == "memory_tool"));
-        agent.memory_handle().unwrap().add("from path").unwrap();
-        assert!(dir.path().join("memory.jsonl").exists());
+        assert!(names.iter().any(|n| n == "knowledge_tool"));
+        agent
+            .knowledge_handle()
+            .unwrap()
+            .write_page("from-path", "From path", "# From Path", &[])
+            .unwrap();
+        assert!(dir.path().join("pages").join("from-path.md").exists());
     }
 
     #[test]
     fn cloned_agent_observes_writes_through_original_handle() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Memory::open(dir.path()).unwrap();
-        let agent = Agent::new().memory(&store);
+        let store = Knowledge::open(dir.path()).unwrap();
+        let agent = Agent::new().knowledge(&store);
         let cloned = agent.clone();
-        agent.memory_handle().unwrap().add("via original").unwrap();
-        assert_eq!(
-            cloned.memory_handle().unwrap().entries().join("\n§\n"),
-            "via original"
-        );
+        agent
+            .knowledge_handle()
+            .unwrap()
+            .write_page("shared", "Shared note", "# Shared", &[])
+            .unwrap();
+        assert!(cloned
+            .knowledge_handle()
+            .unwrap()
+            .index()
+            .contains("shared"));
     }
 
     #[test]
     fn two_agents_bound_to_one_store_see_each_others_writes() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Memory::open(dir.path()).unwrap();
-        let alice = Agent::new().memory(&store);
-        let bob = Agent::new().memory(&store);
-        alice.memory_handle().unwrap().add("from alice").unwrap();
-        assert_eq!(
-            bob.memory_handle().unwrap().entries().join("\n§\n"),
-            "from alice"
-        );
+        let store = Knowledge::open(dir.path()).unwrap();
+        let alice = Agent::new().knowledge(&store);
+        let bob = Agent::new().knowledge(&store);
+        alice
+            .knowledge_handle()
+            .unwrap()
+            .write_page("from-alice", "From Alice", "# Alice", &[])
+            .unwrap();
+        assert!(bob
+            .knowledge_handle()
+            .unwrap()
+            .index()
+            .contains("from-alice"));
     }
 
     #[test]
-    fn system_prompt_renders_memory_section_when_body_present() {
+    fn system_prompt_renders_knowledge_section_when_body_present() {
         let agent = Agent::new().role("R");
-        let prompt = agent.system_prompt(Some("note one\n§\nnote two"));
+        let prompt = agent.system_prompt(Some("- **config** — Port 8080"));
         assert!(prompt.contains("R"));
-        assert!(prompt.contains("## Memory\n\nnote one\n§\nnote two"));
+        assert!(prompt.contains("## Knowledge\n\n- **config** — Port 8080"));
     }
 
     #[test]
-    fn system_prompt_omits_memory_when_body_empty() {
+    fn system_prompt_omits_knowledge_when_body_empty() {
         let agent = Agent::new().role("R");
         assert_eq!(agent.system_prompt(Some("")), "R");
     }

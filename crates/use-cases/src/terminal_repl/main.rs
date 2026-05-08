@@ -1,13 +1,13 @@
-//! Interactive terminal chat. One `TicketSystem` + `Agent` + `Memory`
+//! Interactive terminal chat. One `TicketSystem` + `Agent` + `Knowledge`
 //! lives for the whole session; each input line enqueues a ticket and
-//! runs `run_dry` once. The agent has `memory(...)` bound, so durable
-//! facts the model writes via `memory_tool` survive across turns and
-//! across process restarts (the file lives at `./.agentwerk-memory/`).
+//! runs `run_dry` once. The agent has `knowledge(...)` bound, so durable
+//! facts the model writes via `knowledge_tool` survive across turns and
+//! across process restarts (the store lives at `./.agentwerk/`).
 //! The model's response streams to stdout via
 //! `EventKind::TextChunkReceived`, and the agent finishes its ticket
 //! via the auto-registered `write_result_tool`. Slash commands:
-//! `/exit` quits, `/memory` prints the current memory contents,
-//! `/clear` resets them. Ctrl-C at the prompt exits with code 130;
+//! `/exit` quits, `/knowledge` prints the current knowledge index,
+//! `/clear` resets it. Ctrl-C at the prompt exits with code 130;
 //! Ctrl-C during a turn cancels that turn (a second Ctrl-C while the
 //! cancel is still draining force-quits with exit code 130).
 //!
@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use agentwerk::providers::{model_from_env, provider_from_env};
 use agentwerk::tools::{GlobTool, GrepTool, ListDirectoryTool, ReadFileTool};
-use agentwerk::{Agent, Event, EventKind, Memory, TicketSystem};
+use agentwerk::{Agent, Event, EventKind, Knowledge, TicketSystem};
 
 const ROLE: &str = include_str!("prompts/repl.role.md");
 
@@ -31,7 +31,7 @@ const ROLE: &str = include_str!("prompts/repl.role.md");
 async fn main() {
     let style = Style::detect();
     eprintln!(
-        "{}agentwerk REPL: /exit /memory /clear, Ctrl-C to cancel.{}",
+        "{}agentwerk REPL: /exit /knowledge /clear, Ctrl-C to cancel.{}",
         style.dim, style.reset,
     );
 
@@ -51,8 +51,8 @@ async fn main() {
         .max_steps(40);
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let memory_dir = cwd.join(".agentwerk");
-    let memory = Memory::open(&memory_dir).expect("open memory store");
+    let knowledge_dir = cwd.join(".agentwerk");
+    let knowledge = Knowledge::open(&knowledge_dir).expect("open knowledge store");
 
     let _agent = tickets.agent(
         Agent::new()
@@ -66,7 +66,7 @@ async fn main() {
             .tool(ListDirectoryTool)
             .tool(ReadFileTool)
             .event_handler(handler)
-            .memory(&memory),
+            .knowledge(&knowledge),
     );
 
     let mut prev_steps: u64 = 0;
@@ -90,19 +90,19 @@ async fn main() {
         if line == "/exit" || line == "/quit" {
             std::process::exit(0);
         }
-        if line == "/memory" {
-            let entries = memory.entries();
-            let rendered = if entries.is_empty() {
-                "(memory empty)".to_string()
+        if line == "/knowledge" {
+            let idx = knowledge.index();
+            let rendered = if idx.is_empty() {
+                "(knowledge empty)".into()
             } else {
-                entries.join("\n\n")
+                idx
             };
-            eprintln!("{}{}{}", style.dim, rendered, style.reset);
+            eprintln!("{}{rendered}{}", style.dim, style.reset);
             continue;
         }
         if line == "/clear" {
-            memory.rewrite(Vec::new()).ok();
-            eprintln!("{}memory cleared{}", style.dim, style.reset);
+            knowledge.clear().ok();
+            eprintln!("{}knowledge cleared{}", style.dim, style.reset);
             continue;
         }
 

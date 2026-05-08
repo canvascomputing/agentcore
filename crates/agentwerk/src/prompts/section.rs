@@ -27,9 +27,9 @@ impl Section {
         }
     }
 
-    pub fn memory(body: impl Into<Cow<'static, str>>) -> Self {
+    pub fn knowledge(body: impl Into<Cow<'static, str>>) -> Self {
         Self {
-            heading: Some("Memory"),
+            heading: Some("Knowledge"),
             body: body.into(),
         }
     }
@@ -79,9 +79,9 @@ mod tests {
     }
 
     #[test]
-    fn memory_wraps_body_in_h2_heading() {
-        let s = Section::memory("note one\n§\nnote two");
-        assert_eq!(s.render(), "## Memory\n\nnote one\n§\nnote two");
+    fn knowledge_wraps_body_in_h2_heading() {
+        let s = Section::knowledge("- **config** — Port 8080");
+        assert_eq!(s.render(), "## Knowledge\n\n- **config** — Port 8080");
     }
 
     #[test]

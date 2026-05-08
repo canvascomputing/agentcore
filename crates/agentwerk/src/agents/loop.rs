@@ -185,11 +185,12 @@ async fn process_ticket(
         ticket_system.stats.stats_for_label(l).record_step();
     }
 
-    // Read memory once, at the top of the ticket: the system prompt stays
-    // byte-stable across every turn of this ticket so the provider's prefix
-    // cache survives mid-ticket memory writes. Cross-ticket and cross-agent
-    // writes become visible at the top of the next ticket.
-    let memory_contents = agent.memory_handle().map(|s| s.entries().join("\n\n"));
+    // Read knowledge index once, at the top of the ticket: the system
+    // prompt stays byte-stable across every turn of this ticket so the
+    // provider's prefix cache survives mid-ticket knowledge writes.
+    // Cross-ticket and cross-agent writes become visible at the top of
+    // the next ticket.
+    let knowledge_contents = agent.knowledge_handle().map(|s| s.index());
 
     let policies = ticket_system.policies();
     let mut messages: Vec<Message> = Vec::new();
@@ -238,7 +239,7 @@ async fn process_ticket(
         });
         let request = ModelRequest {
             model: agent.model_str().to_string(),
-            system_prompt: agent.system_prompt(memory_contents.as_deref()),
+            system_prompt: agent.system_prompt(knowledge_contents.as_deref()),
             messages: messages.clone(),
             tools: agent.tool_definitions(),
             max_request_tokens,
@@ -561,15 +562,28 @@ mod tests {
         }
     }
 
-    /// `memory_tool` `add` call: the model's first turn writes a single entry
-    /// with `content`. The loop's tool dispatch will append it to the bound
-    /// `Memory`.
-    fn memory_add_response(content: &str) -> ModelResponse {
+    /// `knowledge_tool` `write` call: the model's first turn writes a page.
+    /// The loop's tool dispatch will upsert it in the bound `Knowledge`.
+    fn knowledge_write_response(slug: &str, summary: &str, content: &str) -> ModelResponse {
         ModelResponse {
             content: vec![ContentBlock::ToolUse {
                 id: "call-1".into(),
-                name: "memory_tool".into(),
-                input: serde_json::json!({"action": "add", "content": content}),
+                name: "knowledge_tool".into(),
+                input: serde_json::json!({"action": "write", "slug": slug, "summary": summary, "content": content}),
+            }],
+            status: ResponseStatus::ToolUse,
+            usage: TokenUsage::default(),
+            model: "mock".into(),
+        }
+    }
+
+    /// `knowledge_tool` `read` call.
+    fn knowledge_read_response(slug: &str) -> ModelResponse {
+        ModelResponse {
+            content: vec![ContentBlock::ToolUse {
+                id: "call-2".into(),
+                name: "knowledge_tool".into(),
+                input: serde_json::json!({"action": "read", "slug": slug}),
             }],
             status: ResponseStatus::ToolUse,
             usage: TokenUsage::default(),
@@ -1185,19 +1199,23 @@ mod tests {
 
     #[tokio::test]
     async fn model_writes_in_ticket_n_become_visible_in_ticket_n_plus_one_system_prompt() {
-        use crate::agents::Memory;
+        use crate::agents::Knowledge;
 
-        // Ticket 1: model adds a memory entry (turn 1) then finishes (turn 2).
+        // Ticket 1: model writes a knowledge page (turn 1) then finishes (turn 2).
         // Ticket 2: model finishes immediately (turn 3). The system prompt at
-        // turn 3 must contain the entry written at turn 1.
+        // turn 3 must contain the index entry written at turn 1.
         let provider = MockProvider::with_results(vec![
-            Ok(memory_add_response("note from ticket 1")),
+            Ok(knowledge_write_response(
+                "api-config",
+                "API runs on port 3000",
+                "# API Config\n\nPort 3000.",
+            )),
             Ok(write_result_response("done 1")),
             Ok(write_result_response("done 2")),
         ]);
         let results_dir = tempfile::tempdir().unwrap();
-        let memory_dir = tempfile::tempdir().unwrap();
-        let store = Memory::open(memory_dir.path()).unwrap();
+        let knowledge_dir = tempfile::tempdir().unwrap();
+        let store = Knowledge::open(knowledge_dir.path()).unwrap();
 
         let tickets = TicketSystem::new()
             .workspace(results_dir.path().to_path_buf())
@@ -1210,7 +1228,7 @@ mod tests {
                 .provider(provider.clone() as Arc<dyn Provider>)
                 .model("mock")
                 .role("test")
-                .memory(&store),
+                .knowledge(&store),
         );
         tickets.task("first");
         tickets.task("second");
@@ -1219,36 +1237,40 @@ mod tests {
         let prompts = provider.received_system_prompts();
         assert_eq!(prompts.len(), 3);
         assert!(
-            !prompts[0].contains("note from ticket 1"),
-            "ticket 1 turn 1 sees an empty memory: {:?}",
+            !prompts[0].contains("api-config"),
+            "ticket 1 turn 1 sees an empty knowledge store: {:?}",
             prompts[0]
         );
         assert!(
-            prompts[2].contains("## Memory"),
-            "ticket 2 should render the memory section: {:?}",
+            prompts[2].contains("## Knowledge"),
+            "ticket 2 should render the knowledge section: {:?}",
             prompts[2]
         );
         assert!(
-            prompts[2].contains("note from ticket 1"),
+            prompts[2].contains("API runs on port 3000"),
             "ticket 2 should see ticket 1's write: {:?}",
             prompts[2]
         );
     }
 
     #[tokio::test]
-    async fn system_prompt_does_not_change_after_mid_ticket_memory_write() {
-        use crate::agents::Memory;
+    async fn system_prompt_does_not_change_after_mid_ticket_knowledge_write() {
+        use crate::agents::Knowledge;
 
-        // One ticket, two turns: the model writes memory in turn 1, then
-        // finishes in turn 2. The two turns must see byte-identical system
+        // One ticket, two turns: the model writes a knowledge page in turn 1,
+        // then finishes in turn 2. The two turns must see byte-identical system
         // prompts so the provider's prefix cache survives the mid-ticket write.
         let provider = MockProvider::with_results(vec![
-            Ok(memory_add_response("written mid-ticket")),
+            Ok(knowledge_write_response(
+                "mid-ticket",
+                "Written mid-ticket",
+                "# Mid\n\nContent.",
+            )),
             Ok(write_result_response("ok")),
         ]);
         let results_dir = tempfile::tempdir().unwrap();
-        let memory_dir = tempfile::tempdir().unwrap();
-        let store = Memory::open(memory_dir.path()).unwrap();
+        let knowledge_dir = tempfile::tempdir().unwrap();
+        let store = Knowledge::open(knowledge_dir.path()).unwrap();
 
         let tickets = TicketSystem::new()
             .workspace(results_dir.path().to_path_buf())
@@ -1261,7 +1283,7 @@ mod tests {
                 .provider(provider.clone() as Arc<dyn Provider>)
                 .model("mock")
                 .role("test")
-                .memory(&store),
+                .knowledge(&store),
         );
         tickets.task("hi");
         let _ = tickets.run_dry().await;
@@ -1270,29 +1292,33 @@ mod tests {
         assert_eq!(prompts.len(), 2);
         assert_eq!(
             prompts[0], prompts[1],
-            "mid-ticket memory write must not change the system prompt within the same ticket"
+            "mid-ticket knowledge write must not change the system prompt within the same ticket"
         );
         // Disk write was durable, so the next ticket would see it.
-        assert_eq!(store.entries().join("\n§\n"), "written mid-ticket");
+        assert!(store.index().contains("mid-ticket"));
     }
 
     #[tokio::test]
     async fn agent_a_writes_in_one_ticket_then_agent_b_sees_it_in_its_next_ticket() {
-        use crate::agents::Memory;
+        use crate::agents::Knowledge;
 
-        // Two agents share one Memory via the Arc passed to memory(&store).
+        // Two agents share one Knowledge via the Arc passed to knowledge(&store).
         // Drive alice's ticket to completion first, then enqueue bob's so the
         // ordering is deterministic. Bob's ticket-1 system prompt must show
-        // alice's write.
+        // alice's write in the index.
         let p_a = MockProvider::with_results(vec![
-            Ok(memory_add_response("note from alice")),
+            Ok(knowledge_write_response(
+                "alice-note",
+                "Note from Alice",
+                "# Alice\n\nAlice's note.",
+            )),
             Ok(write_result_response("alice done")),
         ]);
         let p_b = MockProvider::with_results(vec![Ok(write_result_response("bob done"))]);
 
         let results_dir = tempfile::tempdir().unwrap();
-        let memory_dir = tempfile::tempdir().unwrap();
-        let store = Memory::open(memory_dir.path()).unwrap();
+        let knowledge_dir = tempfile::tempdir().unwrap();
+        let store = Knowledge::open(knowledge_dir.path()).unwrap();
 
         let cancel = Arc::new(AtomicBool::new(false));
         let tickets = TicketSystem::new()
@@ -1309,7 +1335,7 @@ mod tests {
                 .provider(p_a.clone() as Arc<dyn Provider>)
                 .model("mock")
                 .role("test")
-                .memory(&store),
+                .knowledge(&store),
         );
         tickets.agent(
             Agent::new()
@@ -1318,12 +1344,12 @@ mod tests {
                 .provider(p_b.clone() as Arc<dyn Provider>)
                 .model("mock")
                 .role("test")
-                .memory(&store),
+                .knowledge(&store),
         );
 
         tickets.task_labeled("alice work", "a");
         let _ = tickets.run_dry().await;
-        assert_eq!(store.entries().join("\n§\n"), "note from alice");
+        assert!(store.index().contains("alice-note"));
 
         // run_dry flips the cancel flag when the queue settles. Reset before
         // the second call so the supervisor doesn't bail.
@@ -1334,9 +1360,158 @@ mod tests {
         let bob_prompts = p_b.received_system_prompts();
         assert_eq!(bob_prompts.len(), 1, "bob processed exactly one ticket");
         assert!(
-            bob_prompts[0].contains("note from alice"),
+            bob_prompts[0].contains("Note from Alice"),
             "bob should see alice's write: {:?}",
             bob_prompts[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn knowledge_write_then_read_across_tickets() {
+        use crate::agents::Knowledge;
+
+        // Two tickets processed sequentially by one agent bound to a Knowledge store.
+        //
+        // Ticket 1 (3 turns):
+        //   1. Model calls knowledge_tool write (api-config)
+        //   2. Model calls knowledge_tool read (api-config)
+        //   3. Model calls write_result_tool to finish
+        //
+        // Ticket 2 (1 turn):
+        //   1. Model calls write_result_tool immediately
+
+        let provider = MockProvider::with_results(vec![
+            // Ticket 1, turn 1: write a page
+            Ok(knowledge_write_response(
+                "api-config",
+                "API runs on port 3000",
+                "# API Config\n\nThe API server listens on port 3000.\nRate limit: 100 req/min.\nSee also: [[error-codes]]",
+            )),
+            // Ticket 1, turn 2: read the page back
+            Ok(knowledge_read_response("api-config")),
+            // Ticket 1, turn 3: finish
+            Ok(write_result_response("done 1")),
+            // Ticket 2, turn 1: finish immediately
+            Ok(write_result_response("done 2")),
+        ]);
+
+        let results_dir = tempfile::tempdir().unwrap();
+        let knowledge_dir = tempfile::tempdir().unwrap();
+        let store = Knowledge::open(knowledge_dir.path()).unwrap();
+
+        let tickets = TicketSystem::new()
+            .workspace(results_dir.path().to_path_buf())
+            .max_request_retries(0)
+            .request_retry_delay(Duration::from_millis(1))
+            .max_time(Duration::from_millis(500));
+        tickets.agent(
+            Agent::new()
+                .name("tester")
+                .provider(provider.clone() as Arc<dyn Provider>)
+                .model("mock")
+                .role("test")
+                .knowledge(&store),
+        );
+        tickets.task("first");
+        tickets.task("second");
+        let _ = tickets.run_dry().await;
+
+        let prompts = provider.received_system_prompts();
+        assert_eq!(prompts.len(), 4);
+
+        // Ticket 1, turn 1: store is empty at start — no ## Knowledge
+        assert!(
+            !prompts[0].contains("## Knowledge"),
+            "ticket 1 turn 1 should not have Knowledge section: {:?}",
+            prompts[0]
+        );
+
+        // Mid-ticket writes do not change the prompt (prefix cache stability)
+        assert_eq!(
+            prompts[0], prompts[1],
+            "ticket 1 turn 2 prompt must be byte-identical to turn 1"
+        );
+        assert_eq!(
+            prompts[0], prompts[2],
+            "ticket 1 turn 3 prompt must be byte-identical to turn 1"
+        );
+
+        // Ticket 2, turn 1: the index is visible
+        assert!(
+            prompts[3].contains("## Knowledge"),
+            "ticket 2 should render the knowledge section: {:?}",
+            prompts[3]
+        );
+        assert!(
+            prompts[3].contains("api-config"),
+            "ticket 2 should see the page slug: {:?}",
+            prompts[3]
+        );
+        assert!(
+            prompts[3].contains("API runs on port 3000"),
+            "ticket 2 should see the index summary: {:?}",
+            prompts[3]
+        );
+        // The full page body should NOT be in the prompt — only the index summary
+        assert!(
+            !prompts[3].contains("Rate limit: 100 req/min"),
+            "ticket 2 should NOT contain full page body: {:?}",
+            prompts[3]
+        );
+
+        // Disk state: page file exists with correct content
+        let page_path = knowledge_dir.path().join("pages").join("api-config.md");
+        assert!(page_path.exists(), "page file should exist on disk");
+        let page_raw = std::fs::read_to_string(&page_path).unwrap();
+        assert!(page_raw.contains("Rate limit: 100 req/min"));
+        assert!(page_raw.contains("---")); // frontmatter present
+
+        // Disk state: index.md exists with correct entry
+        let index_path = knowledge_dir.path().join("index.md");
+        assert!(index_path.exists(), "index.md should exist on disk");
+        let index_raw = std::fs::read_to_string(&index_path).unwrap();
+        assert!(index_raw.contains("- **api-config** — API runs on port 3000"));
+
+        // The read action (turn 2) should have returned the body WITHOUT frontmatter.
+        // We verify this by checking the messages the provider received: turn 3's
+        // input includes the tool result from the read action (the last user
+        // message before the assistant response at turn 3).
+        let received = provider.received();
+        let turn3_messages = &received[2];
+        // Collect ALL tool results from the messages sent at turn 3.
+        let all_tool_results: Vec<&String> = turn3_messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::User { content } => Some(
+                    content
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::ToolResult { content, .. } => Some(content),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        // The read result is the one that contains the page body, not the
+        // "page written" confirmation from the write action.
+        let read_result = all_tool_results
+            .iter()
+            .find(|r| !r.starts_with("page written"))
+            .expect("should have a non-write tool result (the read result)");
+        assert!(
+            !read_result.contains("---"),
+            "read result should not contain frontmatter delimiters: {read_result}"
+        );
+        assert!(
+            !read_result.contains("updated:"),
+            "read result should not contain updated field: {read_result}"
+        );
+        assert!(
+            read_result.contains("Rate limit: 100 req/min"),
+            "read result should contain page body: {read_result}"
         );
     }
 

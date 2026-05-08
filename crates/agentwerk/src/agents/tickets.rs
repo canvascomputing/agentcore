@@ -313,8 +313,8 @@ impl TicketSystem {
     }
 
     /// Directory under which the system writes `results.jsonl` and
-    /// `tickets.jsonl`. Memory lives next to them when the caller points
-    /// `Memory::open` at the same directory. When unset, `WriteResultTool`
+    /// `tickets.jsonl`. Knowledge lives next to them when the caller points
+    /// `Knowledge::open` at the same directory. When unset, `WriteResultTool`
     /// falls back to the calling agent's working directory and the ticket
     /// event log is skipped entirely.
     pub fn workspace(self: Arc<Self>, dir: impl Into<PathBuf>) -> Arc<Self> {
