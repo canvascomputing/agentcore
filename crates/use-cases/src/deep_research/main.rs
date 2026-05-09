@@ -155,13 +155,13 @@ async fn main() {
     let research = parsed["research"].as_str().unwrap_or("(no body)");
     println!("\n## {title}\n\n{research}\n");
     let stats = tickets.stats();
-    eprintln!("Duration:  {:?}", stats.elapsed().unwrap_or_default());
-    eprintln!("Work time: {:?}", stats.total_work_duration());
+    eprintln!("Duration:  {:?}", stats.run_duration().unwrap_or_default());
+    eprintln!("Work time: {:?}", stats.work_duration());
     eprintln!(
         "Tickets:   {} done, {} failed ({:.0}%)",
         stats.tickets_done(),
         stats.tickets_failed(),
-        stats.success_rate().map(|r| r * 100.0).unwrap_or(0.0),
+        stats.tickets_success_rate().map(|r| r * 100.0).unwrap_or(0.0),
     );
     eprintln!(
         "Avg time:  {:?}",

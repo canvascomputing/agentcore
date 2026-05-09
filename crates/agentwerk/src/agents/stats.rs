@@ -90,8 +90,8 @@ impl Stats {
 
     /// Live counters scoped to one ticket label. Lazy-init on first
     /// access; subsequent calls return the same `Arc`. Reads use the
-    /// same accessors as the run-wide `Stats`; `elapsed()` is always
-    /// `None` on a slice (run timing stays global).
+    /// same accessors as the run-wide `Stats`; `run_duration()` is
+    /// always `None` on a slice (run timing stays global).
     pub fn stats_for_label(&self, label: &str) -> Arc<Stats> {
         let mut map = self.label_stats.lock().unwrap();
         map.entry(label.to_string())
@@ -135,10 +135,11 @@ impl Stats {
         self.tickets_failed.load(Ordering::Relaxed)
     }
 
-    /// Elapsed duration since the first `record_started` call. Live while
-    /// the run is in progress; freezes at `finished_at - started_at` once
-    /// `mark_finished` has fired. `None` until the run has started.
-    pub fn elapsed(&self) -> Option<Duration> {
+    /// Wall time of the run, measured from the first `record_started`
+    /// call. Live while the run is in progress; freezes at
+    /// `finished_at - started_at` once `mark_finished` has fired.
+    /// `None` until the run has started.
+    pub fn run_duration(&self) -> Option<Duration> {
         let s = self.started_at.load(Ordering::Relaxed);
         if s == 0 {
             return None;
@@ -156,7 +157,7 @@ impl Stats {
 
     /// `tickets_done / (tickets_done + tickets_failed)`. `None` when
     /// no ticket has reached a terminal state.
-    pub fn success_rate(&self) -> Option<f64> {
+    pub fn tickets_success_rate(&self) -> Option<f64> {
         let done = self.tickets_done.load(Ordering::Relaxed);
         let failed = self.tickets_failed.load(Ordering::Relaxed);
         let total = done + failed;
@@ -168,7 +169,7 @@ impl Stats {
     }
 
     /// Sum of finished tickets' creation→terminal spans.
-    pub fn total_ticket_duration(&self) -> Duration {
+    pub fn ticket_duration(&self) -> Duration {
         Duration::from_secs(self.total_ticket_duration.load(Ordering::Relaxed))
     }
 
@@ -187,9 +188,22 @@ impl Stats {
 
     /// Sum of finished tickets' started→terminal spans. With
     /// concurrent agents this aggregates work across all of them, so
-    /// it can exceed `elapsed`.
-    pub fn total_work_duration(&self) -> Duration {
+    /// it can exceed `run_duration`.
+    pub fn work_duration(&self) -> Duration {
         Duration::from_secs(self.total_work_duration.load(Ordering::Relaxed))
+    }
+
+    /// Mean of finished tickets' started→terminal spans. `None` while
+    /// no ticket has finished.
+    pub fn avg_work_duration(&self) -> Option<Duration> {
+        let n =
+            self.tickets_done.load(Ordering::Relaxed) + self.tickets_failed.load(Ordering::Relaxed);
+        if n == 0 {
+            None
+        } else {
+            let secs = self.total_work_duration.load(Ordering::Relaxed);
+            Some(Duration::from_secs(secs / n))
+        }
     }
 
     /// Stamp the run's finish wall-clock. Idempotent in practice
@@ -273,11 +287,12 @@ mod tests {
         assert_eq!(s.tickets_created(), 0);
         assert_eq!(s.tickets_done(), 0);
         assert_eq!(s.tickets_failed(), 0);
-        assert_eq!(s.total_ticket_duration(), Duration::ZERO);
-        assert_eq!(s.total_work_duration(), Duration::ZERO);
-        assert!(s.elapsed().is_none());
+        assert_eq!(s.ticket_duration(), Duration::ZERO);
+        assert_eq!(s.work_duration(), Duration::ZERO);
+        assert!(s.run_duration().is_none());
         assert!(s.avg_ticket_duration().is_none());
-        assert!(s.success_rate().is_none());
+        assert!(s.avg_work_duration().is_none());
+        assert!(s.tickets_success_rate().is_none());
     }
 
     #[test]
@@ -309,8 +324,8 @@ mod tests {
         assert_eq!(s.tickets_created(), 2);
         assert_eq!(s.tickets_done(), 1);
         assert_eq!(s.tickets_failed(), 1);
-        assert_eq!(s.total_ticket_duration(), Duration::from_secs(8));
-        assert_eq!(s.total_work_duration(), Duration::from_secs(6));
+        assert_eq!(s.ticket_duration(), Duration::from_secs(8));
+        assert_eq!(s.work_duration(), Duration::from_secs(6));
     }
 
     #[test]
@@ -320,37 +335,37 @@ mod tests {
         s.record_started(2_000);
         s.record_started(3_000);
         s.mark_finished(4_500);
-        assert_eq!(s.elapsed(), Some(Duration::from_millis(3500)));
+        assert_eq!(s.run_duration(), Some(Duration::from_millis(3500)));
     }
 
     #[test]
-    fn elapsed_freezes_at_finish() {
+    fn run_duration_freezes_at_finish() {
         let s = Stats::new();
-        assert!(s.elapsed().is_none());
+        assert!(s.run_duration().is_none());
         s.record_started(1_000);
         // Live before finish: anchored at started_at = 1_000ms epoch, so the
         // delta to "now" is enormous. We just check it's some duration.
-        assert!(s.elapsed().is_some());
+        assert!(s.run_duration().is_some());
         s.mark_finished(2_500);
-        assert_eq!(s.elapsed(), Some(Duration::from_millis(1500)));
+        assert_eq!(s.run_duration(), Some(Duration::from_millis(1500)));
         // Stays frozen on a subsequent call.
-        assert_eq!(s.elapsed(), Some(Duration::from_millis(1500)));
+        assert_eq!(s.run_duration(), Some(Duration::from_millis(1500)));
     }
 
     #[test]
-    fn success_rate_done_failed_mix() {
+    fn tickets_success_rate_done_failed_mix() {
         let s = Stats::new();
         s.record_done(Duration::from_secs(1), Duration::from_secs(1));
         s.record_done(Duration::from_secs(2), Duration::from_secs(2));
         s.record_failed(Duration::from_secs(3), Duration::from_secs(3));
-        let rate = s.success_rate().unwrap();
+        let rate = s.tickets_success_rate().unwrap();
         assert!((rate - 2.0 / 3.0).abs() < 1e-9, "rate = {rate}");
     }
 
     #[test]
-    fn success_rate_none_when_nothing_finished() {
+    fn tickets_success_rate_none_when_nothing_finished() {
         let s = Stats::new();
-        assert!(s.success_rate().is_none());
+        assert!(s.tickets_success_rate().is_none());
     }
 
     #[test]
@@ -359,6 +374,14 @@ mod tests {
         s.record_done(Duration::from_secs(2), Duration::from_secs(2));
         s.record_failed(Duration::from_secs(4), Duration::from_secs(4));
         assert_eq!(s.avg_ticket_duration(), Some(Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn avg_work_duration_is_arithmetic_mean() {
+        let s = Stats::new();
+        s.record_done(Duration::from_secs(3), Duration::from_secs(2));
+        s.record_failed(Duration::from_secs(5), Duration::from_secs(4));
+        assert_eq!(s.avg_work_duration(), Some(Duration::from_secs(3)));
     }
 
     #[test]
@@ -383,16 +406,16 @@ mod tests {
     }
 
     #[test]
-    fn stats_for_label_slice_elapsed_is_none() {
+    fn stats_for_label_slice_run_duration_is_none() {
         let s = Stats::new();
         let slice = s.stats_for_label("scan");
         slice.record_done(Duration::from_secs(2), Duration::from_secs(1));
-        assert!(slice.elapsed().is_none());
+        assert!(slice.run_duration().is_none());
         assert_eq!(slice.tickets_done(), 1);
     }
 
     #[test]
-    fn total_work_duration_can_exceed_elapsed_with_concurrency() {
+    fn work_duration_can_exceed_run_duration_with_concurrency() {
         // Two tickets, each 5s of work, finished in a 6s window —
         // models 2 agents working in parallel.
         let s = Stats::new();
@@ -400,7 +423,7 @@ mod tests {
         s.record_done(Duration::from_secs(5), Duration::from_secs(5));
         s.record_done(Duration::from_secs(5), Duration::from_secs(5));
         s.mark_finished(7_000);
-        assert_eq!(s.elapsed(), Some(Duration::from_secs(6)));
-        assert_eq!(s.total_work_duration(), Duration::from_secs(10));
+        assert_eq!(s.run_duration(), Some(Duration::from_secs(6)));
+        assert_eq!(s.work_duration(), Duration::from_secs(10));
     }
 }

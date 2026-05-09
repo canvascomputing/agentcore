@@ -343,17 +343,18 @@ let scan = s.stats_for_label("scan");
 
 | | Method | Description |
 |-|--------|-------------|
-| **Run** | `elapsed()` | Return the elapsed time since the first ticket started — live while agents work, frozen at the run total once the loop finishes. `None` until the first ticket starts. |
-| | `total_work_duration()` | Return the sum of every finished ticket's start-to-end span. |
+| **Run** | `run_duration()` | Return the run's elapsed duration, live while agents work and frozen once the loop finishes. `None` until the first ticket starts. |
+| **Work** | `work_duration()` | Return the sum of every finished ticket's start-to-end span. |
+| | `avg_work_duration()` | Return the mean of the same span, or `None` until a ticket finishes. |
 | **Tickets** | `tickets_created()` | Return the count of tickets created. |
 | | `tickets_done()` | Return the count of tickets that finished successfully. |
 | | `tickets_failed()` | Return the count of tickets that failed. |
-| | `success_rate()` | Return `done / (done + failed)`, or `None` until a ticket finishes. |
-| | `total_ticket_duration()` | Return the sum of every finished ticket's creation-to-end span. |
+| | `tickets_success_rate()` | Return `done / (done + failed)`, or `None` until a ticket finishes. |
+| | `ticket_duration()` | Return the sum of every finished ticket's creation-to-end span. |
 | | `avg_ticket_duration()` | Return the mean of the same span, or `None` until a ticket finishes. |
 | **Tokens** | `input_tokens()` | Return the total input tokens across all provider responses. |
 | | `output_tokens()` | Return the total output tokens across all provider responses. |
-| **Activity** | `steps()` | Return the total ticket-claim iterations across agents. |
+| **Activity** | `steps()` | Return the count of times an agent picked up a ticket to process. |
 | | `requests()` | Return the total provider responses received. |
 | | `tool_calls()` | Return the total tool calls. |
 | | `errors()` | Return the total provider errors. |

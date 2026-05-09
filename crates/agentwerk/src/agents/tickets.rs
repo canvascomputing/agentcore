@@ -1171,10 +1171,10 @@ mod tests {
         let high = stats.stats_for_label("high");
         assert_eq!(scan.tickets_done(), 1);
         assert_eq!(scan.tickets_failed(), 1);
-        assert_eq!(scan.success_rate(), Some(0.5));
+        assert_eq!(scan.tickets_success_rate(), Some(0.5));
         assert_eq!(high.tickets_done(), 1);
         assert_eq!(high.tickets_failed(), 0);
-        assert_eq!(high.success_rate(), Some(1.0));
+        assert_eq!(high.tickets_success_rate(), Some(1.0));
     }
 
     #[test]
