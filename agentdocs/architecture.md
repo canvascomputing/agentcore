@@ -52,7 +52,7 @@ Two layers of state exist. The intra-ticket message vector inside `process_ticke
 
 **`Event` reports state. `ProviderError` and `ToolError` report failed contracts. The two channels carry independent information.**
 
-- State transitions exist only as `Event` (`TicketClaimed`, `TicketFinished`, `RequestStarted`, `RequestFinished`, `TextChunkReceived`, `TokensReported`).
+- State transitions exist only as `Event` (`TicketClaimed`, `TicketFinished`, `RequestStarted`, `RequestFinished`, `TextChunkReceived`).
 - An observable failure fires both the typed error (`ProviderError`, `ToolError`) and a matching `Event` (`RequestFailed`, `ToolCallFailed`, `PolicyViolated`).
 - A model-fixable failure (wrong arguments, schema mismatch, missing file) goes back to the model as a `ToolResult::Error` content block; it still fires `ToolCallFailed` but does not stop the run.
 - Handlers MUST be cheap, non-blocking closures; the loop does not await them.

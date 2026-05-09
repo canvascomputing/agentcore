@@ -88,7 +88,7 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 **Counters use a bare plural noun. No `_count` suffix on fields or on methods that return a count.**
 
 - `Stats` sets the vocabulary: `requests`, `tool_calls`, `steps`, `input_tokens`, `output_tokens`.
-- Event payloads follow suit: `usage` on `TokensReported` carries token counts, not a `token_count`.
+- Event payloads follow suit: `usage` on `RequestFinished` carries token counts, not a `token_count`.
 - Accessor methods mirror the field form: `Stats::requests()` returns the count of recorded requests.
 - The `_count` suffix is reserved for the rare case where the plural would clash with a sibling collection field on the same type.
 

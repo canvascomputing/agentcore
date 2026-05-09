@@ -269,9 +269,6 @@ async fn process_ticket(
 
         emit(EventKind::RequestFinished {
             model: response.model.clone(),
-        });
-        emit(EventKind::TokensReported {
-            model: response.model.clone(),
             usage: response.usage.clone(),
         });
 

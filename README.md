@@ -225,7 +225,7 @@ let tickets = TicketSystem::new()
 
 ## Tools
 
-Give agents access to Tools helping them to solve a given task. agentwerk provides minimal baseline tools:
+Give agents access to tools helping them to solve a given task. agentwerk provides minimal baseline tools:
 
 | | Tool | Description |
 |-|------|-------------|
@@ -324,10 +324,9 @@ let agent = Agent::new()
 | | `TicketDone` | A ticket finished successfully. |
 | | `TicketFailed` | A ticket failed. |
 | **Provider** | `RequestStarted` | A provider request started. |
-| | `RequestFinished` | A provider request finished. |
+| | `RequestFinished` | A provider request finished and reported its token usage. |
 | | `RequestFailed` | A provider request failed and stopped the ticket. |
 | | `TextChunkReceived` | A streamed text chunk arrived. |
-| | `TokensReported` | The provider reported token counts for the last request. |
 | **Tool** | `ToolCallStarted` | A tool invocation started. |
 | | `ToolCallFinished` | A tool invocation finished. |
 | | `ToolCallFailed` | A tool invocation failed but the ticket continues. |

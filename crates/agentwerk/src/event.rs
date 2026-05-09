@@ -61,8 +61,9 @@ pub enum EventKind {
     TicketFailed { key: String },
     /// Provider request began.
     RequestStarted { model: String },
-    /// Provider request finished successfully.
-    RequestFinished { model: String },
+    /// Provider request finished successfully. Carries the model and the
+    /// token counts the provider reported for the response.
+    RequestFinished { model: String, usage: TokenUsage },
     /// Provider request failed. The run is about to stop for this ticket.
     RequestFailed {
         kind: RequestErrorKind,
@@ -77,8 +78,6 @@ pub enum EventKind {
         kind: RequestErrorKind,
         message: String,
     },
-    /// Provider reported token counts for the last request.
-    TokensReported { model: String, usage: TokenUsage },
     /// A streamed text chunk arrived from the provider.
     TextChunkReceived { content: String },
     /// Tool invocation began.
@@ -190,7 +189,10 @@ mod tests {
             EventKind::TicketDone { key: "T-1".into() },
             EventKind::TicketFailed { key: "T-1".into() },
             EventKind::RequestStarted { model: "m".into() },
-            EventKind::RequestFinished { model: "m".into() },
+            EventKind::RequestFinished {
+                model: "m".into(),
+                usage: TokenUsage::default(),
+            },
             EventKind::RequestFailed {
                 kind: RequestErrorKind::ConnectionFailed,
                 message: "timeout".into(),
@@ -205,10 +207,6 @@ mod tests {
                 attempt: 1,
                 max_attempts: 5,
                 message: "missing required field 'idx'".into(),
-            },
-            EventKind::TokensReported {
-                model: "m".into(),
-                usage: TokenUsage::default(),
             },
             EventKind::TextChunkReceived {
                 content: "hello".into(),
