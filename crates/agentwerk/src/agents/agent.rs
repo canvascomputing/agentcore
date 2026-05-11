@@ -82,9 +82,22 @@ impl Agent {
         self
     }
 
+    /// Detect the provider from environment variables. Panics if no provider env var is set.
+    pub fn provider_from_env(self) -> Self {
+        let provider = crate::providers::provider_from_env()
+            .expect("LLM provider required: set ANTHROPIC_API_KEY, OPENAI_API_KEY, MISTRAL_API_KEY, or LITELLM_API_KEY");
+        self.provider(provider)
+    }
+
     pub fn model(mut self, m: impl Into<String>) -> Self {
         self.model = Some(m.into());
         self
+    }
+
+    /// Read the model name from environment variables. Panics if no provider can be detected.
+    pub fn model_from_env(self) -> Self {
+        let model = crate::providers::model_from_env().expect("model name required");
+        self.model(model)
     }
 
     pub fn role(mut self, r: impl Into<String>) -> Self {

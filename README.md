@@ -31,15 +31,14 @@ cargo add agentwerk
 ## Quick Start
 
 ```rust
-use agentwerk::providers::{model_from_env, provider_from_env};
 use agentwerk::tools::ReadFileTool;
 use agentwerk::Agent;
 
 #[tokio::main]
 async fn main() {
     let results = Agent::new()
-        .provider(provider_from_env().unwrap())
-        .model(&model_from_env().unwrap())
+        .provider_from_env()
+        .model_from_env()
         .role("You are a Rust developer who reads source files to answer questions.")
         .tool(ReadFileTool)
         .task("What does Cargo.toml describe?")
@@ -103,7 +102,7 @@ let agent = Agent::new()
 A `Provider` connects the agent to an LLM service. agentwerk ships providers for Anthropic, OpenAI, Mistral, and a LiteLLM proxy.
 
 ```rust
-use agentwerk::providers::{AnthropicProvider, model_from_env, provider_from_env};
+use agentwerk::providers::AnthropicProvider;
 
 let agent = Agent::new()
     .provider(AnthropicProvider::new(key))
@@ -111,8 +110,8 @@ let agent = Agent::new()
 
 // Or pick from environment variables (see Environment).
 let agent = Agent::new()
-    .provider(provider_from_env()?)
-    .model(&model_from_env()?);
+    .provider_from_env()
+    .model_from_env();
 ```
 
 Each provider exposes `.base_url(url)` and `.timeout(duration)` to override the endpoint and request timeout.
@@ -120,7 +119,9 @@ Each provider exposes `.base_url(url)` and `.timeout(duration)` to override the 
 | Method | Description |
 |--------|-------------|
 | `provider(p)` | Set the LLM provider. |
+| `provider_from_env()` | Detect the provider from environment variables. |
 | `model(m)` | Set the model the provider runs. |
+| `model_from_env()` | Read the model name from environment variables. |
 
 ## Prompting
 

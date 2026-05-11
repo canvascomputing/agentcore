@@ -21,7 +21,6 @@ use std::io::{self, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use agentwerk::providers::{model_from_env, provider_from_env};
 use agentwerk::tools::{GlobTool, GrepTool, ListDirectoryTool, ReadFileTool};
 use agentwerk::{Agent, Event, EventKind, Knowledge, TicketSystem};
 
@@ -35,8 +34,6 @@ async fn main() {
         style.dim, style.reset,
     );
 
-    let provider = provider_from_env().expect("LLM provider required");
-    let model = model_from_env().expect("model name required");
     let role = ROLE.trim();
 
     let user_prompt = format!("\n{}you ›{} ", style.user, style.reset);
@@ -57,8 +54,8 @@ async fn main() {
     let _agent = tickets.agent(
         Agent::new()
             .name("orchestrator")
-            .provider(Arc::clone(&provider))
-            .model(&model)
+            .provider_from_env()
+            .model_from_env()
             .role(role)
             .dir(&cwd)
             .tool(GlobTool)

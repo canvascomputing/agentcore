@@ -19,7 +19,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use agentwerk::providers::{model_from_env, provider_from_env, ProviderResult};
+use agentwerk::providers::{provider_from_env, ProviderResult};
 use agentwerk::tools::ManageTicketsTool;
 use agentwerk::{Agent, Event, EventKind, Schema, TicketSystem, Tool, ToolResult};
 
@@ -34,7 +34,6 @@ async fn main() {
     eprintln!("Question: {question}\n");
 
     let provider = provider_from_env().expect("LLM provider required");
-    let model = model_from_env().expect("model name required");
     let signal = setup_interrupt_signal();
     let event_handler: Arc<dyn Fn(Event) + Send + Sync> =
         Arc::new(|event: Event| log_event(&event));
@@ -60,7 +59,7 @@ async fn main() {
             Agent::new()
                 .name(format!("researcher_{i}"))
                 .provider(Arc::clone(&provider))
-                .model(&model)
+                .model_from_env()
                 .role(RESEARCHER_ROLE)
                 .label("research")
                 .tool(brave_search_tool(brave_key.clone()))
@@ -120,7 +119,7 @@ async fn main() {
     let report_writer = Agent::new()
         .name("report_writer")
         .provider(Arc::clone(&provider))
-        .model(&model)
+        .model_from_env()
         .role(REPORT_WRITER_ROLE)
         .label("report")
         .tool(ManageTicketsTool)
