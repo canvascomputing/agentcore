@@ -111,13 +111,7 @@ mod tests {
         assert!(matches!(outcome, ToolResult::Success(_)));
         let t = sys.get(&key).unwrap();
         assert_eq!(t.status, Status::Done);
-        let attached = t.result().unwrap();
-        assert_eq!(attached.agent, "alice");
-        assert_eq!(attached.ticket, key);
-        assert_eq!(
-            attached.result,
-            serde_json::Value::String("the answer".into())
-        );
+        assert_eq!(t.result_string().as_deref(), Some("the answer"));
 
         let log = std::fs::read_to_string(dir.path().join("results.jsonl")).unwrap();
         let line = log.trim_end();
@@ -188,7 +182,7 @@ mod tests {
         assert!(matches!(outcome, ToolResult::Success(_)));
         let t = sys.get(&key).unwrap();
         assert_eq!(t.status, Status::Done);
-        assert_eq!(t.result().unwrap().result["x"], 1);
+        assert_eq!(t.result().unwrap()["x"], 1);
 
         // The saved `result` field is a JSON object, not an escaped
         // string of JSON.
@@ -250,7 +244,7 @@ mod tests {
         assert!(matches!(outcome, ToolResult::Success(_)));
         let t = sys.get(&key).unwrap();
         assert_eq!(t.status, Status::Done);
-        assert_eq!(t.result().unwrap().result["x"], "ok");
+        assert_eq!(t.result().unwrap()["x"], "ok");
     }
 
     #[tokio::test]

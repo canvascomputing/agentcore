@@ -14,4 +14,4 @@ pub use knowledge::{IntoKnowledge, Knowledge};
 pub use policy::Policies;
 pub use running::Running;
 pub use stats::{LoopStats, Stats};
-pub use tickets::{Status, Ticket, TicketError, TicketResult, TicketSystem};
+pub use tickets::{Status, Ticket, TicketError, TicketResults, TicketSystem};

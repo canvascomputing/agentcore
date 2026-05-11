@@ -308,7 +308,7 @@ async fn process_ticket(
                 None => return,
                 Some(ticket) => match (&ticket.schema, ticket.result()) {
                     (Some(schema), Some(attached)) => {
-                        if schema.validate(&attached.result).is_ok() {
+                        if schema.validate(attached).is_ok() {
                             Status::Done
                         } else {
                             Status::Failed
@@ -1011,7 +1011,7 @@ mod tests {
         assert_eq!(failed, 0);
         let settled = settled.unwrap();
         assert_eq!(settled.status, Status::Done);
-        assert_eq!(settled.result().unwrap().result["partial_sum"], 42);
+        assert_eq!(settled.result().unwrap()["partial_sum"], 42);
     }
 
     // =====================================================================
@@ -1650,7 +1650,7 @@ mod tests {
             .expect("run_dry did not finish within 5s");
 
         assert_eq!(results.len(), 2);
-        assert_eq!(results.last().unwrap().result_string(), "b-done");
+        assert_eq!(results.last().as_deref(), Some("b-done"));
     }
 
     #[tokio::test]
@@ -1709,7 +1709,7 @@ mod tests {
         // First run: spawn, drain. Leaves the interrupt signal flipped.
         tickets.task("first");
         let first = tickets.run().run_dry().await;
-        assert_eq!(first.last().unwrap().result_string(), "first");
+        assert_eq!(first.last().as_deref(), Some("first"));
 
         // Second run must reset the signal at entry; otherwise the run
         // exits before claiming the new ticket.
@@ -1717,7 +1717,7 @@ mod tests {
         let second = tokio::time::timeout(Duration::from_secs(5), tickets.run_dry())
             .await
             .expect("second run_dry did not finish within 5s");
-        assert_eq!(second.last().unwrap().result_string(), "second");
+        assert_eq!(second.last().as_deref(), Some("second"));
     }
 
     #[tokio::test]
@@ -1741,6 +1741,6 @@ mod tests {
         let results = tokio::time::timeout(Duration::from_secs(5), agent.run_dry())
             .await
             .expect("agent.run_dry did not finish within 5s");
-        assert_eq!(results.last().unwrap().result_string(), "forwarded");
+        assert_eq!(results.last().as_deref(), Some("forwarded"));
     }
 }

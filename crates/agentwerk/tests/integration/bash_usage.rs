@@ -57,7 +57,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let results = tickets.run_dry().await;
     common::print_result(&results, tickets.stats());
 
-    let response = common::last_result_string(&results);
+    let response = results.last().unwrap_or_default();
     let json: serde_json::Value = serde_json::from_str(&response)?;
     assert!(json["line_count"].as_u64().unwrap_or(0) > 1);
     assert!(json["files"].as_array().map_or(0, |a| a.len()) > 1);

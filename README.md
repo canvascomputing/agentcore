@@ -45,7 +45,7 @@ async fn main() {
         .run_dry()
         .await;
 
-    let answer = results.last().unwrap().result_string();
+    let answer = results.last().unwrap();
     println!("{answer}");
 }
 ```
@@ -194,7 +194,7 @@ let results = tickets.run_dry().await;    // waits for the queue to empty
 | Method | Description |
 |--------|-------------|
 | `run()` | Begin processing tickets in the background. The caller can observe progress, submit more tickets, or stop the run while agents work. |
-| `run_dry().await` | Begin processing tickets and block until the queue is empty. Returns all collected `TicketResult`s once agents stop. |
+| `run_dry().await` | Begin processing tickets and block until the queue is empty. Returns a `TicketResults` bundle with `first`, `last`, `all` for reading the recorded answers, and `tickets` for the full per-ticket records. |
 | `interrupt_signal(s)` | Signal allowing to stop every agent and tool execution. |
 
 ### Policies

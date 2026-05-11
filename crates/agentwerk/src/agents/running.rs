@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use tokio::task::JoinHandle;
 
-use super::tickets::{now_millis, pending_count, policy_violated, TicketResult, TicketSystem};
+use super::tickets::{now_millis, pending_count, policy_violated, TicketResults, TicketSystem};
 
 /// In-flight run handle. Created by [`TicketSystem::run`]. Holds the
 /// background tokio task driving the agent loop and the interrupt
@@ -66,9 +66,9 @@ impl Running {
 
     /// Wait for the queue to drain, then stop and join. Polls every
     /// 20 ms; exits when `pending_count == 0`, a policy trips, or
-    /// `max_time` elapses. Returns every finished ticket's
-    /// [`TicketResult`], in creation order.
-    pub async fn run_dry(self) -> Vec<TicketResult> {
+    /// `max_time` elapses. Returns a [`TicketResults`] bundle covering
+    /// every finished ticket's result, in creation order.
+    pub async fn run_dry(self) -> TicketResults {
         let started = Instant::now();
         let policies = self.system.policies();
         loop {

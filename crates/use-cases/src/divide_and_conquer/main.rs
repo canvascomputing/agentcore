@@ -158,12 +158,10 @@ fn extract_partial(ticket: &Ticket, total: usize) -> Result<(usize, i128), Strin
     }
     let attached = ticket.result().ok_or("no result attached")?;
     let idx = attached
-        .result
         .get("idx")
         .and_then(|v| v.as_u64())
         .ok_or("idx missing")? as usize;
     let sum = attached
-        .result
         .get("partial_sum")
         .and_then(|v| v.as_i64())
         .ok_or("partial_sum missing")? as i128;

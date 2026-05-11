@@ -21,7 +21,7 @@ use super::knowledge::{IntoKnowledge, Knowledge};
 
 use super::policy::Policies;
 use super::stats::Stats;
-use super::tickets::{Ticket, TicketResult, TicketSystem};
+use super::tickets::{Ticket, TicketResults, TicketSystem};
 
 static AGENT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -394,9 +394,10 @@ impl Agent {
     }
 
     /// Start a background run and wait for the queue to drain.
-    /// Returns every finished ticket's [`TicketResult`], in creation
-    /// order. Equivalent to `self.run().run_dry().await`.
-    pub async fn run_dry(&self) -> Vec<TicketResult> {
+    /// Returns a [`TicketResults`] bundle covering every finished
+    /// ticket's result, in creation order. Equivalent to
+    /// `self.run().run_dry().await`.
+    pub async fn run_dry(&self) -> TicketResults {
         let sys = self
             .ticket_system
             .upgrade()

@@ -42,29 +42,44 @@ pub struct Ticket {
     /// Set when the ticket reaches `Status::Failed`. Millis since
     /// epoch. Mutually exclusive with `finished_at`.
     pub(crate) failed_at: Option<u64>,
-    pub(crate) result: Option<TicketResult>,
+    pub(crate) result: Option<serde_json::Value>,
 }
 
-/// Record an agent writes when it finishes a ticket. Carries the source
-/// agent name, the ticket key, and the agent's result payload (a string
-/// for tickets without a schema, otherwise the validated JSON value).
-/// Same shape as the line `WriteResultTool` appends to `results.jsonl`.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct TicketResult {
-    pub agent: String,
-    pub ticket: String,
-    pub result: serde_json::Value,
-}
+/// Run output. Wraps the finished `Ticket`s and exposes string-shaped
+/// accessors (`first`, `last`, `all`) for the common case of reading
+/// final answers; the typed records remain reachable via `tickets`.
+#[derive(Debug, Clone, Default)]
+pub struct TicketResults(Vec<Ticket>);
 
-impl TicketResult {
-    /// Result rendered as a String: the raw text for string payloads,
-    /// canonical JSON for everything else. Lossless re-parsing is not
-    /// required.
-    pub fn result_string(&self) -> String {
-        match &self.result {
-            serde_json::Value::String(s) => s.clone(),
-            other => other.to_string(),
-        }
+impl TicketResults {
+    /// First ticket's result rendered as a String.
+    pub fn first(&self) -> Option<String> {
+        self.0.first().and_then(Ticket::result_string)
+    }
+
+    /// Last ticket's result rendered as a String.
+    pub fn last(&self) -> Option<String> {
+        self.0.last().and_then(Ticket::result_string)
+    }
+
+    /// Every ticket's result rendered as a String, in creation order.
+    pub fn all(&self) -> Vec<String> {
+        self.0.iter().filter_map(Ticket::result_string).collect()
+    }
+
+    /// Borrowed view of the finished `Ticket` records.
+    pub fn tickets(&self) -> &[Ticket] {
+        &self.0
+    }
+
+    /// Number of finished tickets carried.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// True when no tickets are carried.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
@@ -154,7 +169,7 @@ impl Ticket {
         ))
     }
 
-    pub fn result(&self) -> Option<&TicketResult> {
+    pub fn result(&self) -> Option<&serde_json::Value> {
         self.result.as_ref()
     }
 
@@ -162,7 +177,10 @@ impl Ticket {
     /// no recorded result. Convenience for callers that want a flat
     /// string view of the result regardless of the underlying JSON shape.
     pub fn result_string(&self) -> Option<String> {
-        self.result.as_ref().map(TicketResult::result_string)
+        self.result.as_ref().map(|v| match v {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
     }
 
     pub fn has_label(&self, label: &str) -> bool {
@@ -547,8 +565,12 @@ impl TicketSystem {
         }
     }
 
-    /// Attach a `TicketResult` to the ticket at `key`.
-    pub(crate) fn set_result(&self, key: &str, result: TicketResult) -> Result<(), TicketError> {
+    /// Attach a result payload to the ticket at `key`.
+    pub(crate) fn set_result(
+        &self,
+        key: &str,
+        result: serde_json::Value,
+    ) -> Result<(), TicketError> {
         let mut store = self.tickets.lock().unwrap();
         let ticket = store
             .get_mut(key)
@@ -748,20 +770,18 @@ impl TicketSystem {
     }
 
     /// Start a background run and wait for the queue to drain.
-    /// Returns every finished ticket's [`TicketResult`], in creation
-    /// order. Equivalent to `self.run().run_dry().await`.
-    pub fn run_dry(&self) -> impl std::future::Future<Output = Vec<TicketResult>> + Send {
+    /// Returns a [`TicketResults`] bundle exposing `first` / `last` /
+    /// `all` / `tickets` over every finished ticket, in creation order.
+    /// Equivalent to `self.run().run_dry().await`.
+    pub fn run_dry(&self) -> impl std::future::Future<Output = TicketResults> + Send {
         self.run().run_dry()
     }
 
-    /// Every `Done` ticket's `TicketResult`, in ticket creation order.
-    /// Tickets that finished without a recorded result are skipped.
-    /// Backing helper for `Running::run_dry`.
-    pub(crate) fn collect_results(&self) -> Vec<TicketResult> {
-        self.filter(|t| t.status == Status::Done)
-            .into_iter()
-            .filter_map(|t| t.result)
-            .collect()
+    /// Every `Done` ticket carrying a recorded result, in ticket
+    /// creation order. Backing helper for `Running::run_dry`.
+    pub(crate) fn collect_results(&self) -> TicketResults {
+        let done: Vec<Ticket> = self.filter(|t| t.status == Status::Done && t.result.is_some());
+        TicketResults(done)
     }
 }
 
@@ -935,16 +955,9 @@ mod tests {
         Ticket::new(format!("body-{label}")).label(label)
     }
 
-    fn attach_done_result(sys: &TicketSystem, key: &str, agent: &str, result: &str) {
-        sys.set_result(
-            key,
-            TicketResult {
-                agent: agent.into(),
-                ticket: key.into(),
-                result: serde_json::Value::String(result.into()),
-            },
-        )
-        .unwrap();
+    fn attach_done_result(sys: &TicketSystem, key: &str, result: &str) {
+        sys.set_result(key, serde_json::Value::String(result.into()))
+            .unwrap();
         sys.set_done(key).unwrap();
     }
 
@@ -1037,20 +1050,14 @@ mod tests {
     fn set_result_updates_ticket() {
         let sys = TicketSystem::new();
         sys.task("hi");
-        sys.set_result(
-            "TICKET-1",
-            TicketResult {
-                agent: "tester".into(),
-                ticket: "TICKET-1".into(),
-                result: serde_json::Value::String("answer".into()),
-            },
-        )
-        .unwrap();
+        sys.set_result("TICKET-1", serde_json::Value::String("answer".into()))
+            .unwrap();
         let stored = sys.get("TICKET-1").unwrap();
-        let attached = stored.result().unwrap();
-        assert_eq!(attached.agent, "tester");
-        assert_eq!(attached.ticket, "TICKET-1");
-        assert_eq!(attached.result, serde_json::Value::String("answer".into()));
+        assert_eq!(
+            stored.result(),
+            Some(&serde_json::Value::String("answer".into()))
+        );
+        assert_eq!(stored.result_string().as_deref(), Some("answer"));
     }
 
     #[test]
@@ -1084,36 +1091,72 @@ mod tests {
     fn collect_results_returns_results_in_creation_order() {
         let sys = TicketSystem::new();
         sys.task("a").task("b").task("c");
-        attach_done_result(&sys, "TICKET-1", "alice", "first");
-        attach_done_result(&sys, "TICKET-3", "alice", "third");
+        attach_done_result(&sys, "TICKET-1", "first");
+        attach_done_result(&sys, "TICKET-3", "third");
         let results = sys.collect_results();
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].ticket, "TICKET-1");
-        assert_eq!(results[0].result, serde_json::Value::String("first".into()));
-        assert_eq!(results[1].ticket, "TICKET-3");
-        assert_eq!(results[1].result, serde_json::Value::String("third".into()));
+        let tickets = results.tickets();
+        assert_eq!(tickets.len(), 2);
+        assert_eq!(tickets[0].key(), "TICKET-1");
+        assert_eq!(tickets[0].result_string().as_deref(), Some("first"));
+        assert_eq!(tickets[1].key(), "TICKET-3");
+        assert_eq!(tickets[1].result_string().as_deref(), Some("third"));
     }
 
     #[test]
-    fn collect_results_last_is_most_recently_created_done() {
+    fn tickets_returns_full_ticket_records_in_creation_order() {
         let sys = TicketSystem::new();
         sys.task("a").task("b");
-        attach_done_result(&sys, "TICKET-2", "alice", "second");
-        attach_done_result(&sys, "TICKET-1", "alice", "first");
-        let last = sys
-            .collect_results()
-            .last()
-            .cloned()
-            .expect("expected last result");
-        assert_eq!(last.ticket, "TICKET-2");
-        assert_eq!(last.result, serde_json::Value::String("second".into()));
+        attach_done_result(&sys, "TICKET-2", "second");
+        attach_done_result(&sys, "TICKET-1", "first");
+        let results = sys.collect_results();
+        let tickets = results.tickets();
+        assert_eq!(tickets.len(), 2);
+        assert_eq!(tickets[0].key(), "TICKET-1");
+        assert_eq!(tickets[1].key(), "TICKET-2");
+        assert_eq!(tickets[0].status(), "done");
+        assert_eq!(tickets[1].status(), "done");
+    }
+
+    #[test]
+    fn last_returns_last_done_tickets_payload_as_string() {
+        let sys = TicketSystem::new();
+        sys.task("a").task("b");
+        attach_done_result(&sys, "TICKET-2", "second");
+        attach_done_result(&sys, "TICKET-1", "first");
+        assert_eq!(sys.collect_results().last().as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn first_returns_first_done_tickets_payload_as_string() {
+        let sys = TicketSystem::new();
+        sys.task("a").task("b");
+        attach_done_result(&sys, "TICKET-2", "second");
+        attach_done_result(&sys, "TICKET-1", "first");
+        assert_eq!(sys.collect_results().first().as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn all_returns_every_payload_in_creation_order() {
+        let sys = TicketSystem::new();
+        sys.task("a").task("b").task("c");
+        attach_done_result(&sys, "TICKET-3", "third");
+        attach_done_result(&sys, "TICKET-1", "first");
+        attach_done_result(&sys, "TICKET-2", "second");
+        assert_eq!(
+            sys.collect_results().all(),
+            vec!["first", "second", "third"]
+        );
     }
 
     #[test]
     fn collect_results_is_empty_when_nothing_done() {
         let sys = TicketSystem::new();
         sys.task("pending");
-        assert!(sys.collect_results().is_empty());
+        let results = sys.collect_results();
+        assert!(results.is_empty());
+        assert!(results.first().is_none());
+        assert!(results.last().is_none());
+        assert!(results.all().is_empty());
     }
 
     #[test]

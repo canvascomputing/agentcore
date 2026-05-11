@@ -70,7 +70,7 @@ async fn separates_files_and_directories() -> std::result::Result<(), Box<dyn st
         "agent must call at least one tool"
     );
 
-    let response = common::last_result_string(&results);
+    let response = results.last().unwrap_or_default();
     let json: serde_json::Value = serde_json::from_str(&response)?;
     let mut files = sorted_basenames(&json["files"]);
     let mut dirs = sorted_basenames(&json["directories"]);

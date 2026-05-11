@@ -126,11 +126,7 @@ async fn main() {
         .event_handler(Arc::clone(&event_handler));
 
     tickets.agent(report_writer);
-    let results = tickets.run_dry().await;
-    let report = results
-        .last()
-        .map(|r| r.result_string())
-        .unwrap_or_default();
+    let report = tickets.run_dry().await.last().unwrap_or_default();
 
     if signal.load(Ordering::Relaxed) {
         eprintln!("\nCancelled.");
