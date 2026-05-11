@@ -131,7 +131,8 @@ Every prompt has three parts: `role` (who the agent is), `context` (the situatio
 let agent = Agent::new()
     .role("You are an arithmetic worker. Compute step by step and show your work.")
     .context("- Stage 2 of a math-tutor pipeline.\n- Attempts remaining: 2.")
-    .task("Compute (47 * 92) / 8, then round to the nearest integer.");
+    .task("Compute (47 * 92) / {divisor}, then round to the nearest integer.")
+    .template_variable("divisor", "8");
 ```
 
 When `context(...)` is not set, agentwerk supplies a default block:
@@ -146,6 +147,14 @@ When `context(...)` is not set, agentwerk supplies a default block:
 - Output tokens remaining: 12000
 - Time remaining: 240s
 ```
+
+At each step the agent sends:
+
+- **system**: `role(...)`, with the `knowledge(...)` index
+- **tools**: tools registered with `tool(...)`
+- **messages**: a list that grows step by step
+
+`messages` begins with `context(...)` and the body of the current ticket. On each later step the agent appends the model's reply.
 
 ## Tickets
 
