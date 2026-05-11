@@ -15,15 +15,16 @@ use crate::agents::stats::Stats;
 
 const DEFAULT_CONTEXT_TEMPLATE: &str = include_str!("default.context.md");
 
-const SCHEMA_RETRY_TEMPLATE: &str = include_str!("schema-retry.directive.md");
+const RETRY_TEMPLATE: &str = include_str!("retry.directive.md");
 
-/// Render the corrective user message sent after a schema-validation
-/// failure. Pushed alongside the failing tool's `ToolResult::SchemaError`
-/// content block so the model sees both the error and a directive to
-/// reply with a corrected JSON value. Ported from
-/// `aa725dc^:crates/agentwerk/src/prompts/contract-retry.directive.md`.
-pub(crate) fn schema_retry(detail: &str) -> String {
-    SCHEMA_RETRY_TEMPLATE.replace("{detail}", detail)
+/// Render the corrective user message the loop pushes when the model's
+/// previous reply could not finalise the current piece of work. Used
+/// for two cases: a finisher tool returned a schema-validation error,
+/// or the model ended its turn without calling any finisher tool.
+/// Callers compose a self-contained `detail` describing what was
+/// wrong; the template wraps it with the consistent framing.
+pub(crate) fn retry_directive(detail: &str) -> String {
+    RETRY_TEMPLATE.replace("{detail}", detail)
 }
 
 /// Build the default context body: a `## Context` markdown block with the
@@ -111,10 +112,11 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn schema_retry_substitutes_detail_placeholder() {
-        let rendered = schema_retry("expected integer at /partial_sum");
+    fn retry_directive_substitutes_detail_placeholder() {
+        let rendered = retry_directive("expected integer at /partial_sum");
         assert!(rendered.contains("expected integer at /partial_sum"));
         assert!(!rendered.contains("{detail}"));
+        assert!(rendered.contains("not accepted"));
     }
 
     #[test]

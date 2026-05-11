@@ -44,6 +44,9 @@ pub struct Ticket {
     /// epoch. Mutually exclusive with `finished_at`.
     pub(crate) failed_at: Option<u64>,
     pub(crate) result: Option<serde_json::Value>,
+    /// Back-reference to another ticket, or `None` when the ticket
+    /// has no parent. Caller-settable via [`Ticket::parent`].
+    pub(crate) parent: Option<String>,
 }
 
 /// Run output. Wraps the finished `Ticket`s and exposes string-shaped
@@ -103,6 +106,7 @@ impl Ticket {
             finished_at: None,
             failed_at: None,
             result: None,
+            parent: None,
         }
     }
 
@@ -136,6 +140,15 @@ impl Ticket {
         R: serde::de::DeserializeOwned + 'static,
     {
         self.schema(crate::schemas::Schema::from_type::<R>())
+    }
+
+    /// Record a back-reference to another ticket. The meaning is
+    /// caller-defined: `write_handover_tool` uses it to chain a
+    /// child to the ticket that handed off, but any code building a
+    /// ticket may set it to express a parent relationship.
+    pub fn parent(mut self, key: impl Into<String>) -> Self {
+        self.parent = Some(key.into());
+        self
     }
 
     // ---- read-only accessors for system-managed fields ----
@@ -211,6 +224,12 @@ impl Ticket {
 
     pub fn has_label(&self, label: &str) -> bool {
         self.labels.iter().any(|l| l == label)
+    }
+
+    /// Back-reference set via [`Self::parent`], or `None` when no
+    /// parent was recorded.
+    pub fn parent_key(&self) -> Option<&str> {
+        self.parent.as_deref()
     }
 }
 
@@ -452,6 +471,7 @@ impl TicketSystem {
         let reporter = ticket.reporter.clone();
         let task = ticket.task.clone();
         let created_at = ticket.created_at;
+        let parent = ticket.parent.clone();
         store.insert(key.clone(), ticket);
         drop(store);
         TicketStats::record_created(&self.stats);
@@ -459,14 +479,18 @@ impl TicketSystem {
             let slice = self.stats.stats_for_label(l);
             TicketStats::record_created(&*slice);
         }
-        self.append_ticket_event(serde_json::json!({
+        let mut event = serde_json::json!({
             "event": "created",
             "ts": created_at,
             "key": key,
             "reporter": reporter,
             "labels": labels,
             "task": task,
-        }));
+        });
+        if let Some(p) = &parent {
+            event["parent"] = serde_json::Value::String(p.clone());
+        }
+        self.append_ticket_event(event);
         key
     }
 
@@ -1437,5 +1461,27 @@ mod tests {
         let t = sys.get("TICKET-1").unwrap();
         assert_eq!(t.status, Status::Failed);
         assert!(t.failed_at().is_some());
+    }
+
+    #[test]
+    fn ticket_parent_builder_round_trips() {
+        let sys = TicketSystem::new();
+        sys.ticket(Ticket::new("child body").parent("TICKET-1"));
+        let stored = sys.get("TICKET-1").unwrap();
+        assert_eq!(stored.parent_key(), Some("TICKET-1"));
+    }
+
+    #[test]
+    fn parent_field_renders_in_created_event() {
+        let dir = crate::test_util::TempDir::new().unwrap();
+        let sys = TicketSystem::new().dir(dir.path().to_path_buf());
+        sys.task("first");
+        sys.ticket(Ticket::new("child").parent("TICKET-1"));
+        let lines = read_tickets_log(dir.path());
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["event"], "created");
+        assert!(lines[0].get("parent").is_none());
+        assert_eq!(lines[1]["event"], "created");
+        assert_eq!(lines[1]["parent"], "TICKET-1");
     }
 }

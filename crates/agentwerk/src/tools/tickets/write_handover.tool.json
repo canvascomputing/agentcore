@@ -1,0 +1,54 @@
+{
+  "name": "write_handover_tool",
+  "summary": [
+    "Finish the current ticket and hand follow-up work to another agent in one atomic call. Writes the current ticket's `result`, marks it `Done`, and creates a new `Todo` ticket pinned to `to` with the current ticket recorded as its `parent`.",
+    "`result` is a JSON value of its natural type: string for plain text, object/array/number/boolean for structured payloads. The tool stores it verbatim. `task` is the body for the new child ticket and accepts any JSON value the same way."
+  ],
+  "constraints": [
+    "Operates on the agent's current ticket. No `key` parameter; the loop resolves it from the calling agent's identity.",
+    "Call exactly once per handover, when the current work is complete and the next step belongs to another agent.",
+    "MUST pass `result` as a JSON value of its natural type. Stringifying an object first saves the value as an escaped string of JSON, not as the object itself.",
+    "MUST NOT pass `null` or an empty string for `result`. Both mean 'no result' and are rejected.",
+    "When the current ticket carries a `schema`, `result` must validate against it. Failures count toward `max_schema_retries`; the child is NOT created on a schema mismatch.",
+    "`to` becomes a label on the child ticket: an agent name pins the child to that agent; a scope label routes it to any agent in that scope.",
+    "When `schema` is supplied, the child ticket carries it and the receiving agent's final result must validate against it."
+  ],
+  "anti_patterns": [
+    "To record a result without spawning a follow-up — call `write_result_tool` instead.",
+    "To create or edit other tickets without finishing the current one — call `manage_tickets_tool`.",
+    "Calling this tool mid-task to 'check in' or 'save progress'. `Done` is terminal: finish the work first, then call."
+  ],
+  "cautions": [
+    "IMPORTANT: `Done` is terminal. Once the call succeeds, the current ticket cannot be re-opened or amended.",
+    "IMPORTANT: a schema validation failure on `result` counts toward `max_schema_retries`. Read the violation message, correct the shape, and retry; do not loop blindly.",
+    "IMPORTANT: this is the only way to finish-and-chain in one step. Splitting it into `write_result_tool` + `manage_tickets_tool` requires careful ordering and leaves the current ticket re-picked if the order is wrong."
+  ],
+  "output": [
+    "Success: `Ticket TICKET-N marked done; handed off to TICKET-M (to: alice)`.",
+    "Schema error: a JSON Schema violation message; counted toward `max_schema_retries`. The child is NOT created.",
+    "Input error: `to`, `task`, or `result` was missing/empty, or no `InProgress` ticket is assigned to this agent."
+  ],
+  "read_only": false,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "to": {
+        "type": "string",
+        "description": "Target for the child ticket: either an agent's name (pins the ticket to that agent) or a scope label (routes it to any agent in that scope). Becomes a label on the child."
+      },
+      "task": {
+        "type": "string",
+        "description": "Body of the child ticket as a plain-text instruction. MUST be a non-empty string. Describe what the receiving agent should do next."
+      },
+      "result": {
+        "type": "string",
+        "description": "Final answer for the current ticket as a non-empty plain-text string summarising your work before the handover. For schema-bound parents whose result is structured, use `write_result_tool` instead."
+      },
+      "schema": {
+        "type": "object",
+        "description": "Optional JSON Schema document attached to the child ticket. When set, the receiving agent's final result must validate against it; failures count toward `max_schema_retries`."
+      }
+    },
+    "required": ["to", "task", "result"]
+  }
+}

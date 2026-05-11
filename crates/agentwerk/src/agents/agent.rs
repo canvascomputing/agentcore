@@ -72,6 +72,29 @@ impl Agent {
         Self::default()
     }
 
+    /// Construct an `Agent` with no tools pre-registered. Use this
+    /// when the agent must not have `WriteResultTool` available — for
+    /// example, a researcher in a chain that should only ever call
+    /// `WriteHandoverTool`. The caller is responsible for registering
+    /// at least one finisher tool (`WriteResultTool` or
+    /// `WriteHandoverTool`) via [`Self::tool`].
+    pub fn empty() -> Self {
+        Self {
+            name: default_agent_name(),
+            provider: None,
+            model: None,
+            role: None,
+            context: None,
+            labels: Vec::new(),
+            template_variables: Vec::new(),
+            tools: ToolRegistry::default(),
+            dir: None,
+            event_handler: None,
+            knowledge: None,
+            ticket_system: Weak::new(),
+        }
+    }
+
     pub fn name(mut self, n: impl Into<String>) -> Self {
         self.name = n.into();
         self

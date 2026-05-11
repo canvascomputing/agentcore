@@ -16,10 +16,12 @@ use super::tool::{ToolContext, ToolResult};
 
 mod manage_tickets;
 mod read_tickets;
+mod write_handover;
 mod write_result;
 
 pub use manage_tickets::ManageTicketsTool;
 pub use read_tickets::ReadTicketsTool;
+pub use write_handover::WriteHandoverTool;
 pub use write_result::WriteResultTool;
 
 /// Action sets each multi-action tool exposes. Keeps the dispatch logic
@@ -27,6 +29,39 @@ pub use write_result::WriteResultTool;
 /// allow-list with a uniform error message.
 pub(super) const READ_ACTIONS: &[&str] = &["get", "list", "search"];
 pub(super) const WRITE_ACTIONS: &[&str] = &["create", "edit"];
+
+/// Wire names of every built-in finisher tool. The loop reads this to
+/// classify successful tool calls (resetting the schema-retry counter)
+/// and to build the missing-finisher directive against the agent's
+/// actual tool registry.
+pub(crate) const FINISHER_TOOL_NAMES: &[&str] = &["write_result_tool", "write_handover_tool"];
+
+/// Corrective directive composed against the calling agent's
+/// registered finisher tools. Lists only the finishers the agent
+/// actually has; tells the agent precisely which tool to call rather
+/// than offering an inappropriate alternative.
+pub(crate) fn missing_finisher_detail(registered: &[&str]) -> String {
+    let has_result = registered.contains(&"write_result_tool");
+    let has_handover = registered.contains(&"write_handover_tool");
+    match (has_result, has_handover) {
+        (true, true) => "You did not call a finishing tool. To complete your work, \
+            call `write_result_tool` to record your final answer, or \
+            `write_handover_tool` to record your answer and pass follow-up \
+            work to another agent. Your next reply MUST include the tool call."
+            .to_string(),
+        (true, false) => "You did not call `write_result_tool`. Your work is only \
+            recorded when you call that tool with your final answer. Your next \
+            reply MUST include the tool call."
+            .to_string(),
+        (false, true) => "You did not call `write_handover_tool`. Your work is only \
+            recorded when you call that tool to pass follow-up work to another \
+            agent. Your next reply MUST include the tool call."
+            .to_string(),
+        (false, false) => "You did not call a finishing tool, and none are registered \
+            for this agent. The run cannot complete."
+            .to_string(),
+    }
+}
 
 pub(super) fn dispatch(input: Value, ctx: &ToolContext, allowed: &[&str]) -> ToolResult {
     let action = match input["action"].as_str() {
@@ -94,6 +129,9 @@ fn render_ticket(t: &Ticket) -> String {
         t.labels.join(", ")
     };
     out.push_str(&format!("- labels: {labels_label}\n"));
+    if let Some(parent) = t.parent_key() {
+        out.push_str(&format!("- parent: {parent}\n"));
+    }
     out.push('\n');
     match &t.task {
         serde_json::Value::String(s) => {

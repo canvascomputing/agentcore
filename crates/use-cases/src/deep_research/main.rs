@@ -1,14 +1,13 @@
-//! Deep Research.
+//! Deep Research with handover chain.
 //!
-//! Two phases run against separate `TicketSystem`s:
-//!   1. Three `researcher` agents drain three research tickets in
-//!      parallel via labelled pickup. Each researcher calls
-//!      `brave_search` and finishes its ticket by calling
-//!      `write_result_tool` with the findings string as `result`.
-//!   2. The driver assembles those findings into a single
-//!      schema-checked ticket and hands it to the `report_writer`
-//!      agent. The report writer calls `write_result_tool` with a JSON
-//!      value the framework validates against the ticket's schema.
+//! One `TicketSystem` holds the whole pipeline. The driver enqueues a
+//! single starter ticket pinned to `researcher_1`. Each researcher
+//! calls `brave_search`, reads its parent ticket via
+//! `read_tickets_tool` to build on prior findings, and hands off via
+//! `write_handover_tool` to the next agent. The final researcher
+//! attaches the report schema to its handover so the report writer's
+//! result is validated by the framework. The report writer finishes
+//! the chain with `write_result_tool`.
 //!
 //! Usage: deep-research <QUESTION>
 //!
@@ -20,10 +19,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use agentwerk::providers::{provider_from_env, ProviderResult};
-use agentwerk::tools::ManageTicketsTool;
+use agentwerk::tools::{ReadTicketsTool, WriteHandoverTool};
 use agentwerk::{Agent, Event, EventKind, Schema, TicketSystem, Tool, ToolResult};
 
-const RESEARCHER_ROLE: &str = include_str!("prompts/researcher.role.md");
+const RESEARCHER_1_ROLE: &str = include_str!("prompts/researcher_1.role.md");
+const RESEARCHER_2_ROLE: &str = include_str!("prompts/researcher_2.role.md");
 const REPORT_WRITER_ROLE: &str = include_str!("prompts/report-writer.role.md");
 
 #[tokio::main]
@@ -38,83 +38,36 @@ async fn main() {
     let event_handler: Arc<dyn Fn(Event) + Send + Sync> =
         Arc::new(|event: Event| log_event(&event));
 
-    // ---- Phase 1: parallel researchers ------------------------------
+    let schema_json_pretty = serde_json::to_string_pretty(&final_report_schema_value()).unwrap();
+
+    let workdir = prepare_workdir();
+
     let tickets = TicketSystem::new()
         .interrupt_signal(Arc::clone(&signal))
-        .max_steps(30);
+        .dir(workdir.clone());
 
-    let mut research_keys: Vec<String> = Vec::new();
-    for i in 1..=3 {
-        let body = format!(
-            "Research perspective {i}\n\nQuestion: {question}\n\nProduce evidence and \
-             sources for one perspective on this question. Focus on a different angle \
-             than perspectives 1..3: the report writer will compare all three."
-        );
-        tickets.task_labeled(body, "research");
-        research_keys.push(format!("TICKET-{i}"));
-    }
+    let researcher_1 = Agent::empty()
+        .name("researcher_1")
+        .provider(Arc::clone(&provider))
+        .model_from_env()
+        .role(RESEARCHER_1_ROLE)
+        .label("researcher_1")
+        .tool(brave_search_tool(brave_key.clone()))
+        .tool(ReadTicketsTool)
+        .tool(WriteHandoverTool)
+        .event_handler(Arc::clone(&event_handler));
 
-    let researchers: Vec<Agent> = (1..=3)
-        .map(|i| {
-            Agent::new()
-                .name(format!("researcher_{i}"))
-                .provider(Arc::clone(&provider))
-                .model_from_env()
-                .role(RESEARCHER_ROLE)
-                .label("research")
-                .tool(brave_search_tool(brave_key.clone()))
-                .tool(ManageTicketsTool)
-                .event_handler(Arc::clone(&event_handler))
-        })
-        .collect();
-
-    for r in researchers {
-        tickets.agent(r);
-    }
-    tickets.run_dry().await;
-
-    if signal.load(Ordering::Relaxed) {
-        eprintln!("\nCancelled.");
-        std::process::exit(130);
-    }
-
-    let findings: Vec<String> = research_keys
-        .iter()
-        .filter_map(|k| {
-            let t = tickets.get(k)?;
-            let body = t
-                .result_string()
-                .unwrap_or_else(|| "(no findings)".to_string());
-            Some(format!("### {} ({:?})\n{body}", t.key(), t.status()))
-        })
-        .collect();
-
-    if findings.iter().all(|f| f.lines().count() <= 1) {
-        eprintln!("\nNo researcher findings recorded: aborting before the report writer.");
-        std::process::exit(1);
-    }
-
-    // ---- Phase 2: synthesise ----------------------------------------
-    let tickets = TicketSystem::new()
-        .interrupt_signal(Arc::clone(&signal))
-        .max_steps(10);
-
-    let final_schema = Schema::parse(serde_json::json!({
-        "type": "object",
-        "properties": {
-            "title":    { "type": "string", "minLength": 1 },
-            "research": { "type": "string", "minLength": 1, "maxLength": 500 }
-        },
-        "required": ["title", "research"],
-        "additionalProperties": false
-    }))
-    .expect("final-report schema is well-formed");
-
-    let final_body = format!(
-        "Question:\n{question}\n\n--- Researcher findings ---\n\n{}",
-        findings.join("\n\n")
-    );
-    tickets.task_schema_labeled(final_body, final_schema, "report");
+    let researcher_2 = Agent::empty()
+        .name("researcher_2")
+        .provider(Arc::clone(&provider))
+        .model_from_env()
+        .role(RESEARCHER_2_ROLE)
+        .label("researcher_2")
+        .template_variable("schema_json", schema_json_pretty.clone())
+        .tool(brave_search_tool(brave_key.clone()))
+        .tool(ReadTicketsTool)
+        .tool(WriteHandoverTool)
+        .event_handler(Arc::clone(&event_handler));
 
     let report_writer = Agent::new()
         .name("report_writer")
@@ -122,38 +75,163 @@ async fn main() {
         .model_from_env()
         .role(REPORT_WRITER_ROLE)
         .label("report")
-        .tool(ManageTicketsTool)
+        .tool(ReadTicketsTool)
         .event_handler(Arc::clone(&event_handler));
 
+    tickets.agent(researcher_1);
+    tickets.agent(researcher_2);
     tickets.agent(report_writer);
-    let report = tickets.run_dry().await.last().unwrap_or_default();
 
-    if signal.load(Ordering::Relaxed) {
-        eprintln!("\nCancelled.");
-        std::process::exit(130);
-    }
+    let starter = format!(
+        "Question: {question}\n\nKick off the research chain. You are researcher_1; pick \
+         one angle and produce evidence with sources. The next two researchers will \
+         extend the coverage."
+    );
+    // The schema-bound starter forces researcher_1 down the
+    // `write_handover_tool` path: a text-only reply leaves no result
+    // attached, and the loop's terminal-reply path then transitions
+    // the ticket to `Failed` rather than silently `Done`.
+    let starter_schema = Schema::parse(serde_json::json!({
+        "type": "string",
+        "minLength": 100
+    }))
+    .expect("starter schema is well-formed");
+    tickets.task_schema_labeled(starter, starter_schema, "researcher_1");
 
-    if report.is_empty() {
-        let status = tickets.first().map(|t| t.status());
-        eprintln!("\nReport writer left the ticket in {status:?}; expected Done with a result.");
-        std::process::exit(1);
+    // Drive the run manually instead of via `run_dry`. The chain's
+    // handover step has a brief window between marking the parent
+    // `Done` and inserting the child, during which the queue is
+    // empty; `run_dry` would race against that window and exit
+    // prematurely. Polling for the report ticket directly, with a
+    // grace period when the queue settles, is race-free.
+    let running = tickets.run();
+    let outcome = wait_for_outcome(&tickets, &signal).await;
+    running.stop();
+    running.join().await;
+
+    print_chain_summary(&tickets);
+    print_stats(&tickets);
+    print_research_outcome(&tickets, &outcome);
+
+    match outcome {
+        Outcome::Report(_) => {}
+        Outcome::Cancelled => std::process::exit(130),
+        Outcome::Stalled => std::process::exit(1),
     }
-    let parsed: serde_json::Value = match serde_json::from_str(&report) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("\nReport writer's result is not valid JSON: {e}");
-            std::process::exit(1);
+}
+
+fn print_research_outcome(tickets: &TicketSystem, outcome: &Outcome) {
+    eprintln!("\n══════════════════════════════════════════════════════════");
+    match outcome {
+        Outcome::Report(ticket) => {
+            let report_value = ticket.result().expect("done ticket carries a result");
+            let title = report_value["title"].as_str().unwrap_or("(no title)");
+            let research = report_value["research"].as_str().unwrap_or("(no body)");
+            eprintln!(" REPORT");
+            eprintln!("══════════════════════════════════════════════════════════\n");
+            println!("## {title}\n\n{research}\n");
         }
-    };
+        Outcome::Cancelled | Outcome::Stalled => {
+            let label = match outcome {
+                Outcome::Cancelled => "PARTIAL RESEARCH — run cancelled before report writer finished",
+                Outcome::Stalled => "PARTIAL RESEARCH — chain stalled before report writer finished",
+                Outcome::Report(_) => unreachable!(),
+            };
+            eprintln!(" {label}");
+            eprintln!("══════════════════════════════════════════════════════════\n");
+            let all = tickets.tickets();
+            let researcher_findings: Vec<_> = all
+                .iter()
+                .filter(|t| t.status() == "done")
+                .filter(|t| !t.has_label("report"))
+                .filter_map(|t| t.result_string().map(|r| (t.key().to_string(), r)))
+                .collect();
+            if researcher_findings.is_empty() {
+                eprintln!("(no researcher produced findings)");
+            } else {
+                for (key, findings) in researcher_findings {
+                    println!("### {key}\n\n{findings}\n");
+                }
+            }
+        }
+    }
+}
 
-    let title = parsed["title"].as_str().unwrap_or("(no title)");
-    let research = parsed["research"].as_str().unwrap_or("(no body)");
-    println!("\n## {title}\n\n{research}\n");
+enum Outcome {
+    Report(agentwerk::Ticket),
+    Cancelled,
+    Stalled,
+}
+
+async fn wait_for_outcome(tickets: &TicketSystem, signal: &Arc<AtomicBool>) -> Outcome {
+    use std::time::Duration;
+
+    let report_ticket = || tickets.find(|t| t.has_label("report") && t.status() == "done");
+    let pending =
+        || tickets.count(|t| matches!(t.status(), "todo" | "in_progress"));
+
+    loop {
+        if signal.load(Ordering::Relaxed) {
+            return Outcome::Cancelled;
+        }
+        if let Some(ticket) = report_ticket() {
+            return Outcome::Report(ticket);
+        }
+        if pending() == 0 {
+            // Queue is empty — but a handover may be mid-flight,
+            // between parent-Done and child-Insert. Give it a beat
+            // before declaring the chain stalled.
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            if signal.load(Ordering::Relaxed) {
+                return Outcome::Cancelled;
+            }
+            if let Some(ticket) = report_ticket() {
+                return Outcome::Report(ticket);
+            }
+            if pending() == 0 {
+                return Outcome::Stalled;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn print_chain_summary(tickets: &TicketSystem) {
+    eprintln!("\nChain summary:");
+    let all = tickets.tickets();
+    if all.is_empty() {
+        eprintln!("  (no tickets)");
+        return;
+    }
+    for t in &all {
+        let parent = t
+            .parent_key()
+            .map(|p| format!(" ⟵ {p}"))
+            .unwrap_or_default();
+        let labels = if t.labels.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", t.labels.join(","))
+        };
+        let preview = t
+            .result_string()
+            .map(|s| truncate(&s, 100))
+            .unwrap_or_else(|| "(no result)".into());
+        eprintln!(
+            "  {key} {status}{labels}{parent}\n      → {preview}",
+            key = t.key(),
+            status = t.status(),
+        );
+    }
+}
+
+fn print_stats(tickets: &TicketSystem) {
     let stats = tickets.stats();
-    eprintln!("Duration:  {:?}", stats.run_duration().unwrap_or_default());
-    eprintln!("Work time: {:?}", stats.work_duration());
+    eprintln!("\nStats:");
+    eprintln!("  Duration : {:?}", stats.run_duration().unwrap_or_default());
+    eprintln!("  Work time: {:?}", stats.work_duration());
     eprintln!(
-        "Tickets:   {} done, {} failed ({:.0}%)",
+        "  Tickets  : {} done, {} failed ({:.0}%)",
         stats.tickets_done(),
         stats.tickets_failed(),
         stats
@@ -162,23 +240,40 @@ async fn main() {
             .unwrap_or(0.0),
     );
     eprintln!(
-        "Avg time:  {:?}",
+        "  Avg time : {:?}",
         stats.avg_ticket_duration().unwrap_or_default()
     );
     eprintln!(
-        "Tokens:    {} in, {} out",
+        "  Tokens   : {} in, {} out",
         stats.input_tokens(),
         stats.output_tokens(),
     );
     eprintln!(
-        "Activity:  {} requests · {} tool calls · {} errors",
+        "  Activity : {} requests · {} tool calls · {} errors",
         stats.requests(),
         stats.tool_calls(),
         stats.errors(),
     );
 }
 
-// ---- helpers -------------------------------------------------------
+fn prepare_workdir() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join("agentwerk-deep-research");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create deep-research workdir");
+    dir
+}
+
+fn final_report_schema_value() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "title":    { "type": "string", "minLength": 1 },
+            "research": { "type": "string", "minLength": 1, "maxLength": 500 }
+        },
+        "required": ["title", "research"],
+        "additionalProperties": false
+    })
+}
 
 fn brave_search_tool(api_key: String) -> Tool {
     Tool::new(
@@ -242,21 +337,17 @@ async fn brave_search(api_key: &str, input: &serde_json::Value) -> ProviderResul
 }
 
 fn log_event(event: &Event) {
+    let agent = &event.agent_name;
     match &event.kind {
         EventKind::TicketStarted { key } => {
-            eprintln!("[{}] started {key}", event.agent_name);
-        }
-        EventKind::RequestStarted { model } => {
-            eprintln!("[{}] requesting {model}…", event.agent_name);
+            eprintln!("\n┌─ [{agent}] picked up {key}");
         }
         EventKind::ToolCallStarted {
             tool_name, input, ..
         } => {
-            eprintln!(
-                "[{}] {tool_name}: {}",
-                event.agent_name,
-                tool_call_summary(tool_name, input)
-            );
+            for line in format_tool_call(tool_name, input) {
+                eprintln!("│  {line}");
+            }
         }
         EventKind::ToolCallFailed {
             tool_name,
@@ -264,44 +355,93 @@ fn log_event(event: &Event) {
             kind,
             ..
         } => {
-            eprintln!("[{}] ✗ {tool_name} ({kind:?}): {message}", event.agent_name);
+            eprintln!("│  ✗ {tool_name} ({kind:?}): {message}");
         }
-        EventKind::PolicyViolated { kind, limit } => {
+        EventKind::SchemaRetried {
+            attempt,
+            max_attempts,
+            message,
+        } => {
             eprintln!(
-                "[{}] policy violated: {kind:?} limit={limit}",
-                event.agent_name
+                "│  ↻ retry {attempt}/{max_attempts}: {}",
+                truncate(message, 110)
             );
         }
+        EventKind::PolicyViolated { kind, limit } => {
+            eprintln!("│  ⚠ policy: {kind:?} limit={limit}");
+        }
         EventKind::TicketDone { key } => {
-            eprintln!("[{}] done {key}", event.agent_name);
+            eprintln!("└─ ✓ finished {key}");
         }
         EventKind::TicketFailed { key } => {
-            eprintln!("[{}] failed {key}", event.agent_name);
+            eprintln!("└─ ✗ failed {key}");
         }
         _ => {}
     }
 }
 
-fn tool_call_summary(tool_name: &str, input: &serde_json::Value) -> String {
+fn format_tool_call(tool_name: &str, input: &serde_json::Value) -> Vec<String> {
     match tool_name {
-        "brave_search" => truncate(input["query"].as_str().unwrap_or(""), 50),
-        "manage_tickets_tool" => input["action"].as_str().unwrap_or("?").into(),
-        "write_result_tool" => {
-            let result = match &input["result"] {
-                serde_json::Value::String(s) => s.clone(),
-                other => other.to_string(),
+        "brave_search" => vec![format!(
+            "🔎 search: {}",
+            truncate(input["query"].as_str().unwrap_or(""), 70),
+        )],
+        "read_tickets_tool" => {
+            let action = input["action"].as_str().unwrap_or("?");
+            let key = input.get("key").and_then(|v| v.as_str()).unwrap_or("");
+            let suffix = if key.is_empty() {
+                String::new()
+            } else {
+                format!(" {key}")
             };
-            format!("done: {}", truncate(&result, 50))
+            vec![format!("📖 read tickets {action}{suffix}")]
         }
-        _ => serde_json::to_string(input).unwrap_or_default(),
+        "write_handover_tool" => {
+            let to = input["to"].as_str().unwrap_or("?");
+            let task = preview_value(input.get("task"), 70);
+            let result = preview_value(input.get("result"), 70);
+            let schema_note = if input.get("schema").is_some() && !input["schema"].is_null() {
+                " (+schema)"
+            } else {
+                ""
+            };
+            vec![
+                format!("📤 handoff → {to}{schema_note}"),
+                format!("      · task    : {task}"),
+                format!("      · findings: {result}"),
+            ]
+        }
+        "write_result_tool" => {
+            let result = preview_value(input.get("result"), 80);
+            vec![format!("✅ final result: {result}")]
+        }
+        _ => vec![format!(
+            "{tool_name}: {}",
+            serde_json::to_string(input).unwrap_or_default()
+        )],
     }
 }
 
+fn preview_value(value: Option<&serde_json::Value>, max: usize) -> String {
+    let raw = match value {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(other) => other.to_string(),
+        None => String::new(),
+    };
+    truncate(&raw, max)
+}
+
 fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.into();
+    let one_line: String = s
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    if one_line.chars().count() <= max {
+        return one_line;
     }
-    let cut: String = s.chars().take(max).collect();
+    let cut: String = one_line.chars().take(max).collect();
     format!("{cut}…")
 }
 

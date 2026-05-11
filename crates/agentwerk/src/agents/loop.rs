@@ -15,7 +15,8 @@ use super::agent::Agent;
 use super::retry::ExponentialRetry;
 use super::stats::LoopStats;
 use super::tickets::{policy_violated_kind, Status};
-use crate::prompts::schema_retry;
+use crate::prompts::retry_directive;
+use crate::tools::{missing_finisher_detail, FINISHER_TOOL_NAMES};
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -299,32 +300,59 @@ async fn process_ticket(
             .collect();
 
         // ---- terminal reply: model produced no tool calls ----
-        // Classify the ticket against any schema using the result the
-        // tool path may have already attached. No-schema tickets settle
-        // Done by default; schema-bound tickets without a valid result
-        // force-fail.
+        // Any ticket without an attached result means the model ended
+        // its turn without calling a finisher tool — retry with a
+        // corrective directive. With a result attached, settle Done
+        // (or Failed if a schema is set and validation now fails,
+        // which only happens in the defensive case that the result
+        // bypassed `write_result`'s pre-validation).
         if response.status != ResponseStatus::ToolUse || calls.is_empty() {
-            let final_status = match ticket_system.get(key) {
+            let ticket = match ticket_system.get(key) {
                 None => return,
-                Some(ticket) => match (&ticket.schema, ticket.result()) {
-                    (Some(schema), Some(attached)) => {
-                        if schema.validate(attached).is_ok() {
-                            Status::Done
-                        } else {
-                            Status::Failed
-                        }
+                Some(t) => t,
+            };
+            match (&ticket.schema, ticket.result()) {
+                (_, None) => {
+                    consecutive_schema_failures =
+                        consecutive_schema_failures.saturating_add(1);
+                    let registered: Vec<&str> = agent
+                        .tool_definitions()
+                        .iter()
+                        .filter_map(|d| {
+                            FINISHER_TOOL_NAMES
+                                .iter()
+                                .find(|n| **n == d.name)
+                                .copied()
+                        })
+                        .collect();
+                    let detail = missing_finisher_detail(&registered);
+                    emit(EventKind::SchemaRetried {
+                        attempt: consecutive_schema_failures,
+                        max_attempts: max_schema_retries,
+                        message: detail.clone(),
+                    });
+                    messages.push(Message::User {
+                        content: vec![ContentBlock::Text {
+                            text: retry_directive(&detail),
+                        }],
+                    });
+                    if consecutive_schema_failures >= max_schema_retries {
+                        fail_with_schema_retries(ticket_system, key, max_schema_retries, &emit);
+                        return;
                     }
-                    (Some(_), None) => Status::Failed,
-                    (None, _) => Status::Done,
-                },
-            };
-            let _ = match final_status {
-                Status::Done => ticket_system.set_done(key),
-                Status::Failed => ticket_system.set_failed(key),
-                _ => unreachable!(),
-            };
-            emit(terminal_event(final_status, key));
-            return;
+                    continue;
+                }
+                (Some(schema), Some(attached)) if schema.validate(attached).is_err() => {
+                    let _ = ticket_system.set_failed(key);
+                    emit(terminal_event(Status::Failed, key));
+                    return;
+                }
+                (_, Some(_)) => {
+                    let _ = ticket_system.set_done(key);
+                    emit(terminal_event(Status::Done, key));
+                    return;
+                }
+            }
         }
 
         for call in &calls {
@@ -349,7 +377,9 @@ async fn process_ticket(
                 let tool_name = call.map(|c| c.name.clone()).unwrap_or_default();
                 match verdict {
                     Ok(output) => {
-                        if call.is_some_and(|c| c.name == "write_result_tool") {
+                        if call.is_some_and(|c| {
+                            FINISHER_TOOL_NAMES.contains(&c.name.as_str())
+                        }) {
                             consecutive_schema_failures = 0;
                         }
                         emit(EventKind::ToolCallFinished {
@@ -390,14 +420,19 @@ async fn process_ticket(
         // sequence `SchemaRetried(N) → PolicyViolated`. The directive
         // rides in the same user message as the tool-result blocks.
         let mut blocks: Vec<ContentBlock> = outcomes.into_iter().map(|(b, _)| b).collect();
-        if let Some(detail) = &schema_failure_message {
+        if let Some(validator_message) = &schema_failure_message {
+            let detail = format!(
+                "Your output did not match the required schema. Reply with a \
+                 single JSON value conforming to the schema, with no surrounding \
+                 text and no code fences. Validator said: {validator_message}"
+            );
             emit(EventKind::SchemaRetried {
                 attempt: consecutive_schema_failures,
                 max_attempts: max_schema_retries,
                 message: detail.clone(),
             });
             blocks.push(ContentBlock::Text {
-                text: schema_retry(detail),
+                text: retry_directive(&detail),
             });
         }
         messages.push(Message::User { content: blocks });
@@ -410,17 +445,26 @@ async fn process_ticket(
         }
 
         if consecutive_schema_failures >= max_schema_retries {
-            emit(EventKind::PolicyViolated {
-                kind: crate::event::PolicyKind::MaxSchemaRetries,
-                limit: u64::from(max_schema_retries),
-            });
-            let _ = ticket_system.set_failed(key);
-            emit(EventKind::TicketFailed {
-                key: key.to_string(),
-            });
+            fail_with_schema_retries(ticket_system, key, max_schema_retries, &emit);
             return;
         }
     }
+}
+
+fn fail_with_schema_retries<F: Fn(EventKind)>(
+    ticket_system: &crate::agents::tickets::TicketSystem,
+    key: &str,
+    max_schema_retries: u32,
+    emit: &F,
+) {
+    emit(EventKind::PolicyViolated {
+        kind: crate::event::PolicyKind::MaxSchemaRetries,
+        limit: u64::from(max_schema_retries),
+    });
+    let _ = ticket_system.set_failed(key);
+    emit(EventKind::TicketFailed {
+        key: key.to_string(),
+    });
 }
 
 fn terminal_event(status: Status, key: &str) -> EventKind {
@@ -952,11 +996,19 @@ mod tests {
     // =====================================================================
 
     #[tokio::test]
-    async fn text_reply_no_schema_settles_done() {
-        let provider = MockProvider::with_results(vec![Ok(text_response("Hello!"))]);
+    async fn text_reply_no_schema_retries_then_recovers() {
+        // First reply is text-only with no result → retry directive
+        // fires. Second reply calls write_result_tool successfully.
+        let provider = MockProvider::with_results(vec![
+            Ok(text_response("Hello!")),
+            Ok(write_result_response("done")),
+        ]);
         let (events, provider, settled) = run_one(provider, 3, 10, None).await;
 
-        assert_eq!(provider.requests(), 1);
+        assert_eq!(provider.requests(), 2);
+        let retries = schema_retries_in(&events);
+        assert_eq!(retries.len(), 1);
+        assert!(retries[0].2.contains("write_result_tool"));
         let done = events
             .iter()
             .filter(|e| matches!(e.kind, EventKind::TicketDone { .. }))
@@ -971,23 +1023,59 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn text_reply_with_schema_force_fails_when_result_not_satisfied() {
-        let provider = MockProvider::with_results(vec![Ok(text_response("Hello!"))]);
+    async fn text_reply_no_schema_exhausts_retries_and_fails() {
+        // Three text-only replies with `max_schema_retries(2)` exhaust
+        // the budget and fail the ticket with a MaxSchemaRetries
+        // PolicyViolated event.
+        let provider = MockProvider::with_results(vec![
+            Ok(text_response("a")),
+            Ok(text_response("b")),
+            Ok(text_response("c")),
+        ]);
+        let (events, _, settled) = run_one(provider, 3, 2, None).await;
+
+        let retries = schema_retries_in(&events);
+        assert_eq!(retries.len(), 2);
+        let policy_violated = events.iter().any(|e| {
+            matches!(
+                &e.kind,
+                EventKind::PolicyViolated {
+                    kind: PolicyKind::MaxSchemaRetries,
+                    limit: 2,
+                },
+            )
+        });
+        assert!(policy_violated, "expected MaxSchemaRetries PolicyViolated");
+        assert_eq!(settled.unwrap().status, Status::Failed);
+    }
+
+    #[tokio::test]
+    async fn text_reply_with_schema_retries_then_recovers() {
+        // Schema-bound ticket; first reply is text-only (no result
+        // attached) → retry directive fires. Second reply attaches a
+        // valid result via write_result_tool → Done.
+        let provider = MockProvider::with_results(vec![
+            Ok(text_response("Hello!")),
+            Ok(write_result_value(serde_json::json!({"partial_sum": 1}))),
+        ]);
         let (events, provider, settled) =
             run_one(provider, 3, 10, Some(schema_for_partial_sum())).await;
 
-        assert_eq!(provider.requests(), 1);
-        let failed = events
-            .iter()
-            .filter(|e| matches!(e.kind, EventKind::TicketFailed { .. }))
-            .count();
+        assert_eq!(provider.requests(), 2);
+        let retries = schema_retries_in(&events);
+        assert_eq!(retries.len(), 1);
+        assert!(retries[0].2.contains("write_result_tool"));
         let done = events
             .iter()
             .filter(|e| matches!(e.kind, EventKind::TicketDone { .. }))
             .count();
-        assert_eq!(failed, 1);
-        assert_eq!(done, 0);
-        assert_eq!(settled.unwrap().status, Status::Failed);
+        let failed = events
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::TicketFailed { .. }))
+            .count();
+        assert_eq!(done, 1);
+        assert_eq!(failed, 0);
+        assert_eq!(settled.unwrap().status, Status::Done);
     }
 
     #[tokio::test]

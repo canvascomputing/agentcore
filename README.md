@@ -69,8 +69,8 @@ make use_case name=<name>    # run one
 # API
 
 - [Agents](#agents): Workers that pick up tickets and produce results.
-- [Prompting](#prompting): Role, context, and task shaping the work of an agent.
 - [Tickets](#tickets): Ticket system allowing to orchestrate complex work.
+- [Prompting](#prompting): Role, context, and task shaping the work of an agent.
 - [Tools](#tools): Capabilities agents use to solve a ticket.
 - [Knowledge](#knowledge): Knowledge base an agent creates during a run.
 - [Schemas](#schemas): Schemas for validating ticket results.
@@ -122,39 +122,6 @@ Each provider exposes `.base_url(url)` and `.timeout(duration)` to override the 
 | `provider_from_env()` | Detect the provider from environment variables. |
 | `model(m)` | Set the model the provider runs. |
 | `model_from_env()` | Read the model name from environment variables. |
-
-## Prompting
-
-Every prompt has three parts: `role` (who the agent is), `context` (the situation it operates in), and `task` (work it should perform). The structure follows the [prompting guide](https://github.com/canvascomputing/prompting).
-
-```rust
-let agent = Agent::new()
-    .role("You are an arithmetic worker. Compute step by step and show your work.")
-    .context("- Stage 2 of a math-tutor pipeline.\n- Attempts remaining: 2.")
-    .task("Compute (47 * 92) / {divisor}, then round to the nearest integer.")
-    .template_variable("divisor", "8");
-```
-
-When `context(...)` is not set, agentwerk supplies a default block:
-
-```markdown
-- Working directory: /Users/caro
-- Platform: darwin
-- OS version: 25.1.0
-- Date: 2026-05-06
-- Steps remaining: 8
-- Input tokens remaining: 95000
-- Output tokens remaining: 12000
-- Time remaining: 240s
-```
-
-At each step the agent sends:
-
-- **system**: `role(...)`, with the `knowledge(...)` index
-- **tools**: tools registered with `tool(...)`
-- **messages**: a list that grows step by step
-
-`messages` begins with `context(...)` and the body of the current ticket. On each later step the agent appends the model's reply.
 
 ## Tickets
 
@@ -235,6 +202,39 @@ let tickets = TicketSystem::new()
 | `max_request_retries(n)` | Cap the retry attempts on recoverable provider errors. |
 | `request_retry_delay(d)` | Set the base delay between request retries. |
 
+## Prompting
+
+Every prompt has three parts: `role` (who the agent is), `context` (the situation it operates in), and `task` (work it should perform). The structure follows the [prompting guide](https://github.com/canvascomputing/prompting).
+
+```rust
+let agent = Agent::new()
+    .role("You are an arithmetic worker. Compute step by step and show your work.")
+    .context("- Stage 2 of a math-tutor pipeline.\n- Attempts remaining: 2.")
+    .task("Compute (47 * 92) / {divisor}, then round to the nearest integer.")
+    .template_variable("divisor", "8");
+```
+
+When `context(...)` is not set, agentwerk supplies a default block:
+
+```markdown
+- Working directory: /Users/caro
+- Platform: darwin
+- OS version: 25.1.0
+- Date: 2026-05-06
+- Steps remaining: 8
+- Input tokens remaining: 95000
+- Output tokens remaining: 12000
+- Time remaining: 240s
+```
+
+At each step the agent sends:
+
+- **system**: `role(...)`, with the `knowledge(...)` index
+- **tools**: tools registered with `tool(...)`
+- **messages**: a list that grows step by step
+
+`messages` begins with `context(...)` and the body of the current ticket. On each later step the agent appends the model's reply.
+
 ## Tools
 
 Give agents access to tools helping them to solve a given task. Each tool exposes an action the agent can choose to take. agentwerk provides minimal baseline tools:
@@ -250,6 +250,7 @@ Give agents access to tools helping them to solve a given task. Each tool expose
 | **Shell** | `BashTool` | Run a shell command matching an allowed pattern. |
 | **Web** | `WebFetchTool` | Fetch a URL and read its body. |
 | **Tickets** | `WriteResultTool` | Write the result for the current ticket and mark it done. |
+| | `WriteHandoverTool` | Write the result, mark the ticket done, and hand follow-up work to another agent. |
 | | `ManageTicketsTool` | Read the ticket queue and create or edit tickets. |
 | | `ReadTicketsTool` | Read the ticket queue. |
 | **Knowledge** | `KnowledgeTool` | Write, read, remove, or list pages in the agent's knowledge store. |
