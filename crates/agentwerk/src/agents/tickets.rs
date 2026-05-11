@@ -21,8 +21,9 @@ use super::policy::Policies;
 use super::r#loop::run_main_loop;
 use super::stats::{Stats, TicketStats};
 
-/// A ticket. Caller-settable fields: `task`, `labels`, `schema`,
-/// `labels`. System-managed fields (`key`, `status`, `reporter`,
+/// A ticket. Caller-settable fields: `task`, `labels`, `schema` (or
+/// `schema_as::<R>()` to derive a serde-backed validator from a Rust
+/// type). System-managed fields (`key`, `status`, `reporter`,
 /// `created_at`, `result`) are stamped at insertion time.
 #[derive(Debug, Clone)]
 pub struct Ticket {
@@ -126,6 +127,17 @@ impl Ticket {
         self
     }
 
+    /// Attach a serde-backed schema derived from `R`. The ticket's
+    /// final `done` result must deserialize into `R`; deserialize
+    /// errors flow through the same retry path as JSON-Schema
+    /// violations. Equivalent to `schema(Schema::from_type::<R>())`.
+    pub fn schema_as<R>(self) -> Self
+    where
+        R: serde::de::DeserializeOwned + 'static,
+    {
+        self.schema(crate::schemas::Schema::from_type::<R>())
+    }
+
     // ---- read-only accessors for system-managed fields ----
 
     pub fn key(&self) -> &str {
@@ -181,6 +193,20 @@ impl Ticket {
             serde_json::Value::String(s) => s.clone(),
             other => other.to_string(),
         })
+    }
+
+    /// Result payload deserialized into `R`. `None` when the ticket
+    /// has no recorded result; `Some(Err(_))` when the recorded
+    /// `Value` does not match the requested type (which on
+    /// schema-bound tickets should not happen — the framework rejects
+    /// mismatched results before marking the ticket done).
+    pub fn result_as<R>(&self) -> Option<Result<R, serde_json::Error>>
+    where
+        R: serde::de::DeserializeOwned,
+    {
+        self.result
+            .as_ref()
+            .map(|v| serde_json::from_value(v.clone()))
     }
 
     pub fn has_label(&self, label: &str) -> bool {
@@ -374,6 +400,25 @@ impl TicketSystem {
         label: impl Into<String>,
     ) -> &Self {
         self.dispatch(Ticket::new(task).schema(schema).label(label));
+        self
+    }
+
+    /// Enqueue a ticket whose `done` result must deserialize into
+    /// `R`. Equivalent to `task_schema(task, Schema::from_type::<R>())`.
+    pub fn task_as<R>(&self, task: impl Serialize) -> &Self
+    where
+        R: serde::de::DeserializeOwned + 'static,
+    {
+        self.dispatch(Ticket::new(task).schema_as::<R>());
+        self
+    }
+
+    /// `task_as` + `task_labeled` combined.
+    pub fn task_as_labeled<R>(&self, task: impl Serialize, label: impl Into<String>) -> &Self
+    where
+        R: serde::de::DeserializeOwned + 'static,
+    {
+        self.dispatch(Ticket::new(task).schema_as::<R>().label(label));
         self
     }
 

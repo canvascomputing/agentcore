@@ -33,7 +33,7 @@ The invariants that shape how code fits together. Layout says where code lives; 
 **Agents finish tickets by calling `write_result_tool` with a `result` (a non-empty string for tickets without a schema, or a JSON value for schema-bound tickets). The framework owns the lifecycle stamps and transitions the ticket to `Done`.**
 
 - `Status` transitions go through tickets-side helpers; the agent never writes status directly. `Failed` is reserved for system-driven outcomes (schema-retry trip, policy violations).
-- `task_schema*` attaches a `Schema` to the ticket; the tool validates the result and the loop applies `max_schema_retries` on mismatch.
+- `task_schema*` attaches a `Schema` to the ticket; the tool validates the result and the loop applies `max_schema_retries` on mismatch. `task_as::<R>` is the type-driven shortcut: the validator runs `serde_json::from_value::<R>` and the same retry path applies.
 - A successful call appends one NDJSON record `{agent, ticket, result}` to `<dir>/results.jsonl` (configured via `TicketSystem::dir(d)`; falls back to the agent's directory) and attaches the same `ResultRecord` to the ticket. The record is surfaced through `Ticket::result()`; `run_dry` returns its serialized form for the most recent `Done` ticket.
 - When a directory is set, the system also appends one JSON line to `<dir>/tickets.jsonl` per lifecycle event (`created`, `started`, `done`, `failed`). The log is observational: errors are swallowed and an unset directory skips writes entirely. The result payload stays in `results.jsonl`; `tickets.jsonl` carries only the transition.
 

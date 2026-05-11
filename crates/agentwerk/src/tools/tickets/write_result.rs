@@ -248,6 +248,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn validates_against_typed_schema() {
+        #[derive(serde::Deserialize)]
+        struct Out {
+            x: String,
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let sys = TicketSystem::new().dir(dir.path().to_path_buf());
+        sys.insert(
+            Ticket::new("hi").schema_as::<Out>().label("alice"),
+            "tester".into(),
+        );
+        let key = sys
+            .claim(|t| t.status == Status::Todo, "alice")
+            .expect("claim must succeed");
+        let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
+
+        // wrong shape: x has wrong type
+        let outcome = WriteResultTool
+            .call(serde_json::json!({"result": {"x": 7}}), &ctx)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ToolResult::SchemaError(_)));
+        let t = sys.get(&key).unwrap();
+        assert_eq!(t.status, Status::InProgress);
+
+        // valid shape
+        let outcome = WriteResultTool
+            .call(serde_json::json!({"result": {"x": "ok"}}), &ctx)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ToolResult::Success(_)));
+        let t = sys.get(&key).unwrap();
+        assert_eq!(t.status, Status::Done);
+        assert_eq!(
+            t.result_as::<Out>().unwrap().unwrap().x,
+            "ok",
+            "result deserializes into the typed shape"
+        );
+    }
+
+    #[tokio::test]
     async fn falls_back_to_working_dir_when_workspace_unset() {
         let dir = tempfile::tempdir().unwrap();
         let (sys, _key) = one_ticket("alice");

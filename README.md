@@ -130,7 +130,7 @@ Every prompt has three parts: `role` (who the agent is), `context` (the situatio
 ```rust
 let agent = Agent::new()
     .role("You are an arithmetic worker. Compute step by step and show your work.")
-    .context("- Allowed operators: +, -, *, /\n- Output: write the final result on the last line.")
+    .context("- Stage 2 of a math-tutor pipeline.\n- Attempts remaining: 2.")
     .task("Compute (47 * 92) / 8, then round to the nearest integer.");
 ```
 
@@ -180,6 +180,8 @@ tickets.ticket(report);
 | `task_labeled(t, l)` | Submit a task tagged with `l` for label-scoped routing. |
 | `task_schema(t, s)` | Submit a task whose result must validate against `s`. |
 | `task_schema_labeled(t, s, l)` | Submit a labeled task with a result schema. |
+| `task_as::<R>(t)` | Submit a task whose result must deserialize into `R`. |
+| `task_as_labeled::<R>(t, l)` | Submit a labeled task whose result must deserialize into `R`. |
 | `ticket(t)` | Submit a caller-built `Ticket`. |
 
 ### Execution
@@ -301,6 +303,24 @@ let schema = Schema::parse(json!({
 }))?;
 
 tickets.task_schema("Write a report.", schema);
+```
+
+You can also use Rust types for enforcing schemas:
+
+```rust
+#[derive(serde::Deserialize)]
+struct Report {
+    title: String,
+    sections: Vec<String>,
+}
+
+tickets.task_as::<Report>("Write a report on Rust async runtimes.");
+let results = tickets.run_dry().await;
+
+for ticket in results.tickets() {
+    let report: Report = ticket.result_as::<Report>().unwrap()?;
+    println!("{}: {} sections", report.title, report.sections.len());
+}
 ```
 
 ## Events

@@ -360,6 +360,25 @@ impl Agent {
         self
     }
 
+    /// Enqueue a ticket whose `done` result must deserialize into
+    /// `R`. Equivalent to `task_schema(task, Schema::from_type::<R>())`.
+    pub fn task_as<R>(&self, task: impl Serialize) -> &Self
+    where
+        R: serde::de::DeserializeOwned + 'static,
+    {
+        self.dispatch(Ticket::new(task).schema_as::<R>());
+        self
+    }
+
+    /// `task_as` + `task_labeled` combined.
+    pub fn task_as_labeled<R>(&self, task: impl Serialize, label: impl Into<String>) -> &Self
+    where
+        R: serde::de::DeserializeOwned + 'static,
+    {
+        self.dispatch(Ticket::new(task).schema_as::<R>().label(label));
+        self
+    }
+
     /// Enqueue a fully-built `Ticket`. System-managed fields (key,
     /// reporter, created_at, status, result) are overwritten. To pin the
     /// ticket to a specific agent, label it with the agent's name.
