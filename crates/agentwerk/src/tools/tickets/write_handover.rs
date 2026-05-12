@@ -20,6 +20,21 @@ use super::{resolve_current_key, write_result};
 
 pub struct WriteHandoverTool;
 
+/// Reserved placeholders substituted into the child ticket's `task`
+/// string at handover time: `{parent_key}` and `{parent_result}`.
+/// Single-pass `str::replace` over each in turn; unknown `{name}`
+/// placeholders pass through verbatim. The non-string arm is
+/// defensive: input validation already rejects non-string `task`.
+fn apply_handover_templates(task: Value, parent_key: &str, parent_result: &str) -> Value {
+    match task {
+        Value::String(s) => Value::String(
+            s.replace("{parent_key}", parent_key)
+                .replace("{parent_result}", parent_result),
+        ),
+        other => other,
+    }
+}
+
 fn tool_file() -> &'static ToolFile {
     static FILE: OnceLock<ToolFile> = OnceLock::new();
     FILE.get_or_init(|| ToolFile::parse(include_str!("write_handover.tool.json")))
@@ -104,6 +119,14 @@ impl ToolLike for WriteHandoverTool {
                 Err(e) => return Ok(e),
             };
 
+            // Captured before `write_result` consumes `result`. The
+            // value was validated as a non-empty string above, so the
+            // `as_str` cannot fail.
+            let parent_result_str = result
+                .as_str()
+                .expect("`result` validated as String above")
+                .to_string();
+
             // Parent-side finish runs first. The result is already
             // validated to be a non-empty string above; schema-bound
             // parents whose schema rejects strings will be caught by
@@ -118,6 +141,7 @@ impl ToolLike for WriteHandoverTool {
                 .agent_name_str()
                 .expect("agent_name on ToolContext")
                 .to_string();
+            let task = apply_handover_templates(task, &parent_key, &parent_result_str);
             let mut child = Ticket::new(task).label(&to).parent(&parent_key);
             if let Some(schema) = child_schema {
                 child = child.schema(schema);
@@ -410,5 +434,88 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(outcome, ToolResult::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn substitutes_parent_key_and_result_in_task() {
+        let dir = crate::test_util::TempDir::new().unwrap();
+        let (sys, parent_key) = one_ticket("alice");
+        let sys = Arc::clone(&sys).dir(dir.path().to_path_buf());
+        let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
+
+        WriteHandoverTool
+            .call(
+                serde_json::json!({
+                    "to": "bob",
+                    "task": "Continue {parent_key}: {parent_result}",
+                    "result": "alice's findings"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let child = sys.get("TICKET-2").unwrap();
+        assert_eq!(
+            child.task,
+            serde_json::Value::String(format!("Continue {parent_key}: alice's findings")),
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_placeholders_pass_through() {
+        let dir = crate::test_util::TempDir::new().unwrap();
+        let (sys, parent_key) = one_ticket("alice");
+        let sys = Arc::clone(&sys).dir(dir.path().to_path_buf());
+        let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
+
+        WriteHandoverTool
+            .call(
+                serde_json::json!({
+                    "to": "bob",
+                    "task": "See {parent_key} and {unknown}",
+                    "result": "ok"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let child = sys.get("TICKET-2").unwrap();
+        assert_eq!(
+            child.task,
+            serde_json::Value::String(format!("See {parent_key} and {{unknown}}")),
+        );
+    }
+
+    #[tokio::test]
+    async fn substitution_is_single_pass() {
+        // A `result` that itself contains the literal text `{parent_key}`
+        // must NOT be re-expanded — the substitution pass runs once
+        // per placeholder, not recursively.
+        let dir = crate::test_util::TempDir::new().unwrap();
+        let (sys, parent_key) = one_ticket("alice");
+        let sys = Arc::clone(&sys).dir(dir.path().to_path_buf());
+        let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
+
+        WriteHandoverTool
+            .call(
+                serde_json::json!({
+                    "to": "bob",
+                    "task": "[{parent_result}]",
+                    "result": "{parent_key}"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let child = sys.get("TICKET-2").unwrap();
+        assert_eq!(
+            child.task,
+            serde_json::Value::String("[{parent_key}]".to_string()),
+            "result containing `{{parent_key}}` should be inserted literally, \
+             not recursively expanded (parent_key was {parent_key})",
+        );
     }
 }

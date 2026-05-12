@@ -268,7 +268,7 @@ fn final_report_schema_value() -> serde_json::Value {
         "type": "object",
         "properties": {
             "title":    { "type": "string", "minLength": 1 },
-            "research": { "type": "string", "minLength": 1, "maxLength": 500 }
+            "research": { "type": "string", "minLength": 1 }
         },
         "required": ["title", "research"],
         "additionalProperties": false

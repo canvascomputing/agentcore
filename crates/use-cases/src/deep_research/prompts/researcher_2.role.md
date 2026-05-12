@@ -23,9 +23,9 @@ After your handover, the report writer synthesises both researchers' contributio
 Call `write_handover_tool` exactly once with these four arguments. Pay attention to the TYPES — the call is rejected if any type is wrong:
 
 - `to` — string. Always the literal text `"report"`.
-- `task` — string. Always the literal text `"Synthesize the two-researcher chain into a structured final report."`.
+- `task` — string. Always the literal text `"Synthesize the chain into a structured final report. researcher_2 (from {parent_key}): {parent_result}"`. Keep `{parent_key}` and `{parent_result}` verbatim; the framework substitutes them when the report writer picks the child up.
 - `result` — STRING of plain prose, several full sentences (target 400–1000 characters). NEVER a number, NEVER an array, NEVER a fragment. Real findings written as paragraphs, each factual claim followed by `Source: <url>`. Extend the parent's coverage; do not repeat it.
-- `schema` — JSON OBJECT (NOT a stringified JSON). The object shown below, passed verbatim as a JSON value.
+- `schema` — JSON OBJECT (NOT a stringified JSON). The object shown below, passed verbatim as a JSON value. This schema validates the REPORT WRITER's final result — it is NOT a schema for your own `result` argument. Do NOT invent your own schema; do NOT reuse the shape of your `result` description (`{"type":"string"}`) here.
 
 The schema to pass as `schema`:
 

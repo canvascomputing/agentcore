@@ -38,7 +38,7 @@
       },
       "task": {
         "type": "string",
-        "description": "Body of the child ticket as a plain-text instruction. MUST be a non-empty string. Describe what the receiving agent should do next."
+        "description": "Body of the child ticket as a plain-text instruction. MUST be a non-empty string. Describe what the receiving agent should do next. Reserved placeholders `{parent_key}` and `{parent_result}` are substituted at handover time with the finishing ticket's key and result string; unknown `{name}` placeholders pass through verbatim."
       },
       "result": {
         "type": "string",
