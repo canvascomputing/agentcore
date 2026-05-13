@@ -34,7 +34,6 @@ async fn main() {
     eprintln!("Question: {question}\n");
 
     let provider = provider_from_env().expect("LLM provider required");
-    let signal = setup_interrupt_signal();
     let event_handler: Arc<dyn Fn(Event) + Send + Sync> =
         Arc::new(|event: Event| log_event(&event));
 
@@ -43,9 +42,7 @@ async fn main() {
     let workdir = prepare_workdir();
 
     let tickets = TicketSystem::new();
-    tickets
-        .interrupt_signal(Arc::clone(&signal))
-        .dir(workdir.clone());
+    tickets.cancel_on_ctrl_c().dir(workdir.clone());
 
     let researcher_1 = Agent::empty()
         .name("researcher_1")
@@ -110,6 +107,7 @@ async fn main() {
     // prematurely. Polling for the report ticket directly, with a
     // grace period when the queue settles, is race-free.
     let running = tickets.run();
+    let signal = running.signal();
     let outcome = wait_for_outcome(&tickets, &signal).await;
     running.stop();
     running.join().await;
@@ -480,14 +478,4 @@ fn check_required_env() -> String {
         std::process::exit(1);
     }
     brave_key
-}
-
-fn setup_interrupt_signal() -> Arc<AtomicBool> {
-    let signal = Arc::new(AtomicBool::new(false));
-    let handle = signal.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        handle.store(true, Ordering::Relaxed);
-    });
-    signal
 }

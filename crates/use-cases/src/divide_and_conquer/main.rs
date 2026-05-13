@@ -14,7 +14,7 @@
 //!   divide-and-conquer -p 32 -c 16 100000
 
 use std::io::IsTerminal;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -30,7 +30,6 @@ async fn main() {
     let args = CliArgs::parse();
     let provider = provider_from_env().expect("LLM provider required");
     let model = model_from_env().expect("model name required");
-    let cancel = install_ctrl_c();
     let style = Style::detect();
 
     let partitions = partition(args.n, args.partitions);
@@ -39,7 +38,7 @@ async fn main() {
 
     let schema = partial_sum_schema();
     let tickets = TicketSystem::new();
-    tickets.interrupt_signal(Arc::clone(&cancel));
+    tickets.cancel_on_ctrl_c();
     if let Some(n) = args.max_steps {
         tickets.max_steps(n);
     }
@@ -333,16 +332,6 @@ fn print_intro(n: u64, partitions: usize, workers: usize, style: &Style) {
         dim = style.dim,
         reset = style.reset,
     );
-}
-
-fn install_ctrl_c() -> Arc<AtomicBool> {
-    let signal = Arc::new(AtomicBool::new(false));
-    let handle = Arc::clone(&signal);
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        handle.store(true, Ordering::Relaxed);
-    });
-    signal
 }
 
 fn truncate(s: &str, max: usize) -> String {

@@ -375,6 +375,19 @@ impl TicketSystem {
         self
     }
 
+    /// Flip the system's interrupt signal on the first SIGINT. Spawns a
+    /// background tokio task that listens for ctrl-c once and exits.
+    /// Callers that need escalation (e.g. force-exit on a second press)
+    /// install their own listener and wire it via [`Self::interrupt_signal`].
+    pub fn cancel_on_ctrl_c(&self) -> &Self {
+        let signal = Arc::clone(&self.interrupt_signal.lock().unwrap());
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c().await.ok();
+            signal.store(true, Ordering::Relaxed);
+        });
+        self
+    }
+
     /// Directory under which the system writes `results.jsonl` and
     /// `tickets.jsonl`. Knowledge lives next to them when the caller points
     /// `Knowledge::open` at the same directory. When unset, `WriteResultTool`

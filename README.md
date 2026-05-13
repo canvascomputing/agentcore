@@ -174,6 +174,7 @@ let results = tickets.run_dry().await;    // waits for the queue to empty
 | `run()` | Begin processing tickets in the background. The caller can observe progress, submit more tickets, or stop the run while agents work. |
 | `run_dry().await` | Begin processing tickets and block until the queue is empty. Returns a `TicketResults` bundle with `first`, `last`, `all` for reading the recorded answers, and `tickets` for the full per-ticket records. |
 | `interrupt_signal(s)` | Signal allowing to stop every agent and tool execution. |
+| `cancel_on_ctrl_c()` | Flip the interrupt signal on the first SIGINT. |
 
 ### Policies
 
