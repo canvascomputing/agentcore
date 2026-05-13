@@ -36,15 +36,15 @@ use agentwerk::Agent;
 
 #[tokio::main]
 async fn main() {
-    let results = Agent::new()
+    let work = Agent::new()
         .from_env()
         .role("You are a Rust developer who reads source files to answer questions.")
         .tool(ReadFileTool)
         .task("What does Cargo.toml describe?")
-        .run_dry()
+        .finish()
         .await;
 
-    let answer = results.last().unwrap();
+    let answer = work.last_result().unwrap();
     println!("{answer}");
 }
 ```
@@ -162,19 +162,44 @@ tickets.ticket(audit);
 
 ### Execution
 
-Start executing tickets with `run` calls:
+Start, wait, and cancel a run:
 
 ```rust
-let running = tickets.run();              // returns immediately
-let results = tickets.run_dry().await;    // waits for the queue to empty
+tickets.start();
+tickets.finish().await;
+let answer = tickets.last_result();
 ```
 
 | Method | Description |
 |--------|-------------|
-| `run()` | Begin processing tickets in the background. The caller can observe progress, submit more tickets, or stop the run while agents work. |
-| `run_dry().await` | Begin processing tickets and block until the queue is empty. Returns a `TicketResults` bundle with `first`, `last`, `all` for reading the recorded answers, and `tickets` for the full per-ticket records. |
-| `interrupt_signal(s)` | Signal allowing to stop every agent and tool execution. |
-| `cancel_on_ctrl_c()` | Flip the interrupt signal on the first SIGINT. |
+| `start()` | Begin processing tickets in the background. |
+| `finish().await` | Process every queued ticket and return. |
+| `cancel()` | Cancel the run from anywhere: async code, ctrl-c handlers, drop guards. |
+| `stop().await` | Cancel the run and wait for it to wind down. |
+| `cancel_on_ctrl_c()` | Cancel the run on the first ctrl-c. |
+
+### Reading results
+
+Query the system after `finish().await` returns:
+
+```rust
+tickets.finish().await;
+
+if let Some(answer) = tickets.last_result() {
+    println!("{answer}");
+}
+
+for ticket in tickets.tickets() {
+    println!("{}: {}", ticket.key(), ticket.status());
+}
+```
+
+| Method | Description |
+|--------|-------------|
+| `last_result()` | Return the most recent finished ticket's payload as a string. |
+| `all_results()` | Return every finished ticket's payload as a string. |
+| `tickets()` | Return every ticket in creation order, with status, payload, and metadata. |
+| `is_cancelled()` | Return `true` once a cancel has been requested. |
 
 ### Policies
 
@@ -333,9 +358,9 @@ struct Report {
 }
 
 tickets.ticket(Ticket::new("Write a report on Rust async runtimes.").schema_as::<Report>());
-let results = tickets.run_dry().await;
+tickets.finish().await;
 
-for ticket in results.tickets() {
+for ticket in tickets.tickets() {
     let report: Report = ticket.result_as::<Report>().unwrap();
     println!("{}: {} sections", report.title, report.sections.len());
 }

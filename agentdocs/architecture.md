@@ -4,11 +4,11 @@ The invariants that shape how code fits together. Layout says where code lives; 
 
 ## Builder, system, loop
 
-**A run has three stages: build the `Agent`, bind it to a `TicketSystem`, drive the system with `run` (long-lived) or `run_dry` (drain the fixed batch).**
+**A run has three stages: build the `Agent`, bind it to a `TicketSystem`, drive the system with `start` (long-lived) or `finish` (process a fixed batch and return).**
 
 - The `Agent` builder carries identity, prompt parts, provider/model, tools, working dir, event handler, and a `Weak<TicketSystem>` (dangling by default).
 - `TicketSystem::add(agent)` (or `agent.ticket_system(&shared)`) stamps the system's `Weak<Self>` onto the agent, drains any tickets the agent had queued in its private default system into the shared one, and pushes a clone of the agent onto the system's agents list.
-- `TicketSystem::run` / `run_dry` spawn one tokio task per registered agent; each task upgrades its `Weak` once at the start and reads the shared store, policies, stats, and interrupt signal from the resulting `Arc<TicketSystem>`.
+- `TicketSystem::start` / `finish` spawn one tokio task per registered agent; each task upgrades its `Weak` once at the start and reads the shared store, policies, stats, and interrupt signal from the resulting `Arc<TicketSystem>`.
 
 ## Shared system, per-agent task
 
@@ -37,12 +37,12 @@ The invariants that shape how code fits together. Layout says where code lives; 
 - When a turn ends without a finisher tool call (no `write_result_tool`, no `write_handover_tool`, no result attached), the loop pushes a corrective directive and retries. This is the same retry path used for schema-validation failures, bounded by `max_schema_retries`; exhaustion emits `PolicyViolated { MaxSchemaRetries, .. }` and `TicketFailed`.
 - `Status` transitions go through tickets-side helpers; the agent never writes status directly. `Failed` is reserved for system-driven outcomes (schema-retry trip, missing-finisher exhaustion, policy violations).
 - `task_schema*` attaches a `Schema` to the ticket; the finisher tool validates the result and the loop applies `max_schema_retries` on mismatch. `task_as::<R>` is the type-driven shortcut: the validator runs `serde_json::from_value::<R>` and the same retry path applies. A schema mismatch in `write_handover_tool` aborts both the parent's finish AND the child insert — the operation is atomic.
-- A successful finish appends one NDJSON record `{agent, ticket, result}` to `<dir>/results.jsonl` (configured via `TicketSystem::dir(d)`; falls back to the agent's directory) and attaches the same `ResultRecord` to the ticket. The record is surfaced through `Ticket::result()`; `run_dry` returns its serialized form for the most recent `Done` ticket.
+- A successful finish appends one NDJSON record `{agent, ticket, result}` to `<dir>/results.jsonl` (configured via `TicketSystem::dir(d)`; falls back to the agent's directory) and attaches the same `ResultRecord` to the ticket. The record is surfaced through `Ticket::result()`; `last_result()` returns its serialized form for the most recent `Done` ticket.
 - When a directory is set, the system also appends one JSON line to `<dir>/tickets.jsonl` per lifecycle event (`created`, `started`, `done`, `failed`). The `created` event carries the optional `parent` key when set, giving the log a complete handover audit trail. The log is observational: errors are swallowed and an unset directory skips writes entirely. The result payload stays in `results.jsonl`; `tickets.jsonl` carries only the transition.
 
 ## Knowledge is opt-in and shareable across agents
 
-**An agent can carry durable facts across every ticket it handles via `Agent::knowledge(&store)`, including across separate `run` / `run_dry` calls and across process restarts. Off by default; each ticket starts without a knowledge section.**
+**An agent can carry durable facts across every ticket it handles via `Agent::knowledge(&store)`, including across separate `start` / `finish` calls and across process restarts. Off by default; each ticket starts without a knowledge section.**
 
 Two layers of state exist. The intra-ticket message vector inside `process_ticket` is always present; it carries a multi-step tool turn through and is dropped when the ticket reaches a terminal status. `Agent::knowledge(&store)` adds a separate cross-ticket layer: a `Knowledge` store rooted at a caller-supplied directory, surfaced to the model through `KnowledgeTool` and rendered into the system prompt under `## Knowledge`.
 
@@ -101,5 +101,5 @@ Two layers of state exist. The intra-ticket message vector inside `process_ticke
 **A run stops cleanly when any limit on `Policies` trips. The check fires `EventKind::PolicyViolated` and exits the per-agent task.**
 
 - The loop calls `policy_violated_kind` at each iteration; a non-`None` return walks the agent off the queue.
-- Token budgets read from `Stats`; `max_time` reads from `Policies` and is checked separately by the `run_dry` watcher (graceful stop, not a `PolicyViolated` event).
+- Token budgets read from `Stats`; `max_time` reads from `Policies` and is checked separately by the `finish` watcher (graceful stop, not a `PolicyViolated` event).
 - Schema-retry budget is applied per-ticket inside the result-writing path, not at the top of the loop.

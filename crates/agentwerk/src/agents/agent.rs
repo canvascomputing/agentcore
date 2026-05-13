@@ -21,7 +21,7 @@ use super::knowledge::Knowledge;
 
 use super::policy::Policies;
 use super::stats::Stats;
-use super::tickets::{Ticket, TicketResults, TicketSystem};
+use super::tickets::{Ticket, TicketSystem};
 
 static AGENT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -252,7 +252,7 @@ impl Agent {
     /// the agent had already enqueued in its prior store into `sys`,
     /// stamps `sys`'s `Weak<Self>` onto `self.ticket_system`, and
     /// registers a clone of `self` into `sys`'s agents list so the
-    /// loop will dispatch this agent at `run` / `run_dry` time.
+    /// loop will dispatch this agent at `run` / `finish` time.
     pub fn ticket_system(mut self, sys: &Arc<TicketSystem>) -> Self {
         sys.bind_agent(&mut self);
         self
@@ -389,30 +389,28 @@ impl Agent {
         sys.insert(ticket, self.name.clone());
     }
 
-    /// Start the agent loop on a background tokio task and return a
-    /// [`Running`](crate::Running) handle. Forwards to the bound
-    /// `TicketSystem`. Tickets queued afterwards are picked up within
-    /// ~`IDLE_POLL_INTERVAL`. Finish with
-    /// [`Running::run_dry`](crate::Running::run_dry) to wait for the
-    /// queue to drain.
-    pub fn run(&self) -> super::running::Running {
+    /// Start the agent loop on a background tokio task. Forwards to
+    /// the bound `TicketSystem`. Returns the bound system so callers
+    /// can `stop().await` or read results on the same value.
+    pub fn start(&self) -> Arc<TicketSystem> {
         let sys = self
             .ticket_system
             .upgrade()
-            .expect("Agent::run requires a bound TicketSystem");
-        sys.run()
+            .expect("Agent::start requires a bound TicketSystem");
+        sys.start();
+        sys
     }
 
-    /// Start a background run and wait for the queue to drain.
-    /// Returns a [`TicketResults`] bundle covering every finished
-    /// ticket's result, in creation order. Equivalent to
-    /// `self.run().run_dry().await`.
-    pub async fn run_dry(&self) -> TicketResults {
+    /// Start a background run and wait for every queued ticket to
+    /// finish. Returns the bound system so the caller can read results
+    /// via [`TicketSystem::last_result`] etc.
+    pub async fn finish(&self) -> Arc<TicketSystem> {
         let sys = self
             .ticket_system
             .upgrade()
-            .expect("Agent::run_dry requires a bound TicketSystem");
-        sys.run_dry().await
+            .expect("Agent::finish requires a bound TicketSystem");
+        let _ = sys.finish().await;
+        sys
     }
 }
 
@@ -662,9 +660,10 @@ mod tests {
     }
 
     #[test]
-    fn knowledge_opens_a_fresh_store_when_passed_a_path() {
+    fn knowledge_binds_the_passed_store() {
         let dir = crate::test_util::TempDir::new().unwrap();
-        let agent = Agent::new().knowledge(dir.path());
+        let store = Knowledge::open(dir.path()).unwrap();
+        let agent = Agent::new().knowledge(&store);
         let names: Vec<String> = agent
             .tool_definitions()
             .into_iter()
@@ -673,9 +672,9 @@ mod tests {
         assert!(names.iter().any(|n| n == "knowledge_tool"));
         agent
             .knowledge_or_default()
-            .write_page("from-path", "From path", "# From Path", &[])
+            .write_page("from-store", "From store", "# From Store", &[])
             .unwrap();
-        assert!(dir.path().join("pages").join("from-path.md").exists());
+        assert!(dir.path().join("pages").join("from-store.md").exists());
     }
 
     #[test]

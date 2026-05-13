@@ -14,7 +14,7 @@ Where code lives and the rules that govern placement.
 
 **Each top-level source file is one concern the caller observes directly.**
 
-- `lib.rs` holds public re-exports only. The crate root lands the orchestration surface: `Agent`, `Running`, `TicketSystem`, `Ticket`, `TicketResults`, `Knowledge`, `Policies`, `Stats`, `Event`. Extension types live in `tools::`; validation types live in `schemas::`; event discriminants and `default_logger` live in `event::`. Callers reach into a sub-module when they need anything below the orchestration level.
+- `lib.rs` holds public re-exports only. The crate root lands the orchestration surface: `Agent`, `TicketSystem`, `Ticket`, `Knowledge`, `Policies`, `Stats`, `Event`. Extension types live in `tools::`; validation types live in `schemas::`; event discriminants and `default_logger` live in `event::`. Callers reach into a sub-module when they need anything below the orchestration level.
 - `event.rs` defines `Event`, `EventKind`, `PolicyKind`, `ToolFailureKind`, `CompactReason`, and `default_logger`.
 - The `agents/`, `prompts/`, `providers/`, `schemas/`, and `tools/` modules each own their domain. The `agents/` and `tools/` modules also re-export their headline types so `use agentwerk::agents::{Agent, TicketSystem}` and `use agentwerk::tools::BashTool` work without descending into leaf files.
 

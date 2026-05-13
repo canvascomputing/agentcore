@@ -103,8 +103,8 @@ async fn finds_string_buried_deep_in_line() -> std::result::Result<(), Box<dyn s
          Answer with the file path.",
     ));
 
-    let results = tickets.run_dry().await;
-    common::print_result(&results, tickets.stats());
+    let results = tickets.finish().await;
+    common::print_result(results, tickets.stats());
 
     let recorded = calls.lock().unwrap().clone();
 
@@ -159,7 +159,7 @@ async fn finds_string_buried_deep_in_line() -> std::result::Result<(), Box<dyn s
     }
 
     // The agent's final answer should name config.rs.
-    let answer = results.last().unwrap_or_default();
+    let answer = results.last_result().unwrap_or_default();
     assert!(
         answer.contains("config.rs"),
         "agent should report config.rs; got: {answer:?}"
@@ -242,8 +242,8 @@ async fn reads_column_slice_after_grep_locates_needle(
          entire line). Report the file name.",
     ));
 
-    let results = tickets.run_dry().await;
-    common::print_result(&results, tickets.stats());
+    let results = tickets.finish().await;
+    common::print_result(results, tickets.stats());
 
     let recorded = calls.lock().unwrap().clone();
 
@@ -274,7 +274,7 @@ async fn reads_column_slice_after_grep_locates_needle(
     );
 
     // The agent's final answer should name bundle.min.js.
-    let answer = results.last().unwrap_or_default();
+    let answer = results.last_result().unwrap_or_default();
     assert!(
         answer.contains("bundle.min.js"),
         "agent should report bundle.min.js; got: {answer:?}"

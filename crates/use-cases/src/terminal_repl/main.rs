@@ -1,6 +1,6 @@
 //! Interactive terminal chat. One `TicketSystem` + `Agent` + `Knowledge`
 //! lives for the whole session; each input line enqueues a ticket and
-//! runs `run_dry` once. The agent has `knowledge(...)` bound, so durable
+//! runs `finish` once. The agent has `knowledge(...)` bound, so durable
 //! facts the model writes via `knowledge_tool` survive across turns and
 //! across process restarts (the store lives at `./.agentwerk/`).
 //! The model's response streams to stdout via
@@ -53,7 +53,6 @@ async fn main() {
 
     let user_prompt = format!("\n{}you ›{} ", style.user, style.reset);
 
-    let cancel = Arc::new(AtomicBool::new(false));
     let event_style = style.clone();
     // `midstream` tracks whether the last byte written was streamed
     // model text (no trailing newline). Stderr event lines consult it
@@ -65,7 +64,7 @@ async fn main() {
         Arc::new(move |e: Event| print_event(&e, &event_style, test_window, &handler_midstream));
 
     let tickets = TicketSystem::new();
-    tickets.interrupt_signal(Arc::clone(&cancel)).max_steps(40);
+    tickets.max_steps(40);
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let knowledge_dir = cwd.join(".agentwerk");
@@ -128,15 +127,14 @@ async fn main() {
         // "agent › " left stdout mid-line; mark so the first event
         // breaks out before its own content.
         midstream.store(true, Ordering::Relaxed);
-        cancel.store(false, Ordering::Relaxed);
         tickets.task(line);
 
-        let run_fut = tickets.run_dry();
+        let run_fut = tickets.finish();
         tokio::pin!(run_fut);
         let cancelled = tokio::select! {
             _ = &mut run_fut => false,
             _ = tokio::signal::ctrl_c() => {
-                cancel.store(true, Ordering::Relaxed);
+                tickets.cancel();
                 if midstream.swap(false, Ordering::Relaxed) {
                     eprintln!();
                 }

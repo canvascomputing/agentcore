@@ -4,7 +4,7 @@
 //! subrange. Workers share the labelled queue, call the `python` tool
 //! for an exact integer, and finish via `write_result_tool` with a
 //! schema-validated `{"idx", "partial_sum"}`. The driver aggregates
-//! after `run_dry` returns and verifies the total against the
+//! after `finish` returns and verifies the total against the
 //! closed-form `N(N+1)(2N+1)/6`.
 //!
 //! Usage: divide-and-conquer [OPTIONS] [N]
@@ -67,7 +67,7 @@ async fn main() {
     });
 
     let started = Instant::now();
-    tickets.run_dry().await;
+    tickets.finish().await;
     let elapsed = started.elapsed().as_secs_f64();
 
     aggregate_and_report(&tickets, &partitions, args.n, elapsed, &style);

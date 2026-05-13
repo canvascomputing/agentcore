@@ -749,7 +749,7 @@ mod tests {
             tickets.task("go");
         }
 
-        let _ = tickets.run_dry().await;
+        let _ = tickets.finish().await;
         let events = collected.lock().unwrap().clone();
         let settled = tickets.first();
         (events, provider, settled)
@@ -969,7 +969,7 @@ mod tests {
         tickets.agent(agent);
         tickets.task("go");
 
-        let run_fut = tickets.run_dry();
+        let run_fut = tickets.finish();
         let check_fut = async {
             for _ in 0..20 {
                 tokio::task::yield_now().await;
@@ -1201,10 +1201,8 @@ mod tests {
             let c = Arc::clone(&collected);
             Arc::new(move |e| c.lock().unwrap().push(e))
         };
-        let cancel = Arc::new(AtomicBool::new(false));
         let tickets = TicketSystem::new();
         tickets
-            .interrupt_signal(Arc::clone(&cancel))
             .max_request_retries(3)
             .request_retry_delay(Duration::from_secs(60));
         let agent = Agent::new()
@@ -1216,13 +1214,14 @@ mod tests {
         tickets.agent(agent);
         tickets.task("go");
 
-        let run_fut = tickets.run_dry();
+        let run_fut = tickets.finish();
+        let cancel_handle = Arc::clone(&tickets);
         let cancel_fut = async {
             // Let the loop hit the inter-attempt sleep.
             for _ in 0..20 {
                 tokio::task::yield_now().await;
             }
-            cancel.store(true, Ordering::Relaxed);
+            cancel_handle.cancel();
             // wait_for_signal polls on a 50ms cadence; advance past it.
             tokio::time::advance(Duration::from_millis(100)).await;
             for _ in 0..20 {
@@ -1285,7 +1284,7 @@ mod tests {
         );
         tickets.task("first");
         tickets.task("second");
-        let _ = tickets.run_dry().await;
+        let _ = tickets.finish().await;
 
         let calls = provider.received();
         assert_eq!(calls.len(), 2);
@@ -1330,7 +1329,7 @@ mod tests {
         );
         tickets.task("first");
         tickets.task("second");
-        let _ = tickets.run_dry().await;
+        let _ = tickets.finish().await;
 
         let prompts = provider.received_system_prompts();
         assert_eq!(prompts.len(), 3);
@@ -1386,7 +1385,7 @@ mod tests {
                 .knowledge(&store),
         );
         tickets.task("hi");
-        let _ = tickets.run_dry().await;
+        let _ = tickets.finish().await;
 
         let prompts = provider.received_system_prompts();
         assert_eq!(prompts.len(), 2);
@@ -1420,11 +1419,9 @@ mod tests {
         let knowledge_dir = crate::test_util::TempDir::new().unwrap();
         let store = Knowledge::open(knowledge_dir.path()).unwrap();
 
-        let cancel = Arc::new(AtomicBool::new(false));
         let tickets = TicketSystem::new();
         tickets
             .dir(results_dir.path().to_path_buf())
-            .interrupt_signal(Arc::clone(&cancel))
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1))
             .max_time(Duration::from_millis(500));
@@ -1449,14 +1446,12 @@ mod tests {
         );
 
         tickets.task_labeled("alice work", "a");
-        let _ = tickets.run_dry().await;
+        let _ = tickets.finish().await;
         assert!(store.index().contains("alice-note"));
 
-        // run_dry flips the cancel flag when the queue settles. Reset before
-        // the second call so the supervisor doesn't bail.
-        cancel.store(false, Ordering::Relaxed);
+        // finish() resets the signal at entry, so no manual reset needed.
         tickets.task_labeled("bob work", "b");
-        let _ = tickets.run_dry().await;
+        let _ = tickets.finish().await;
 
         let bob_prompts = p_b.received_system_prompts();
         assert_eq!(bob_prompts.len(), 1, "bob processed exactly one ticket");
@@ -1517,7 +1512,7 @@ mod tests {
         );
         tickets.task("first");
         tickets.task("second");
-        let _ = tickets.run_dry().await;
+        let _ = tickets.finish().await;
 
         let prompts = provider.received_system_prompts();
         assert_eq!(prompts.len(), 4);
@@ -1636,7 +1631,7 @@ mod tests {
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1));
 
-        let run_handle = tickets.run();
+        let run_handle = tickets.start();
 
         // Let the first scan run (no agents registered yet).
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -1662,15 +1657,13 @@ mod tests {
                 break;
             }
             if tokio::time::Instant::now() > deadline {
-                run_handle.stop();
-                run_handle.join().await;
+                run_handle.stop().await;
                 panic!("late-added agent did not finish ticket within 5s");
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
 
-        run_handle.stop();
-        run_handle.join().await;
+        run_handle.stop().await;
 
         assert_eq!(provider.requests(), 1);
     }
@@ -1684,7 +1677,7 @@ mod tests {
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1));
 
-        let run_handle = tickets.run();
+        let run_handle = tickets.start();
 
         tokio::time::sleep(Duration::from_millis(150)).await;
 
@@ -1709,26 +1702,24 @@ mod tests {
                 break;
             }
             if tokio::time::Instant::now() > deadline {
-                run_handle.stop();
-                run_handle.join().await;
+                run_handle.stop().await;
                 panic!("late-added agent did not finish ticket within 5s");
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
 
         // The run must join the late-spawned task on shutdown rather than
-        // orphan it. If it did orphan it, run() would still return on signal
+        // orphan it. If it did orphan it, start() would still return on signal
         // flip, but the late task would dangle.
-        run_handle.stop();
-        tokio::time::timeout(Duration::from_secs(2), run_handle.join())
+        tokio::time::timeout(Duration::from_secs(2), run_handle.stop())
             .await
-            .expect("run() did not return within 2s of signal flip");
+            .expect("start() did not return within 2s of signal flip");
     }
 
-    // ---- Running tests ----
+    // ---- Run lifecycle tests ----
 
     #[tokio::test]
-    async fn running_run_dry_drains_late_added_tickets() {
+    async fn finish_drains_late_added_tickets() {
         let results_dir = crate::test_util::TempDir::new().unwrap();
         let provider = MockProvider::with_results(vec![
             Ok(write_result_response("a-done")),
@@ -1748,22 +1739,22 @@ mod tests {
                 .tool(ManageTicketsTool),
         );
 
-        let handle = tickets.run();
+        tickets.start();
 
         // Queue tickets after the run is in flight.
         tickets.task("a");
         tickets.task("b");
 
-        let results = tokio::time::timeout(Duration::from_secs(5), handle.run_dry())
+        let results = tokio::time::timeout(Duration::from_secs(5), tickets.finish())
             .await
-            .expect("run_dry did not finish within 5s");
+            .expect("finish did not finish within 5s");
 
-        assert_eq!(results.len(), 2);
-        assert_eq!(results.last().as_deref(), Some("b-done"));
+        assert_eq!(results.all_results().len(), 2);
+        assert_eq!(results.last_result().as_deref(), Some("b-done"));
     }
 
     #[tokio::test]
-    async fn running_signal_returns_shared_arc() {
+    async fn cancel_stops_a_running_workshop() {
         let results_dir = crate::test_util::TempDir::new().unwrap();
         let tickets = TicketSystem::new();
         tickets
@@ -1771,17 +1762,16 @@ mod tests {
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1));
 
-        let handle = tickets.run();
-        let signal = handle.signal();
-        signal.store(true, Ordering::Relaxed);
+        tickets.start();
+        tickets.cancel();
 
-        tokio::time::timeout(Duration::from_secs(2), handle.join())
+        tokio::time::timeout(Duration::from_secs(2), tickets.stop())
             .await
-            .expect("run did not exit within 2s of external signal flip");
+            .expect("run did not exit within 2s of cancel()");
     }
 
     #[tokio::test]
-    async fn running_stop_is_abrupt() {
+    async fn stop_is_abrupt() {
         let results_dir = crate::test_util::TempDir::new().unwrap();
         let tickets = TicketSystem::new();
         tickets
@@ -1789,16 +1779,15 @@ mod tests {
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1));
 
-        let handle = tickets.run();
-        handle.stop();
+        tickets.start();
 
-        tokio::time::timeout(Duration::from_secs(2), handle.join())
+        tokio::time::timeout(Duration::from_secs(2), tickets.stop())
             .await
             .expect("run did not exit within 2s of stop()");
     }
 
     #[tokio::test]
-    async fn run_dry_after_run_resets_signal() {
+    async fn finish_after_run_resets_signal() {
         let results_dir = crate::test_util::TempDir::new().unwrap();
         let provider = MockProvider::with_results(vec![
             Ok(write_result_response("first")),
@@ -1818,22 +1807,22 @@ mod tests {
                 .tool(ManageTicketsTool),
         );
 
-        // First run: spawn, drain. Leaves the interrupt signal flipped.
+        // First run: spawn, finish. Leaves the interrupt signal flipped.
         tickets.task("first");
-        let first = tickets.run().run_dry().await;
-        assert_eq!(first.last().as_deref(), Some("first"));
+        tickets.finish().await;
+        assert_eq!(tickets.last_result().as_deref(), Some("first"));
 
         // Second run must reset the signal at entry; otherwise the run
         // exits before claiming the new ticket.
         tickets.task("second");
-        let second = tokio::time::timeout(Duration::from_secs(5), tickets.run_dry())
+        tokio::time::timeout(Duration::from_secs(5), tickets.finish())
             .await
-            .expect("second run_dry did not finish within 5s");
-        assert_eq!(second.last().as_deref(), Some("second"));
+            .expect("second finish did not finish within 5s");
+        assert_eq!(tickets.last_result().as_deref(), Some("second"));
     }
 
     #[tokio::test]
-    async fn agent_run_dry_forwards_to_bound_system() {
+    async fn agent_finish_forwards_to_bound_system() {
         let results_dir = crate::test_util::TempDir::new().unwrap();
         let provider = MockProvider::with_results(vec![Ok(write_result_response("forwarded"))]);
         let tickets = TicketSystem::new();
@@ -1851,10 +1840,10 @@ mod tests {
         );
 
         agent.task("hello");
-        let results = tokio::time::timeout(Duration::from_secs(5), agent.run_dry())
+        let sys = tokio::time::timeout(Duration::from_secs(5), agent.finish())
             .await
-            .expect("agent.run_dry did not finish within 5s");
-        assert_eq!(results.last().as_deref(), Some("forwarded"));
+            .expect("agent.finish did not finish within 5s");
+        assert_eq!(sys.last_result().as_deref(), Some("forwarded"));
     }
 
     // =====================================================================

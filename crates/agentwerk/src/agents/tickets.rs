@@ -2,7 +2,7 @@
 //! ticket store, the registered agents, the active policies, the
 //! interrupt signal, and the run-time [`Stats`] object.
 //! `bind_agent` stamps the ticket Arc, policies, stats, and signal onto
-//! each agent at add time; `run` / `run_dry` then drive the bound
+//! each agent at add time; `run` / `finish` then drive the bound
 //! agents.
 
 use std::collections::HashMap;
@@ -10,9 +10,10 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
+use tokio::task::JoinHandle;
 
 use crate::providers::{AsUserMessage, Message};
 
@@ -47,44 +48,6 @@ pub struct Ticket {
     /// Back-reference to another ticket, or `None` when the ticket
     /// has no parent. Caller-settable via [`Ticket::parent`].
     pub(crate) parent: Option<String>,
-}
-
-/// Run output. Wraps the finished `Ticket`s and exposes string-shaped
-/// accessors (`first`, `last`, `all`) for the common case of reading
-/// final answers; the typed records remain reachable via `tickets`.
-#[derive(Debug, Clone, Default)]
-pub struct TicketResults(Vec<Ticket>);
-
-impl TicketResults {
-    /// First ticket's result rendered as a String.
-    pub fn first(&self) -> Option<String> {
-        self.0.first().and_then(Ticket::result_string)
-    }
-
-    /// Last ticket's result rendered as a String.
-    pub fn last(&self) -> Option<String> {
-        self.0.last().and_then(Ticket::result_string)
-    }
-
-    /// Every ticket's result rendered as a String, in creation order.
-    pub fn all(&self) -> Vec<String> {
-        self.0.iter().filter_map(Ticket::result_string).collect()
-    }
-
-    /// Borrowed view of the finished `Ticket` records.
-    pub fn tickets(&self) -> &[Ticket] {
-        &self.0
-    }
-
-    /// Number of finished tickets carried.
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    /// True when no tickets are carried.
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
 }
 
 impl Ticket {
@@ -287,10 +250,11 @@ impl fmt::Display for TicketError {
 impl std::error::Error for TicketError {}
 
 /// Public ticket system. Owns the shared ticket store, the registered
-/// agents, the policies, the interrupt signal, and the run stats.
-/// Always lives behind `Arc<TicketSystem>` — `new()` returns
-/// `Arc<Self>` so each bound `Agent` can hold a `Weak<TicketSystem>`
-/// without creating an Arc cycle through the system's `Vec<Agent>`.
+/// agents, the policies, the interrupt signal, the run stats, and the
+/// background task driving the agent loop. Always lives behind
+/// `Arc<TicketSystem>` — `new()` returns `Arc<Self>` so each bound
+/// `Agent` can hold a `Weak<TicketSystem>` without creating an Arc
+/// cycle through the system's `Vec<Agent>`.
 pub struct TicketSystem {
     weak_self: Weak<TicketSystem>,
     pub(crate) tickets: Mutex<HashMap<String, Ticket>>,
@@ -300,6 +264,7 @@ pub struct TicketSystem {
     pub(crate) stats: Stats,
     dir: Mutex<Option<PathBuf>>,
     tickets_log_lock: Mutex<()>,
+    join_handle: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl TicketSystem {
@@ -317,10 +282,11 @@ impl TicketSystem {
             stats: Stats::new(),
             dir: Mutex::new(None),
             tickets_log_lock: Mutex::new(()),
+            join_handle: Mutex::new(None),
         })
     }
 
-    /// Run-time counters. Read after `run` / `run_dry` returns.
+    /// Run-time counters. Read after `run` / `finish` returns.
     pub fn stats(&self) -> &Stats {
         &self.stats
     }
@@ -362,7 +328,7 @@ impl TicketSystem {
         self
     }
 
-    /// Maximum elapsed duration `run_dry` will wait before tripping
+    /// Maximum elapsed duration `finish` will wait before tripping
     /// the interrupt signal and returning. Hitting the cap is a
     /// graceful stop, not a `PolicyViolated` event.
     pub fn max_time(&self, d: Duration) -> &Self {
@@ -370,17 +336,10 @@ impl TicketSystem {
         self
     }
 
-    /// Override the cancel signal. Useful when a caller wants to share
-    /// one `Arc<AtomicBool>` across multiple subsystems.
-    pub fn interrupt_signal(&self, signal: Arc<AtomicBool>) -> &Self {
-        *self.interrupt_signal.lock().unwrap() = signal;
-        self
-    }
-
-    /// Flip the system's interrupt signal on the first SIGINT. Spawns a
-    /// background tokio task that listens for ctrl-c once and exits.
-    /// Callers that need escalation (e.g. force-exit on a second press)
-    /// install their own listener and wire it via [`Self::interrupt_signal`].
+    /// Flip the cancel signal on the first SIGINT. Spawns a background
+    /// tokio task that listens for ctrl-c once and exits. Callers that
+    /// need escalation (e.g. force-exit on a second press) install
+    /// their own listener and call [`Self::cancel`] from it.
     pub fn cancel_on_ctrl_c(&self) -> &Self {
         let signal = Arc::clone(&self.interrupt_signal.lock().unwrap());
         tokio::spawn(async move {
@@ -782,7 +741,7 @@ impl TicketSystem {
     /// agents list. Returns the wired agent for chaining (`.task(...)`
     /// etc.).
     ///
-    /// May be called before or after `run()` / `run_dry()`. When called
+    /// May be called before or after `run()` / `finish()`. When called
     /// after `run()`, the new agent starts polling for tickets within
     /// roughly one `IDLE_POLL_INTERVAL` (~100 ms).
     pub fn agent(&self, mut agent: Agent) -> Agent {
@@ -804,52 +763,118 @@ impl TicketSystem {
         self
     }
 
-    /// Start the agent loop on a background tokio task and return a
-    /// [`Running`] handle. The handle owns the interrupt signal;
-    /// tickets queued afterwards are picked up within
-    /// ~`IDLE_POLL_INTERVAL`. Finish with [`Running::run_dry`] to wait
-    /// for the queue to drain, or [`Running::stop`] +
-    /// [`Running::join`] for an abrupt cancel.
-    ///
-    /// [`Running`]: super::running::Running
-    /// [`Running::run_dry`]: super::running::Running::run_dry
-    /// [`Running::stop`]: super::running::Running::stop
-    /// [`Running::join`]: super::running::Running::join
-    pub fn run(&self) -> super::running::Running {
+    /// Start the agent loop on a background tokio task. Tickets queued
+    /// afterwards are picked up within ~`IDLE_POLL_INTERVAL`. Pair with
+    /// [`Self::finish`] to wait for the queue to empty, or with
+    /// [`Self::stop`] to cancel and join.
+    pub fn start(&self) -> &Self {
         let signal = Arc::clone(&self.interrupt_signal.lock().unwrap());
-        // Reset so a system can be re-run after a previous run_dry left
-        // the flag set.
+        // Reset so a system can be re-started after a previous finish
+        // left the flag set.
         signal.store(false, Ordering::Relaxed);
-        let system = self
+        let supervisor = self
             .weak_self
             .upgrade()
-            .expect("TicketSystem dropped during run");
-        let supervisor_system = Arc::clone(&system);
+            .expect("TicketSystem dropped during start");
         let join = tokio::spawn(async move {
-            run_main_loop(&supervisor_system).await;
-            supervisor_system.stats.mark_finished(now_millis());
+            run_main_loop(&supervisor).await;
+            supervisor.stats.mark_finished(now_millis());
         });
-        super::running::Running::new(system, signal, join)
+        *self.join_handle.lock().unwrap() = Some(join);
+        self
     }
 
-    /// Start a background run and wait for the queue to drain.
-    /// Returns a [`TicketResults`] bundle exposing `first` / `last` /
-    /// `all` / `tickets` over every finished ticket, in creation order.
-    /// Equivalent to `self.run().run_dry().await`.
-    pub fn run_dry(&self) -> impl std::future::Future<Output = TicketResults> + Send {
-        self.run().run_dry()
+    /// Process every queued ticket, then return. Starts a run if none
+    /// is in flight; otherwise watches the in-flight one. Polls every
+    /// 20 ms; exits when `pending_count == 0`, a policy trips, or
+    /// `max_time` elapses. Returns `&self` so callers can chain
+    /// [`Self::last_result`], [`Self::all_results`], or
+    /// [`Self::tickets`] without rebinding.
+    pub async fn finish(&self) -> &Self {
+        if self.join_handle.lock().unwrap().is_none() {
+            self.start();
+        }
+        let started = Instant::now();
+        let policies = self.policies();
+        let signal = Arc::clone(&self.interrupt_signal.lock().unwrap());
+        loop {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            if signal.load(Ordering::Relaxed) {
+                break;
+            }
+            if policy_violated(&policies, &self.stats) {
+                signal.store(true, Ordering::Relaxed);
+                break;
+            }
+            if let Some(limit) = policies.max_time {
+                if started.elapsed() >= limit {
+                    signal.store(true, Ordering::Relaxed);
+                    break;
+                }
+            }
+            if pending_count(self) == 0 {
+                signal.store(true, Ordering::Relaxed);
+                break;
+            }
+        }
+        self.take_join_handle().await;
+        self.stats.mark_finished(now_millis());
+        self
     }
 
-    /// Every `Done` ticket carrying a recorded result, in ticket
-    /// creation order. Backing helper for `Running::run_dry`.
-    pub(crate) fn collect_results(&self) -> TicketResults {
-        let done: Vec<Ticket> = self.filter(|t| t.status == Status::Done && t.result.is_some());
-        TicketResults(done)
+    /// Flip the cancel signal. Sync, so it composes with ctrl-c
+    /// handlers, drop guards, and other sync callers. The background
+    /// task notices on its next poll and exits gracefully. Pair with
+    /// [`Self::stop`] from async code if you also want to wait for the
+    /// task to exit.
+    pub fn cancel(&self) {
+        self.interrupt_signal
+            .lock()
+            .unwrap()
+            .store(true, Ordering::Relaxed);
+    }
+
+    /// Cancel and wait for the background task to exit. The run
+    /// finishes its in-flight ticket; queued tickets are abandoned.
+    /// No-op when no run is in flight.
+    pub async fn stop(&self) {
+        self.cancel();
+        self.take_join_handle().await;
+    }
+
+    async fn take_join_handle(&self) {
+        let handle = self.join_handle.lock().unwrap().take();
+        if let Some(h) = handle {
+            let _ = h.await;
+        }
+    }
+
+    /// True once cancellation has been requested. The background task
+    /// finishes its in-flight ticket and exits shortly after.
+    pub fn is_cancelled(&self) -> bool {
+        self.interrupt_signal
+            .lock()
+            .unwrap()
+            .load(Ordering::Relaxed)
+    }
+
+    /// Most recent finished ticket's result rendered as a String.
+    pub fn last_result(&self) -> Option<String> {
+        self.all_results().into_iter().next_back()
+    }
+
+    /// Every finished ticket's result rendered as a String, in creation
+    /// order.
+    pub fn all_results(&self) -> Vec<String> {
+        self.filter(|t| t.status == Status::Done && t.result.is_some())
+            .iter()
+            .filter_map(Ticket::result_string)
+            .collect()
     }
 }
 
 /// Whether the run-wide policies have been exceeded by the current
-/// stats reading. Used by the `run_dry` watcher and by the per-agent
+/// stats reading. Used by the `finish` watcher and by the per-agent
 /// loop's pre-claim check.
 pub(crate) fn policy_violated(policies: &Policies, stats: &Stats) -> bool {
     if let Some(limit) = policies.max_steps {
@@ -1151,75 +1176,39 @@ mod tests {
     }
 
     #[test]
-    fn collect_results_returns_results_in_creation_order() {
+    fn all_results_returns_done_payloads_in_creation_order() {
         let sys = TicketSystem::new();
         sys.task("a").task("b").task("c");
         attach_done_result(&sys, "TICKET-1", "first");
         attach_done_result(&sys, "TICKET-3", "third");
-        let results = sys.collect_results();
-        let tickets = results.tickets();
-        assert_eq!(tickets.len(), 2);
-        assert_eq!(tickets[0].key(), "TICKET-1");
-        assert_eq!(tickets[0].result_string().as_deref(), Some("first"));
-        assert_eq!(tickets[1].key(), "TICKET-3");
-        assert_eq!(tickets[1].result_string().as_deref(), Some("third"));
+        assert_eq!(sys.all_results(), vec!["first", "third"]);
     }
 
     #[test]
-    fn tickets_returns_full_ticket_records_in_creation_order() {
+    fn last_result_returns_last_done_payload() {
         let sys = TicketSystem::new();
         sys.task("a").task("b");
         attach_done_result(&sys, "TICKET-2", "second");
         attach_done_result(&sys, "TICKET-1", "first");
-        let results = sys.collect_results();
-        let tickets = results.tickets();
-        assert_eq!(tickets.len(), 2);
-        assert_eq!(tickets[0].key(), "TICKET-1");
-        assert_eq!(tickets[1].key(), "TICKET-2");
-        assert_eq!(tickets[0].status(), "done");
-        assert_eq!(tickets[1].status(), "done");
+        assert_eq!(sys.last_result().as_deref(), Some("second"));
     }
 
     #[test]
-    fn last_returns_last_done_tickets_payload_as_string() {
-        let sys = TicketSystem::new();
-        sys.task("a").task("b");
-        attach_done_result(&sys, "TICKET-2", "second");
-        attach_done_result(&sys, "TICKET-1", "first");
-        assert_eq!(sys.collect_results().last().as_deref(), Some("second"));
-    }
-
-    #[test]
-    fn first_returns_first_done_tickets_payload_as_string() {
-        let sys = TicketSystem::new();
-        sys.task("a").task("b");
-        attach_done_result(&sys, "TICKET-2", "second");
-        attach_done_result(&sys, "TICKET-1", "first");
-        assert_eq!(sys.collect_results().first().as_deref(), Some("first"));
-    }
-
-    #[test]
-    fn all_returns_every_payload_in_creation_order() {
+    fn all_results_orders_by_creation_regardless_of_done_order() {
         let sys = TicketSystem::new();
         sys.task("a").task("b").task("c");
         attach_done_result(&sys, "TICKET-3", "third");
         attach_done_result(&sys, "TICKET-1", "first");
         attach_done_result(&sys, "TICKET-2", "second");
-        assert_eq!(
-            sys.collect_results().all(),
-            vec!["first", "second", "third"]
-        );
+        assert_eq!(sys.all_results(), vec!["first", "second", "third"]);
     }
 
     #[test]
-    fn collect_results_is_empty_when_nothing_done() {
+    fn results_are_empty_when_nothing_done() {
         let sys = TicketSystem::new();
         sys.task("pending");
-        let results = sys.collect_results();
-        assert!(results.is_empty());
-        assert!(results.first().is_none());
-        assert!(results.last().is_none());
-        assert!(results.all().is_empty());
+        assert!(sys.last_result().is_none());
+        assert!(sys.all_results().is_empty());
     }
 
     #[test]

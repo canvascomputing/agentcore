@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use agentwerk::providers::{model_from_env, provider_from_env, Provider};
-use agentwerk::{Stats, TicketResults};
+use agentwerk::{Stats, TicketSystem};
 
 pub fn build_provider() -> (Arc<dyn Provider>, String) {
     let provider = provider_from_env().expect("LLM provider required for integration tests");
@@ -14,9 +14,9 @@ pub fn build_provider() -> (Arc<dyn Provider>, String) {
     (provider, model)
 }
 
-pub fn print_result(results: &TicketResults, stats: &Stats) {
+pub fn print_result(tickets: &TicketSystem, stats: &Stats) {
     let json = serde_json::json!({
-        "response": results.last().unwrap_or_default(),
+        "response": tickets.last_result().unwrap_or_default(),
         "steps": stats.steps(),
         "tool_calls": stats.tool_calls(),
         "tokens_in": stats.input_tokens(),

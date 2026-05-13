@@ -41,8 +41,8 @@ async fn replaces_substring_in_place() -> std::result::Result<(), Box<dyn std::e
          Leave the rest of the file untouched.",
     );
 
-    let results = tickets.run_dry().await;
-    common::print_result(&results, tickets.stats());
+    let results = tickets.finish().await;
+    common::print_result(results, tickets.stats());
 
     assert!(
         tickets.stats().tool_calls() >= 1,

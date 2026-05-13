@@ -6,7 +6,7 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 
 **A type earns a `pub use` at `lib.rs` only when it names a concept in the one-sentence description of the crate.**
 
-- The current root: `Agent`, `Running`, `TicketSystem`, `Ticket`, `TicketResults`, `Knowledge`, `Policies`, `Stats`, `Event`.
+- The current root: `Agent`, `TicketSystem`, `Ticket`, `Knowledge`, `Policies`, `Stats`, `Event`.
 - Discriminants, sub-enums, errors, and conversion traits do not earn a root slot. They live in their domain module.
 - Builder parameters and run outputs do earn one when callers name them in their own code.
 - Free functions at the root are forbidden: convert to an associated function or move to the domain module.

@@ -107,15 +107,15 @@ async fn traces_three_hop_call_path() -> std::result::Result<(), Box<dyn std::er
         .schema(schema),
     );
 
-    let results = tickets.run_dry().await;
-    common::print_result(&results, tickets.stats());
+    let results = tickets.finish().await;
+    common::print_result(results, tickets.stats());
 
     assert!(
         tickets.stats().tool_calls() >= 2,
         "tracing a call path requires at least two read-only tool calls"
     );
 
-    let response = results.last().unwrap_or_default();
+    let response = results.last_result().unwrap_or_default();
     let json: serde_json::Value = serde_json::from_str(&response)?;
     let chain = json["call_path"]
         .as_array()

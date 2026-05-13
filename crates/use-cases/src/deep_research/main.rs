@@ -15,7 +15,6 @@
 //!   BRAVE_API_KEY       Required for web search
 //!   ANTHROPIC_API_KEY   (or other provider env vars)
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use agentwerk::event::{Event, EventKind};
@@ -102,17 +101,15 @@ async fn main() {
             .label("researcher_1"),
     );
 
-    // Drive the run manually instead of via `run_dry`. The chain's
+    // Drive the run manually instead of via `finish`. The chain's
     // handover step has a brief window between marking the parent
     // `Done` and inserting the child, during which the queue is
-    // empty; `run_dry` would race against that window and exit
+    // empty; `finish` would race against that window and exit
     // prematurely. Polling for the report ticket directly, with a
     // grace period when the queue settles, is race-free.
-    let running = tickets.run();
-    let signal = running.signal();
-    let outcome = wait_for_outcome(&tickets, &signal).await;
-    running.stop();
-    running.join().await;
+    tickets.start();
+    let outcome = wait_for_outcome(&tickets).await;
+    tickets.stop().await;
 
     print_chain_summary(&tickets);
     print_stats(&tickets);
@@ -172,14 +169,14 @@ enum Outcome {
     Stalled,
 }
 
-async fn wait_for_outcome(tickets: &TicketSystem, signal: &Arc<AtomicBool>) -> Outcome {
+async fn wait_for_outcome(tickets: &TicketSystem) -> Outcome {
     use std::time::Duration;
 
     let report_ticket = || tickets.find(|t| t.has_label("report") && t.status() == "done");
     let pending = || tickets.count(|t| matches!(t.status(), "todo" | "in_progress"));
 
     loop {
-        if signal.load(Ordering::Relaxed) {
+        if tickets.is_cancelled() {
             return Outcome::Cancelled;
         }
         if let Some(ticket) = report_ticket() {
@@ -190,7 +187,7 @@ async fn wait_for_outcome(tickets: &TicketSystem, signal: &Arc<AtomicBool>) -> O
             // between parent-Done and child-Insert. Give it a beat
             // before declaring the chain stalled.
             tokio::time::sleep(Duration::from_millis(250)).await;
-            if signal.load(Ordering::Relaxed) {
+            if tickets.is_cancelled() {
                 return Outcome::Cancelled;
             }
             if let Some(ticket) = report_ticket() {
