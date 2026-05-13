@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use agentwerk::providers::{provider_from_env, ProviderResult};
 use agentwerk::tools::{ReadTicketsTool, WriteHandoverTool};
-use agentwerk::{Agent, Event, EventKind, Schema, TicketSystem, Tool, ToolResult};
+use agentwerk::{Agent, Event, EventKind, Schema, Ticket, TicketSystem, Tool, ToolResult};
 
 const RESEARCHER_1_ROLE: &str = include_str!("prompts/researcher_1.role.md");
 const RESEARCHER_2_ROLE: &str = include_str!("prompts/researcher_2.role.md");
@@ -96,7 +96,11 @@ async fn main() {
         "minLength": 100
     }))
     .expect("starter schema is well-formed");
-    tickets.task_schema_labeled(starter, starter_schema, "researcher_1");
+    tickets.ticket(
+        Ticket::new(starter)
+            .schema(starter_schema)
+            .label("researcher_1"),
+    );
 
     // Drive the run manually instead of via `run_dry`. The chain's
     // handover step has a brief window between marking the parent
@@ -133,8 +137,12 @@ fn print_research_outcome(tickets: &TicketSystem, outcome: &Outcome) {
         }
         Outcome::Cancelled | Outcome::Stalled => {
             let label = match outcome {
-                Outcome::Cancelled => "PARTIAL RESEARCH — run cancelled before report writer finished",
-                Outcome::Stalled => "PARTIAL RESEARCH — chain stalled before report writer finished",
+                Outcome::Cancelled => {
+                    "PARTIAL RESEARCH — run cancelled before report writer finished"
+                }
+                Outcome::Stalled => {
+                    "PARTIAL RESEARCH — chain stalled before report writer finished"
+                }
                 Outcome::Report(_) => unreachable!(),
             };
             eprintln!(" {label}");
@@ -167,8 +175,7 @@ async fn wait_for_outcome(tickets: &TicketSystem, signal: &Arc<AtomicBool>) -> O
     use std::time::Duration;
 
     let report_ticket = || tickets.find(|t| t.has_label("report") && t.status() == "done");
-    let pending =
-        || tickets.count(|t| matches!(t.status(), "todo" | "in_progress"));
+    let pending = || tickets.count(|t| matches!(t.status(), "todo" | "in_progress"));
 
     loop {
         if signal.load(Ordering::Relaxed) {
@@ -228,7 +235,10 @@ fn print_chain_summary(tickets: &TicketSystem) {
 fn print_stats(tickets: &TicketSystem) {
     let stats = tickets.stats();
     eprintln!("\nStats:");
-    eprintln!("  Duration : {:?}", stats.run_duration().unwrap_or_default());
+    eprintln!(
+        "  Duration : {:?}",
+        stats.run_duration().unwrap_or_default()
+    );
     eprintln!("  Work time: {:?}", stats.work_duration());
     eprintln!(
         "  Tickets  : {} done, {} failed ({:.0}%)",

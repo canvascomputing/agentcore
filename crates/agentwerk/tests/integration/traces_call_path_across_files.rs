@@ -8,7 +8,7 @@ use std::fs;
 use super::common;
 
 use agentwerk::tools::{GlobTool, GrepTool, ListDirectoryTool, ReadFileTool};
-use agentwerk::{Agent, Schema, TicketSystem};
+use agentwerk::{Agent, Schema, Ticket, TicketSystem};
 
 #[tokio::test]
 async fn traces_three_hop_call_path() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -94,12 +94,14 @@ async fn traces_three_hop_call_path() -> std::result::Result<(), Box<dyn std::er
         .tool(ListDirectoryTool)
         .tool(ReadFileTool);
     tickets.agent(agent);
-    tickets.task_schema(
-        "Starting from the function `entry`, follow each function call \
-         through the source files and report the full ordered call chain \
-         until you reach a function that does not call any other function \
-         in this project.",
-        schema,
+    tickets.ticket(
+        Ticket::new(
+            "Starting from the function `entry`, follow each function call \
+             through the source files and report the full ordered call chain \
+             until you reach a function that does not call any other function \
+             in this project.",
+        )
+        .schema(schema),
     );
 
     let results = tickets.run_dry().await;

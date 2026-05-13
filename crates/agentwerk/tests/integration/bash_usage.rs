@@ -5,7 +5,7 @@
 use super::common;
 
 use agentwerk::tools::BashTool;
-use agentwerk::{Agent, Schema, TicketSystem};
+use agentwerk::{Agent, Schema, Ticket, TicketSystem};
 
 #[tokio::test]
 async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -48,10 +48,12 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .tool(cat)
         .tool(wc);
     tickets.agent(agent);
-    tickets.task_schema(
-        "List the files in the current directory, read the Cargo.toml file, \
-         and count its lines. Report the result.",
-        schema,
+    tickets.ticket(
+        Ticket::new(
+            "List the files in the current directory, read the Cargo.toml file, \
+             and count its lines. Report the result.",
+        )
+        .schema(schema),
     );
 
     let results = tickets.run_dry().await;

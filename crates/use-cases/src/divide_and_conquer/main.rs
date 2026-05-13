@@ -48,7 +48,7 @@ async fn main() {
             "Compute the partial sum S = sum_{{k={lo}}}^{{{hi}}} k^2.\n\
              lo={lo}\nhi={hi}\nidx={idx}",
         );
-        tickets.task_schema_labeled(body, schema.clone(), "worker");
+        tickets.ticket(Ticket::new(body).schema(schema.clone()).label("worker"));
     }
 
     let event_handler = build_event_handler(args.verbose, style.clone(), partitions.len());

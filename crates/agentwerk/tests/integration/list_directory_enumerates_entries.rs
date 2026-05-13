@@ -7,7 +7,7 @@ use std::fs;
 use super::common;
 
 use agentwerk::tools::ListDirectoryTool;
-use agentwerk::{Agent, Schema, TicketSystem};
+use agentwerk::{Agent, Schema, Ticket, TicketSystem};
 
 #[tokio::test]
 async fn separates_files_and_directories() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -57,9 +57,11 @@ async fn separates_files_and_directories() -> std::result::Result<(), Box<dyn st
         )
         .tool(ListDirectoryTool);
     tickets.agent(agent);
-    tickets.task_schema(
-        "List the top-level entries in the working directory, separating files from directories.",
-        schema,
+    tickets.ticket(
+        Ticket::new(
+            "List the top-level entries in the working directory, separating files from directories.",
+        )
+        .schema(schema),
     );
 
     let results = tickets.run_dry().await;

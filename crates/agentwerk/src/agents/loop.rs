@@ -743,7 +743,7 @@ mod tests {
         tickets.agent(agent);
 
         if let Some(schema) = schema {
-            tickets.task_schema("go", schema);
+            tickets.ticket(Ticket::new("go").schema(schema));
         } else {
             tickets.task("go");
         }

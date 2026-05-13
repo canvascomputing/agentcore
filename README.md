@@ -159,11 +159,7 @@ tickets.ticket(audit);
 | `dir(d)` | Set the directory where knowledge, results, and ticket logs are persisted. |
 | `task(t)` | Submit a task. |
 | `task_labeled(t, l)` | Submit a task tagged with `l` for label-scoped routing. |
-| `task_schema(t, s)` | Submit a task whose result must validate against `s`. |
-| `task_schema_labeled(t, s, l)` | Submit a labeled task with a result schema. |
-| `task_as::<R>(t)` | Submit a task whose result must deserialize into `R`. |
-| `task_as_labeled::<R>(t, l)` | Submit a labeled task whose result must deserialize into `R`. |
-| `ticket(t)` | Submit a caller-built `Ticket`. |
+| `ticket(t)` | Submit a caller-built `Ticket`. Compose schemas, labels, and parent links via `Ticket::new(...).schema(...).label(...)` or `Ticket::new(...).schema_as::<R>()`. |
 
 ### Execution
 
@@ -315,7 +311,7 @@ let agent = Agent::new().knowledge(&store);
 A `Schema` constrains the result an agent must produce for a ticket. A violation triggers a retry until `max_schema_retries` is exhausted.
 
 ```rust
-use agentwerk::Schema;
+use agentwerk::{Schema, Ticket};
 
 let schema = Schema::parse(json!({
     "type": "object",
@@ -323,19 +319,21 @@ let schema = Schema::parse(json!({
     "required": ["title"]
 }))?;
 
-tickets.task_schema("Write a report.", schema);
+tickets.ticket(Ticket::new("Write a report.").schema(schema));
 ```
 
 You can also use Rust types for enforcing schemas:
 
 ```rust
+use agentwerk::Ticket;
+
 #[derive(serde::Deserialize)]
 struct Report {
     title: String,
     sections: Vec<String>,
 }
 
-tickets.task_as::<Report>("Write a report on Rust async runtimes.");
+tickets.ticket(Ticket::new("Write a report on Rust async runtimes.").schema_as::<Report>());
 let results = tickets.run_dry().await;
 
 for ticket in results.tickets() {
