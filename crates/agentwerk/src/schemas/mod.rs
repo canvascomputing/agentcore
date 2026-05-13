@@ -4,12 +4,11 @@
 //! only), `items`, `enum`, `const`, `minimum`, `maximum`,
 //! `minLength`, `maxLength`, `minItems`, `maxItems`.
 //!
-//! The public surface is `Schema::parse` + `Schema::validate` plus
-//! [`format_violations`] — identical to what a real JSON Schema crate
-//! would expose. If we later need `$ref`, `pattern`, `format`,
-//! `oneOf`/`anyOf`/`allOf`, etc., the implementation behind this API
-//! can be swapped for a third-party validator without callers
-//! noticing.
+//! The public surface is `Schema::parse` + `Schema::validate`,
+//! identical to what a real JSON Schema crate would expose. If we
+//! later need `$ref`, `pattern`, `format`, `oneOf`/`anyOf`/`allOf`,
+//! etc., the implementation behind this API can be swapped for a
+//! third-party validator without callers noticing.
 //!
 //! Unsupported keywords are rejected at parse time with a clear
 //! message, not silently ignored — agents get fast feedback that
@@ -173,7 +172,7 @@ impl std::error::Error for SchemaParseError {}
 
 /// Format a slice of violations as a single model-facing error
 /// string — one violation per line, leading with the instance path.
-pub fn format_violations(violations: &[SchemaViolation]) -> String {
+pub(crate) fn format_violations(violations: &[SchemaViolation]) -> String {
     let mut out = String::from("Schema validation failed:\n");
     for v in violations {
         out.push_str("- ");

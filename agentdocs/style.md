@@ -4,12 +4,13 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 
 ## Crate root
 
-**Only headline types live at the crate root.**
+**A type earns a `pub use` at `lib.rs` only when it names a concept in the one-sentence description of the crate.**
 
-- The current root re-exports cover the canonical caller surface: `Agent`, `Runnable`, `TicketSystem`, `Ticket`, `Status`, `Stats`; `Tool`, `ToolContext`, `ToolLike`, `ToolResult`; `Event`, `EventKind`, `PolicyKind`, `ToolFailureKind`, `default_logger`; `Schema`, `SchemaParseError`, `SchemaViolation`, `format_violations`.
-- A new item earns a root slot only when it opens a new dimension of the public API.
+- The current root: `Agent`, `Running`, `TicketSystem`, `Ticket`, `TicketResults`, `Knowledge`, `Policies`, `Stats`, `Event`.
+- Discriminants, sub-enums, errors, and conversion traits do not earn a root slot. They live in their domain module.
+- Builder parameters and run outputs do earn one when callers name them in their own code.
+- Free functions at the root are forbidden: convert to an associated function or move to the domain module.
 - Name collisions at the root are forbidden; `ToolResult` next to `Result` is not acceptable.
-- Every other type lives under its domain module.
 
 ## Where non-root types live
 

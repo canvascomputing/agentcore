@@ -18,9 +18,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use agentwerk::event::{Event, EventKind};
 use agentwerk::providers::{model_from_env, provider_from_env};
-use agentwerk::tools::ManageTicketsTool;
-use agentwerk::{Agent, Event, EventKind, Schema, Ticket, TicketSystem, Tool, ToolResult};
+use agentwerk::schemas::Schema;
+use agentwerk::tools::{ManageTicketsTool, Tool, ToolResult};
+use agentwerk::{Agent, Ticket, TicketSystem};
 use serde_json::{json, Value};
 
 const ROLE: &str = include_str!("prompts/worker.role.md");

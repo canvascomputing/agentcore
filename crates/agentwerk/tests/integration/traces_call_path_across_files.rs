@@ -7,8 +7,9 @@ use std::fs;
 
 use super::common;
 
+use agentwerk::schemas::Schema;
 use agentwerk::tools::{GlobTool, GrepTool, ListDirectoryTool, ReadFileTool};
-use agentwerk::{Agent, Schema, Ticket, TicketSystem};
+use agentwerk::{Agent, Ticket, TicketSystem};
 
 #[tokio::test]
 async fn traces_three_hop_call_path() -> std::result::Result<(), Box<dyn std::error::Error>> {

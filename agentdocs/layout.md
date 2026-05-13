@@ -14,9 +14,9 @@ Where code lives and the rules that govern placement.
 
 **Each top-level source file is one concern the caller observes directly.**
 
-- `lib.rs` holds public re-exports only. The canonical caller surface (`Agent`, `Runnable`, `TicketSystem`, `Ticket`, `Status`, `Stats`, `Tool`, `ToolContext`, `ToolLike`, `ToolResult`, `Event` family, `Schema` family) lands at the crate root so callers do not reach into leaf modules.
-- `event.rs` defines `Event`, `EventKind`, `PolicyKind`, `ToolFailureKind`, and `default_logger`.
-- The `agents/`, `prompts/`, `providers/`, `schemas/`, and `tools/` modules each own their domain. The `agents/` and `tools/` modules also re-export their headline types so `use agentwerk::agents::{Agent, Runnable, TicketSystem}` and `use agentwerk::tools::BashTool` work without descending into leaf files.
+- `lib.rs` holds public re-exports only. The crate root lands the orchestration surface: `Agent`, `Running`, `TicketSystem`, `Ticket`, `TicketResults`, `Knowledge`, `Policies`, `Stats`, `Event`. Extension types live in `tools::`; validation types live in `schemas::`; event discriminants and `default_logger` live in `event::`. Callers reach into a sub-module when they need anything below the orchestration level.
+- `event.rs` defines `Event`, `EventKind`, `PolicyKind`, `ToolFailureKind`, `CompactReason`, and `default_logger`.
+- The `agents/`, `prompts/`, `providers/`, `schemas/`, and `tools/` modules each own their domain. The `agents/` and `tools/` modules also re-export their headline types so `use agentwerk::agents::{Agent, TicketSystem}` and `use agentwerk::tools::BashTool` work without descending into leaf files.
 
 ## The `agents/` module
 
@@ -57,7 +57,7 @@ Where code lives and the rules that govern placement.
 **Composable prompt assembly and JSON-Schema validation.**
 
 - `prompts/builder.rs` and `prompts/section.rs` hold `PromptBuilder` and `Section`, which assemble role/context blocks.
-- `schemas/mod.rs` holds `Schema`, `SchemaParseError`, `SchemaViolation`, and `format_violations`.
+- `schemas/mod.rs` holds `Schema`, `SchemaParseError`, and `SchemaViolation`.
 
 ## Tests
 

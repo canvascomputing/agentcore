@@ -263,7 +263,7 @@ Give agents access to tools helping them to solve a given task. Each tool expose
 Define custom tools for specific needs. Each tool declares a JSON-Schema for its inputs:
 
 ```rust
-use agentwerk::{Tool, ToolResult};
+use agentwerk::tools::{Tool, ToolResult};
 use serde_json::json;
 
 let greet = Tool::new("greet", "Say hello")
@@ -290,10 +290,7 @@ Each entry is stored as a markdown page on disk; a compact index of one-line sum
 ```rust
 use agentwerk::Knowledge;
 
-// Override default knowledge path:
-let agent = Agent::new().knowledge("./notes");
-
-// Or share one store across multiple agents:
+// Open a store and share it across agents:
 let store = Knowledge::open("./.agentwerk")?;
 let alice = Agent::new().knowledge(&store);
 let bob = Agent::new().knowledge(&store);
@@ -305,14 +302,15 @@ let agent = Agent::new().knowledge(&store);
 
 | Method | Description |
 |--------|-------------|
-| `knowledge(into)` | Set the knowledge store path. |
+| `knowledge(&store)` | Bind a shared knowledge store to the agent. |
 
 ## Schemas
 
 A `Schema` constrains the result an agent must produce for a ticket. A violation triggers a retry until `max_schema_retries` is exhausted.
 
 ```rust
-use agentwerk::{Schema, Ticket};
+use agentwerk::schemas::Schema;
+use agentwerk::Ticket;
 
 let schema = Schema::parse(json!({
     "type": "object",
@@ -349,7 +347,7 @@ Events report everything that happens while your agents work and give you deep i
 
 ```rust
 use std::sync::Arc;
-use agentwerk::{Event, EventKind};
+use agentwerk::event::{Event, EventKind};
 
 let agent = Agent::new()
     .event_handler(Arc::new(|event: Event| {

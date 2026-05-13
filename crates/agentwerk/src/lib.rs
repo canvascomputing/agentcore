@@ -10,9 +10,19 @@ pub mod tools;
 #[cfg(test)]
 pub(crate) mod test_util;
 
-pub use agents::{
-    Agent, IntoKnowledge, Knowledge, Running, Stats, Status, Ticket, TicketResults, TicketSystem,
-};
-pub use event::{default_logger, Event, EventKind, PolicyKind, ToolFailureKind};
-pub use schemas::{format_violations, Schema, SchemaParseError, SchemaViolation};
-pub use tools::{KnowledgeTool, Tool, ToolContext, ToolLike, ToolResult};
+// Builder, orchestrator, run handle
+pub use agents::Agent;
+pub use agents::Running;
+pub use agents::TicketSystem;
+
+// Tickets and results
+pub use agents::Ticket;
+pub use agents::TicketResults;
+
+// Tuning, telemetry, durable state
+pub use agents::Knowledge;
+pub use agents::Policies;
+pub use agents::Stats;
+
+// Observation
+pub use event::Event;

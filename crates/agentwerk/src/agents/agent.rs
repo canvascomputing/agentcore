@@ -17,7 +17,7 @@ use crate::prompts::{default_context, PromptBuilder, Section};
 use crate::providers::{Provider, ProviderToolDefinition};
 use crate::tools::{KnowledgeTool, ToolLike, ToolRegistry, WriteResultTool};
 
-use super::knowledge::{IntoKnowledge, Knowledge};
+use super::knowledge::Knowledge;
 
 use super::policy::Policies;
 use super::stats::Stats;
@@ -210,21 +210,19 @@ impl Agent {
         self
     }
 
-    /// Knowledge store the agent uses for its long-term memory. Accepts
-    /// either an `&Arc<Knowledge>` (to share one store across multiple
-    /// agents, the same way `ticket_system(&shared)` shares a queue) or
-    /// a path to a directory the store should be rooted at. Defaults to
-    /// a fresh store rooted at `./.agentwerk` when unset, mirroring how
+    /// Knowledge store the agent uses for its long-term memory. Share
+    /// one store across multiple agents the same way
+    /// `ticket_system(&shared)` shares a queue. Defaults to a fresh
+    /// store rooted at `./.agentwerk` when unset, mirroring how
     /// [`Self::dir`] defaults to the current working directory; the
     /// default store is opened lazily when the agent is bound to a
     /// `TicketSystem`. Registers `KnowledgeTool` on the agent's tool
     /// registry and arranges for the store's index to be injected into
     /// the system prompt under `## Knowledge` at the top of every
-    /// ticket. Panics on IO failure when opening from a path.
-    pub fn knowledge<K: IntoKnowledge>(mut self, store: K) -> Self {
-        let store = store.into_knowledge().expect("open knowledge store");
-        self.tools.register(KnowledgeTool::new(Arc::clone(&store)));
-        self.knowledge = Some(store);
+    /// ticket.
+    pub fn knowledge(mut self, store: &Arc<Knowledge>) -> Self {
+        self.tools.register(KnowledgeTool::new(Arc::clone(store)));
+        self.knowledge = Some(Arc::clone(store));
         self
     }
 

@@ -6,8 +6,9 @@ use std::fs;
 
 use super::common;
 
+use agentwerk::schemas::Schema;
 use agentwerk::tools::ListDirectoryTool;
-use agentwerk::{Agent, Schema, Ticket, TicketSystem};
+use agentwerk::{Agent, Ticket, TicketSystem};
 
 #[tokio::test]
 async fn separates_files_and_directories() -> std::result::Result<(), Box<dyn std::error::Error>> {

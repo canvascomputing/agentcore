@@ -239,41 +239,6 @@ impl Knowledge {
     }
 }
 
-/// What [`Agent::knowledge`](crate::Agent::knowledge) accepts.
-pub trait IntoKnowledge {
-    fn into_knowledge(self) -> io::Result<Arc<Knowledge>>;
-}
-
-impl IntoKnowledge for &Arc<Knowledge> {
-    fn into_knowledge(self) -> io::Result<Arc<Knowledge>> {
-        Ok(Arc::clone(self))
-    }
-}
-
-impl IntoKnowledge for PathBuf {
-    fn into_knowledge(self) -> io::Result<Arc<Knowledge>> {
-        Knowledge::open(self)
-    }
-}
-
-impl IntoKnowledge for &PathBuf {
-    fn into_knowledge(self) -> io::Result<Arc<Knowledge>> {
-        Knowledge::open(self)
-    }
-}
-
-impl IntoKnowledge for &Path {
-    fn into_knowledge(self) -> io::Result<Arc<Knowledge>> {
-        Knowledge::open(self)
-    }
-}
-
-impl IntoKnowledge for &str {
-    fn into_knowledge(self) -> io::Result<Arc<Knowledge>> {
-        Knowledge::open(self)
-    }
-}
-
 // ---- slug validation ----
 
 /// Normalize an arbitrary string into a valid slug: lowercase
@@ -897,26 +862,6 @@ mod tests {
         assert_eq!(entries[0].summary, "Summary one");
         assert_eq!(entries[1].slug, "slug-two");
         assert_eq!(entries[1].summary, "Summary two");
-    }
-
-    #[test]
-    fn into_knowledge_for_arc_ref() {
-        let dir = crate::test_util::TempDir::new().unwrap();
-        let store = Knowledge::open(dir.path()).unwrap();
-        let cloned: Arc<Knowledge> = (&store).into_knowledge().unwrap();
-        assert!(Arc::ptr_eq(&store, &cloned));
-    }
-
-    #[test]
-    fn into_knowledge_for_pathbuf() {
-        let dir = crate::test_util::TempDir::new().unwrap();
-        let _store: Arc<Knowledge> = dir.path().to_path_buf().into_knowledge().unwrap();
-    }
-
-    #[test]
-    fn into_knowledge_for_str() {
-        let dir = crate::test_util::TempDir::new().unwrap();
-        let _store: Arc<Knowledge> = dir.path().to_str().unwrap().into_knowledge().unwrap();
     }
 
     #[test]

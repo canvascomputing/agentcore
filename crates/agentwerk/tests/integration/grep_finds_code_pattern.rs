@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use super::common;
 
-use agentwerk::event::EventKind;
+use agentwerk::event::{default_logger, Event, EventKind};
 use agentwerk::tools::{GlobTool, GrepTool, ListDirectoryTool, ReadFileTool};
-use agentwerk::{default_logger, Agent, Event, TicketSystem};
+use agentwerk::{Agent, TicketSystem};
 
 /// The exact substring the model must locate. Contains regex metachars
 /// (`<`, `>`, `(`, `)`, `,`) so any regex-style escaping by the model

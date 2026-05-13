@@ -11,7 +11,7 @@ pub mod stats;
 pub mod tickets;
 
 pub use agent::Agent;
-pub use knowledge::{IntoKnowledge, Knowledge};
+pub use knowledge::Knowledge;
 pub use policy::Policies;
 pub use running::Running;
 pub use stats::{LoopStats, Stats};

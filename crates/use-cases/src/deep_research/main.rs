@@ -18,9 +18,11 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use agentwerk::event::{Event, EventKind};
 use agentwerk::providers::{provider_from_env, ProviderResult};
-use agentwerk::tools::{ReadTicketsTool, WriteHandoverTool};
-use agentwerk::{Agent, Event, EventKind, Schema, Ticket, TicketSystem, Tool, ToolResult};
+use agentwerk::schemas::Schema;
+use agentwerk::tools::{ReadTicketsTool, Tool, ToolResult, WriteHandoverTool};
+use agentwerk::{Agent, Ticket, TicketSystem};
 
 const RESEARCHER_1_ROLE: &str = include_str!("prompts/researcher_1.role.md");
 const RESEARCHER_2_ROLE: &str = include_str!("prompts/researcher_2.role.md");

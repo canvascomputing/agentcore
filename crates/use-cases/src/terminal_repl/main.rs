@@ -21,8 +21,9 @@ use std::io::{self, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use agentwerk::event::{Event, EventKind};
 use agentwerk::tools::{GlobTool, GrepTool, ListDirectoryTool, ReadFileTool};
-use agentwerk::{Agent, Event, EventKind, Knowledge, TicketSystem};
+use agentwerk::{Agent, Knowledge, TicketSystem};
 
 const ROLE: &str = include_str!("prompts/repl.role.md");
 
