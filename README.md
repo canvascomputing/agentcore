@@ -156,6 +156,7 @@ tickets.ticket(audit);
 | Method | Description |
 |--------|-------------|
 | `agent(agent)` | Register an agent with the system. |
+| `pool(n, build)` | Register `n` agents built by `build(i)`, where `i` is the 0-based worker index. |
 | `dir(d)` | Set the directory where knowledge, results, and ticket logs are persisted. |
 | `task(t)` | Submit a task. |
 | `task_labeled(t, l)` | Submit a task tagged with `l` for label-scoped routing. |

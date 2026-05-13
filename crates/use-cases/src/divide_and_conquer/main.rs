@@ -53,19 +53,17 @@ async fn main() {
     }
 
     let event_handler = build_event_handler(args.verbose, style.clone(), partitions.len());
-    for w in 0..workers {
-        tickets.agent(
-            Agent::new()
-                .name(format!("worker_{w}"))
-                .provider(Arc::clone(&provider))
-                .model(&model)
-                .role(ROLE.trim())
-                .label("worker")
-                .tool(python_tool())
-                .tool(ManageTicketsTool)
-                .event_handler(Arc::clone(&event_handler)),
-        );
-    }
+    tickets.pool(workers, |w| {
+        Agent::new()
+            .name(format!("worker_{w}"))
+            .provider(Arc::clone(&provider))
+            .model(&model)
+            .role(ROLE.trim())
+            .label("worker")
+            .tool(python_tool())
+            .tool(ManageTicketsTool)
+            .event_handler(Arc::clone(&event_handler))
+    });
 
     let started = Instant::now();
     tickets.run_dry().await;

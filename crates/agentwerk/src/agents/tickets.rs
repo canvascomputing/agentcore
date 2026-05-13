@@ -775,6 +775,20 @@ impl TicketSystem {
         agent
     }
 
+    /// Bind `n` agents built by `build`. `build(i)` receives the worker
+    /// index (0-based) so the caller can suffix names or pick
+    /// per-worker resources without writing the loop themselves.
+    pub fn pool<F>(&self, n: usize, build: F) -> &Self
+    where
+        F: Fn(usize) -> Agent,
+    {
+        for i in 0..n {
+            let mut agent = build(i);
+            self.bind_agent(&mut agent);
+        }
+        self
+    }
+
     /// Start the agent loop on a background tokio task and return a
     /// [`Running`] handle. The handle owns the interrupt signal;
     /// tickets queued afterwards are picked up within
