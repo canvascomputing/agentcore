@@ -379,9 +379,9 @@ type ToolHandler = Box<
 /// ```ignore
 /// let greet = Tool::new("greet", "Say hello")
 ///     .schema(serde_json::json!({"type": "object", "properties": {}}))
-///     .handler(|_input, _ctx| Box::pin(async {
+///     .handler(|_input, _ctx| async {
 ///         Ok(ToolResult::success("hi"))
-///     }));
+///     });
 /// ```
 ///
 /// A handler is required — omitting [`Tool::handler`] causes the first
@@ -443,18 +443,15 @@ impl Tool {
     }
 
     /// Install the closure that runs when the model calls this tool.
-    /// Required: omitting this causes the first invocation to panic.
-    pub fn handler<F>(mut self, f: F) -> Self
+    /// The closure may be a bare `async` block — the builder boxes the
+    /// returned future internally. Required: omitting this causes the
+    /// first invocation to panic.
+    pub fn handler<F, Fut>(mut self, f: F) -> Self
     where
-        F: Fn(
-                Value,
-                &ToolContext,
-            ) -> Pin<Box<dyn Future<Output = ProviderResult<ToolResult>> + Send + '_>>
-            + Send
-            + Sync
-            + 'static,
+        F: Fn(Value, ToolContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ProviderResult<ToolResult>> + Send + 'static,
     {
-        self.handler = Some(Box::new(f));
+        self.handler = Some(Box::new(move |v, c| Box::pin(f(v, c.clone()))));
         self
     }
 }
@@ -804,11 +801,9 @@ mod tests {
                 serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}}),
             )
             .read_only(true)
-            .handler(|input, _ctx| {
-                Box::pin(async move {
-                    let text = input["text"].as_str().unwrap_or("").to_string();
-                    Ok(ToolResult::success(text))
-                })
+            .handler(|input, _ctx| async move {
+                let text = input["text"].as_str().unwrap_or("").to_string();
+                Ok(ToolResult::success(text))
             });
 
         assert_eq!(tool.name(), "echo");
@@ -819,7 +814,7 @@ mod tests {
     fn tool_defer_builder() {
         let tool = Tool::new("advanced", "Advanced tool")
             .defer(true)
-            .handler(|_input, _ctx| Box::pin(async { Ok(ToolResult::success("ok")) }));
+            .handler(|_input, _ctx| async { Ok(ToolResult::success("ok")) });
 
         assert!(tool.should_defer());
     }

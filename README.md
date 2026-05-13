@@ -273,10 +273,10 @@ let greet = Tool::new("greet", "Say hello")
         "required": ["name"]
     }))
     .read_only(true)
-    .handler(|input, _ctx| Box::pin(async move {
+    .handler(|input, _ctx| async move {
         let name = input["name"].as_str().unwrap_or("world");
         Ok(ToolResult::success(format!("Hello, {name}!")))
-    }));
+    });
 ```
 
 `.read_only(true)` allows the agent to run a tool concurrently with other read-only calls in the same step.

@@ -300,7 +300,7 @@ fn brave_search_tool(api_key: String) -> Tool {
     .read_only(true)
     .handler(move |input, _ctx| {
         let api_key = api_key.clone();
-        Box::pin(async move { brave_search(&api_key, &input).await })
+        async move { brave_search(&api_key, &input).await }
     })
 }
 
