@@ -5,6 +5,18 @@ use std::sync::Arc;
 
 use crate::providers::{RequestErrorKind, TokenUsage};
 
+/// Why the context-window compaction seam fired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactReason {
+    /// The next-request token estimate crossed the model's compaction
+    /// threshold before sending; the warning fired ahead of any failure.
+    Proactive,
+    /// The provider itself reported a context-window overflow, either as
+    /// a `ProviderError::ContextWindowExceeded` or via
+    /// `ResponseStatus::ContextWindowExceeded` on a successful reply.
+    Reactive,
+}
+
 /// Which configured policy a [`EventKind::PolicyViolated`] refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyKind {
@@ -110,6 +122,14 @@ pub enum EventKind {
         max_attempts: u32,
         message: String,
     },
+    /// The conversation grew close to the model's context window
+    /// (`Proactive`) or the provider reported overflow (`Reactive`).
+    /// Today the seam is observation-only; messages are not mutated.
+    ContextCompacted {
+        tokens: u64,
+        threshold: u64,
+        reason: CompactReason,
+    },
 }
 
 /// Default observer. Prints ticket lifecycle, tool activity, policy
@@ -161,6 +181,13 @@ pub fn default_logger() -> Arc<dyn Fn(Event) + Send + Sync> {
             }
             EventKind::PolicyViolated { kind, limit } => {
                 eprintln!("[{agent}] policy violated: {kind:?} limit={limit}");
+            }
+            EventKind::ContextCompacted {
+                tokens,
+                threshold,
+                reason,
+            } => {
+                eprintln!("[{agent}] compact {tokens}/{threshold} ({reason:?})");
             }
             _ => {}
         }
@@ -240,6 +267,16 @@ mod tests {
             EventKind::PolicyViolated {
                 kind: PolicyKind::MaxSchemaRetries,
                 limit: 10,
+            },
+            EventKind::ContextCompacted {
+                tokens: 180_000,
+                threshold: 167_000,
+                reason: CompactReason::Proactive,
+            },
+            EventKind::ContextCompacted {
+                tokens: 0,
+                threshold: 0,
+                reason: CompactReason::Reactive,
             },
         ]
     }

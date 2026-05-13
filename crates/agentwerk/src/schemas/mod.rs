@@ -76,16 +76,17 @@ impl Schema {
     where
         R: serde::de::DeserializeOwned + 'static,
     {
-        let validate: TypedValidator = Box::new(|instance: &Value| {
-            match serde_json::from_value::<R>(instance.clone()) {
-                Ok(_) => Ok(()),
-                Err(err) => Err(vec![SchemaViolation {
-                    instance_path: String::new(),
-                    schema_path: String::new(),
-                    message: err.to_string(),
-                }]),
-            }
-        });
+        let validate: TypedValidator =
+            Box::new(
+                |instance: &Value| match serde_json::from_value::<R>(instance.clone()) {
+                    Ok(_) => Ok(()),
+                    Err(err) => Err(vec![SchemaViolation {
+                        instance_path: String::new(),
+                        schema_path: String::new(),
+                        message: err.to_string(),
+                    }]),
+                },
+            );
         Self {
             inner: Arc::new(SchemaInner::Typed {
                 validate,
@@ -975,7 +976,9 @@ mod tests {
     #[test]
     fn typed_schema_accepts_valid_json() {
         let schema = Schema::from_type::<Person>();
-        assert!(schema.validate(&json!({"name": "alice", "age": 30})).is_ok());
+        assert!(schema
+            .validate(&json!({"name": "alice", "age": 30}))
+            .is_ok());
     }
 
     #[test]
@@ -993,9 +996,7 @@ mod tests {
     #[test]
     fn typed_schema_rejects_wrong_type() {
         let schema = Schema::from_type::<Person>();
-        let violations = schema
-            .validate(&json!({"name": 7, "age": 30}))
-            .unwrap_err();
+        let violations = schema.validate(&json!({"name": 7, "age": 30})).unwrap_err();
         assert_eq!(violations.len(), 1);
         let msg = &violations[0].message;
         assert!(

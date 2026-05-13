@@ -206,12 +206,13 @@ async fn stream_response(
     let mut state = StreamState::default();
     let mut parser = StreamParser::new();
 
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| ProviderError::StreamInterrupted {
-            message: e.to_string(),
-        })?
+    while let Some(chunk) =
+        response
+            .chunk()
+            .await
+            .map_err(|e| ProviderError::StreamInterrupted {
+                message: e.to_string(),
+            })?
     {
         for event in parser.push(&chunk) {
             match event {

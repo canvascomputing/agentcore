@@ -34,14 +34,35 @@ async fn main() {
         style.dim, style.reset,
     );
 
+    // Optional first positional arg: synthetic context-window size in
+    // **tokens**, used only to drive a REPL-side usage line and warning
+    // when the reported `input_tokens` crosses 70% of it. The library's
+    // own `ContextCompacted` event is unaffected and still fires only
+    // at the real model window.
+    let test_window: Option<u64> = std::env::args().nth(1).and_then(|s| s.parse().ok());
+    if let Some(w) = test_window {
+        let threshold = w.saturating_mul(7) / 10;
+        eprintln!(
+            "{}test context window: {w} tokens (synthetic warning at {threshold} tokens used){}",
+            style.dim, style.reset,
+        );
+    }
+
     let role = ROLE.trim();
 
     let user_prompt = format!("\n{}you ›{} ", style.user, style.reset);
 
     let cancel = Arc::new(AtomicBool::new(false));
     let event_style = style.clone();
-    let handler: Arc<dyn Fn(Event) + Send + Sync> =
-        Arc::new(move |e: Event| print_event(&e, &event_style));
+    // `midstream` tracks whether the last byte written was streamed
+    // model text (no trailing newline). Stderr event lines consult it
+    // to break out of the stream exactly once, instead of every
+    // `eprintln!` doubling up newlines.
+    let midstream = Arc::new(AtomicBool::new(false));
+    let handler_midstream = Arc::clone(&midstream);
+    let handler: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(move |e: Event| {
+        print_event(&e, &event_style, test_window, &handler_midstream)
+    });
 
     let tickets = TicketSystem::new()
         .interrupt_signal(Arc::clone(&cancel))
@@ -67,6 +88,8 @@ async fn main() {
     );
 
     let mut prev_steps: u64 = 0;
+    let mut prev_requests: u64 = 0;
+    let mut prev_tool_calls: u64 = 0;
     let mut prev_input: u64 = 0;
     let mut prev_output: u64 = 0;
 
@@ -104,6 +127,9 @@ async fn main() {
         }
 
         announce_assistant(&style);
+        // "agent › " left stdout mid-line; mark so the first event
+        // breaks out before its own content.
+        midstream.store(true, Ordering::Relaxed);
         cancel.store(false, Ordering::Relaxed);
         tickets.task(line);
 
@@ -113,7 +139,10 @@ async fn main() {
             _ = &mut run_fut => false,
             _ = tokio::signal::ctrl_c() => {
                 cancel.store(true, Ordering::Relaxed);
-                eprintln!("\n{}cancelling…{}", style.dim, style.reset);
+                if midstream.swap(false, Ordering::Relaxed) {
+                    eprintln!();
+                }
+                eprintln!("{}cancelling…{}", style.dim, style.reset);
                 tokio::select! {
                     _ = &mut run_fut => {}
                     _ = tokio::signal::ctrl_c() => std::process::exit(130),
@@ -131,17 +160,21 @@ async fn main() {
         };
 
         let steps = stats.steps().saturating_sub(prev_steps);
+        let requests = stats.requests().saturating_sub(prev_requests);
+        let tool_calls = stats.tool_calls().saturating_sub(prev_tool_calls);
         let input = stats.input_tokens().saturating_sub(prev_input);
         let output = stats.output_tokens().saturating_sub(prev_output);
         prev_steps = stats.steps();
+        prev_requests = stats.requests();
+        prev_tool_calls = stats.tool_calls();
         prev_input = stats.input_tokens();
         prev_output = stats.output_tokens();
 
-        if cancelled {
-            println!();
+        if midstream.swap(false, Ordering::Relaxed) {
+            eprintln!();
         }
         eprintln!(
-            "\n{}{outcome} · {steps} steps · {input} in / {output} out{}",
+            "{}{outcome} · {steps} steps · {requests} requests · {tool_calls} tools · {input} in / {output} out{}",
             style.dim, style.reset,
         );
     }
@@ -152,32 +185,80 @@ fn announce_assistant(style: &Style) {
     let _ = io::stdout().flush();
 }
 
-fn print_event(event: &Event, style: &Style) {
+fn print_event(
+    event: &Event,
+    style: &Style,
+    test_window: Option<u64>,
+    midstream: &AtomicBool,
+) {
+    // Emit a single leading newline only when streamed model text just
+    // landed on stdout without a trailing newline; subsequent events
+    // print directly on their own line.
+    let break_stream = || {
+        if midstream.swap(false, Ordering::Relaxed) {
+            eprintln!();
+        }
+    };
     match &event.kind {
         EventKind::TextChunkReceived { content } => {
             print!("{content}");
             let _ = io::stdout().flush();
+            midstream.store(true, Ordering::Relaxed);
         }
         EventKind::ToolCallStarted {
             tool_name, input, ..
         } => {
+            break_stream();
             let arg = input["pattern"]
                 .as_str()
                 .or_else(|| input["path"].as_str())
                 .or_else(|| input["query"].as_str())
                 .unwrap_or("");
             if arg.is_empty() {
-                eprintln!("\n{}· {tool_name}{}", style.dim, style.reset);
+                eprintln!("{}· {tool_name}{}", style.dim, style.reset);
             } else {
-                eprintln!("\n{}· {tool_name}({arg}){}", style.dim, style.reset);
+                eprintln!("{}· {tool_name}({arg}){}", style.dim, style.reset);
             }
         }
         EventKind::ToolCallFailed {
             tool_name, message, ..
-        } => eprintln!("\n{}✗ {tool_name}: {message}{}", style.red, style.reset),
+        } => {
+            break_stream();
+            eprintln!("{}✗ {tool_name}: {message}{}", style.red, style.reset);
+        }
+        EventKind::RequestFinished { usage, .. } => {
+            if let Some(window) = test_window {
+                break_stream();
+                let used = usage.input_tokens;
+                let remaining = window.saturating_sub(used);
+                let threshold = window.saturating_mul(7) / 10;
+                let (marker, color) = if used >= threshold {
+                    ("⚠", style.red)
+                } else {
+                    ("·", style.dim)
+                };
+                eprintln!(
+                    "{color}{marker} {used} / {window} tokens used ({remaining} left, warn at {threshold}){reset}",
+                    reset = style.reset,
+                );
+            }
+        }
+        EventKind::ContextCompacted {
+            tokens,
+            threshold,
+            reason,
+            ..
+        } => {
+            break_stream();
+            eprintln!(
+                "{}⚠ compact {tokens}/{threshold} ({reason:?}){}",
+                style.red, style.reset,
+            );
+        }
         EventKind::RequestFailed { message, .. } => {
+            break_stream();
             let short = message.split_once(':').map(|(h, _)| h).unwrap_or(message);
-            eprintln!("\n{}✗ request failed: {short}{}", style.red, style.reset);
+            eprintln!("{}✗ request failed: {short}{}", style.red, style.reset);
         }
         EventKind::RequestRetried {
             attempt,
@@ -185,9 +266,10 @@ fn print_event(event: &Event, style: &Style) {
             message,
             ..
         } => {
+            break_stream();
             let short = message.split_once(':').map(|(h, _)| h).unwrap_or(message);
             eprintln!(
-                "\n{}↻ retry {attempt}/{max_attempts}: {short}{}",
+                "{}↻ retry {attempt}/{max_attempts}: {short}{}",
                 style.dim, style.reset,
             );
         }
@@ -196,16 +278,18 @@ fn print_event(event: &Event, style: &Style) {
             max_attempts,
             message,
         } => {
+            break_stream();
             let short = message.split_once(':').map(|(h, _)| h).unwrap_or(message);
             eprintln!(
-                "\n{}↻ schema retry {attempt}/{max_attempts}: {short}{}",
+                "{}↻ schema retry {attempt}/{max_attempts}: {short}{}",
                 style.dim, style.reset,
             );
         }
         EventKind::PolicyViolated { kind, limit } => {
+            break_stream();
             eprintln!(
-                "\n{}✗ policy {kind:?} (limit {limit}){}",
-                style.red, style.reset
+                "{}✗ policy {kind:?} (limit {limit}){}",
+                style.red, style.reset,
             );
         }
         _ => {}

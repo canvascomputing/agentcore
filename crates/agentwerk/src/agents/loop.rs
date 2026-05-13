@@ -8,10 +8,11 @@ use std::time::Duration;
 
 use crate::event::{Event, EventKind, ToolFailureKind};
 use crate::providers::types::{ResponseStatus, StreamEvent};
-use crate::providers::{AsUserMessage, ContentBlock, Message, ModelRequest};
+use crate::providers::{AsUserMessage, ContentBlock, Message, Model, ModelRequest, ProviderError};
 use crate::tools::{ToolCall, ToolContext, ToolError};
 
 use super::agent::Agent;
+use super::compact;
 use super::retry::ExponentialRetry;
 use super::stats::LoopStats;
 use super::tickets::{policy_violated_kind, Status};
@@ -65,6 +66,8 @@ pub(super) async fn wait_for_signal(signal: &Arc<AtomicBool>) {
 /// `Some(r)` on success. `None` on cancellation (no events emitted)
 /// or terminal failure (helper has already emitted `RequestFailed` +
 /// `TicketFailed` and recorded the error stat). Caller bails on `None`.
+/// On a terminal `ContextWindowExceeded` the helper also emits a
+/// `ContextCompacted { Reactive }` warning before `RequestFailed`.
 #[allow(clippy::too_many_arguments)]
 async fn respond_with_retry<F: Fn(EventKind)>(
     provider: Arc<dyn crate::providers::Provider>,
@@ -103,6 +106,9 @@ async fn respond_with_retry<F: Fn(EventKind)>(
                 }
             }
             Err(e) => {
+                if matches!(e, ProviderError::ContextWindowExceeded { .. }) {
+                    emit(compact::reactive_event());
+                }
                 emit(EventKind::RequestFailed {
                     kind: e.kind(),
                     message: e.to_string(),
@@ -194,6 +200,7 @@ async fn process_ticket(
     let knowledge_contents = agent.knowledge_or_default().index();
 
     let policies = ticket_system.policies();
+    let window = Model::from_name(agent.model_str()).context_window_size;
     let mut messages: Vec<Message> = Vec::new();
     if let Some(ctx) = agent.context_message(&policies, &ticket_system.stats) {
         messages.push(Message::user(ctx));
@@ -273,6 +280,10 @@ async fn process_ticket(
             usage: response.usage.clone(),
         });
 
+        if response.status == ResponseStatus::ContextWindowExceeded {
+            emit(compact::reactive_event());
+        }
+
         ticket_system
             .stats
             .record_request(response.usage.input_tokens, response.usage.output_tokens);
@@ -285,6 +296,10 @@ async fn process_ticket(
         messages.push(Message::Assistant {
             content: response.content.clone(),
         });
+
+        if let Some(ev) = compact::proactive_event(window, &response.usage, &messages) {
+            emit(ev);
+        }
 
         let calls: Vec<ToolCall> = response
             .content
@@ -313,17 +328,11 @@ async fn process_ticket(
             };
             match (&ticket.schema, ticket.result()) {
                 (_, None) => {
-                    consecutive_schema_failures =
-                        consecutive_schema_failures.saturating_add(1);
+                    consecutive_schema_failures = consecutive_schema_failures.saturating_add(1);
                     let registered: Vec<&str> = agent
                         .tool_definitions()
                         .iter()
-                        .filter_map(|d| {
-                            FINISHER_TOOL_NAMES
-                                .iter()
-                                .find(|n| **n == d.name)
-                                .copied()
-                        })
+                        .filter_map(|d| FINISHER_TOOL_NAMES.iter().find(|n| **n == d.name).copied())
                         .collect();
                     let detail = missing_finisher_detail(&registered);
                     emit(EventKind::SchemaRetried {
@@ -377,9 +386,7 @@ async fn process_ticket(
                 let tool_name = call.map(|c| c.name.clone()).unwrap_or_default();
                 match verdict {
                     Ok(output) => {
-                        if call.is_some_and(|c| {
-                            FINISHER_TOOL_NAMES.contains(&c.name.as_str())
-                        }) {
+                        if call.is_some_and(|c| FINISHER_TOOL_NAMES.contains(&c.name.as_str())) {
                             consecutive_schema_failures = 0;
                         }
                         emit(EventKind::ToolCallFinished {
@@ -488,7 +495,7 @@ mod tests {
     use std::pin::Pin;
     use std::sync::Mutex as StdMutex;
 
-    use crate::event::PolicyKind;
+    use crate::event::{CompactReason, PolicyKind};
     use crate::providers::types::{ModelResponse, TokenUsage};
     use crate::providers::{Provider, ProviderError, ProviderResult};
     use crate::schemas::Schema;
@@ -1830,5 +1837,43 @@ mod tests {
             .await
             .expect("agent.run_dry did not finish within 5s");
         assert_eq!(results.last().as_deref(), Some("forwarded"));
+    }
+
+    // =====================================================================
+    // Bucket G — context-window compaction warnings
+    // =====================================================================
+
+    #[tokio::test]
+    async fn compaction_warn_emits_reactive_before_request_failed() {
+        let provider =
+            MockProvider::with_results(vec![Err(ProviderError::ContextWindowExceeded {
+                message: "prompt is 250000 tokens, exceeds 200000".into(),
+            })]);
+        let (events, _, _) = run_one(provider, 0, 10, None).await;
+
+        // The first ContextCompacted{Reactive} event must precede the
+        // first RequestFailed in the stream: the warning surfaces
+        // before the existing terminal failure path fires.
+        let compacted_idx = events.iter().position(|e| {
+            matches!(
+                &e.kind,
+                EventKind::ContextCompacted {
+                    reason: CompactReason::Reactive,
+                    ..
+                }
+            )
+        });
+        let failed_idx = events
+            .iter()
+            .position(|e| matches!(&e.kind, EventKind::RequestFailed { .. }));
+        assert!(
+            compacted_idx.is_some(),
+            "expected at least one ContextCompacted event"
+        );
+        assert!(
+            failed_idx.is_some(),
+            "expected the existing RequestFailed event"
+        );
+        assert!(compacted_idx.unwrap() < failed_idx.unwrap());
     }
 }
