@@ -158,8 +158,8 @@ impl Ticket {
     }
 
     /// Current status as a lowercase string: `"todo"`, `"in_progress"`,
-    /// `"done"`, or `"failed"`. Use [`TicketSystem::set_done`] or
-    /// [`TicketSystem::set_failed`] to drive transitions.
+    /// `"done"`, or `"failed"`. Transitions are driven internally by the
+    /// agent loop as it claims, finishes, and fails tickets.
     pub fn status(&self) -> &'static str {
         self.status.as_str()
     }
@@ -186,7 +186,7 @@ impl Ticket {
 
     /// Elapsed duration from creation to terminal status (Done or
     /// Failed), `None` while the ticket has not yet reached one. Mirrors
-    /// the naming convention of [`Stats::elapsed`].
+    /// the naming convention of [`Stats::run_duration`](crate::Stats::run_duration).
     pub fn elapsed(&self) -> Option<Duration> {
         let terminal = self.finished_at.or(self.failed_at)?;
         Some(Duration::from_millis(

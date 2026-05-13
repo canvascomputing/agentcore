@@ -7,7 +7,7 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -42,7 +42,7 @@ pub struct Knowledge {
     knowledge_dir: PathBuf,
     index: Mutex<Vec<IndexEntry>>,
     write_lock: Mutex<()>,
-    index_char_limit: usize,
+    index_char_limit: AtomicUsize,
 }
 
 impl Knowledge {
@@ -72,8 +72,18 @@ impl Knowledge {
             knowledge_dir,
             index: Mutex::new(index),
             write_lock: Mutex::new(()),
-            index_char_limit: DEFAULT_INDEX_CHAR_LIMIT,
+            index_char_limit: AtomicUsize::new(DEFAULT_INDEX_CHAR_LIMIT),
         }))
+    }
+
+    /// Override the rendered-index char budget. Default is 4000. Page
+    /// bodies are never capped; only the bullet list injected into the
+    /// system prompt is bounded. Chain after `open` before binding the
+    /// store to any agent:
+    /// `Knowledge::open(dir)?.index_char_limit(12_000)`.
+    pub fn index_char_limit(self: Arc<Self>, n: usize) -> Arc<Self> {
+        self.index_char_limit.store(n, Ordering::Relaxed);
+        self
     }
 
     /// Rendered index content for the system prompt. Returns the body
@@ -118,13 +128,14 @@ impl Knowledge {
         }
 
         // Check index char limit.
+        let limit = self.index_char_limit.load(Ordering::Relaxed);
         let rendered = render_index(&index);
-        if rendered.len() > self.index_char_limit {
+        if rendered.len() > limit {
             return Err(format!(
                 "Index at {}/{} chars. This write would push it to {} chars. \
                  Consolidate or remove pages first.",
                 render_index(&self.index.lock().unwrap()).len(),
-                self.index_char_limit,
+                limit,
                 rendered.len(),
             ));
         }
@@ -146,7 +157,7 @@ impl Knowledge {
         Ok(KnowledgeOutcome {
             message: "page written",
             index_chars_used: chars_used,
-            index_char_limit: self.index_char_limit,
+            index_char_limit: limit,
             pages: page_count,
         })
     }
@@ -193,7 +204,7 @@ impl Knowledge {
         Ok(KnowledgeOutcome {
             message: "page removed",
             index_chars_used: chars_used,
-            index_char_limit: self.index_char_limit,
+            index_char_limit: self.index_char_limit.load(Ordering::Relaxed),
             pages: page_count,
         })
     }
@@ -228,7 +239,7 @@ impl Knowledge {
     }
 }
 
-/// What [`Agent::knowledge`] accepts.
+/// What [`Agent::knowledge`](crate::Agent::knowledge) accepts.
 pub trait IntoKnowledge {
     fn into_knowledge(self) -> io::Result<Arc<Knowledge>>;
 }
@@ -760,6 +771,25 @@ mod tests {
             .write_page("big", &long_summary, "# Big", &[])
             .unwrap_err();
         assert!(err.contains("chars"), "{err}");
+    }
+
+    #[test]
+    fn index_char_limit_can_be_lowered_after_open() {
+        let (store, _dir) = fresh_store();
+        let store = store.index_char_limit(80);
+
+        // 80-char budget rejects what the default 4000-char budget would accept.
+        let long_summary = "x".repeat(200);
+        let err = store
+            .write_page("big", &long_summary, "# Big", &[])
+            .unwrap_err();
+        assert!(err.contains("chars"), "{err}");
+
+        // Outcome reports the custom limit.
+        let out = store
+            .write_page("small", "ok", "# Small", &[])
+            .unwrap();
+        assert_eq!(out.index_char_limit, 80);
     }
 
     #[test]

@@ -295,6 +295,10 @@ let agent = Agent::new().knowledge("./notes");
 let store = Knowledge::open("./.agentwerk")?;
 let alice = Agent::new().knowledge(&store);
 let bob = Agent::new().knowledge(&store);
+
+// Raise the rendered-index char budget (default 4000):
+let store = Knowledge::open("./.agentwerk")?.index_char_limit(12_000);
+let agent = Agent::new().knowledge(&store);
 ```
 
 | Method | Description |

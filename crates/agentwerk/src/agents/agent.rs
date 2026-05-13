@@ -421,12 +421,12 @@ impl Agent {
         sys.insert(ticket, self.name.clone());
     }
 
-    /// Drive the agent's bound `TicketSystem` until the queue settles
     /// Start the agent loop on a background tokio task and return a
-    /// [`Running`] handle. Forwards to the bound `TicketSystem`.
-    /// Tickets queued afterwards are picked up within
-    /// ~`IDLE_POLL_INTERVAL`. Finish with [`Running::run_dry`] to wait
-    /// for the queue to drain.
+    /// [`Running`](crate::Running) handle. Forwards to the bound
+    /// `TicketSystem`. Tickets queued afterwards are picked up within
+    /// ~`IDLE_POLL_INTERVAL`. Finish with
+    /// [`Running::run_dry`](crate::Running::run_dry) to wait for the
+    /// queue to drain.
     pub fn run(&self) -> super::running::Running {
         let sys = self
             .ticket_system
