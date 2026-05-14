@@ -1,4 +1,4 @@
-.PHONY: build test test_integration fmt clean update use_case litellm bump doc
+.PHONY: build test test_integration fmt clean update use_case litellm bump doc hooks
 
 # Build the project (warnings are errors)
 build: fmt
@@ -68,6 +68,16 @@ bump: test
 	echo "$$current → $$new" && \
 	echo "Tagged v$$new — now run:" && \
 	echo "  git push && git push --tags"
+
+# Install Claude Code hooks into .claude/settings.local.json
+hooks:
+	@mkdir -p .claude/hooks
+	@cp hooks/*.sh .claude/hooks/
+	@chmod +x .claude/hooks/*.sh
+	@if [ ! -f .claude/settings.local.json ]; then echo '{}' > .claude/settings.local.json; fi
+	@jq -s '.[0] * .[1]' .claude/settings.local.json hooks/hooks.json > .claude/settings.local.tmp \
+		&& mv .claude/settings.local.tmp .claude/settings.local.json
+	@echo "Hooks installed into .claude/settings.local.json"
 
 # Start a LiteLLM proxy on localhost:4000
 # Forwards the provider's API key from your environment (never leaked in commands)

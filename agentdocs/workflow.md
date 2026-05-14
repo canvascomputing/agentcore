@@ -27,6 +27,12 @@ Commands used to build, test, release, and run example agents.
 - `make bump part=major` bumps the major version.
 - Push the new tag with `git push --tags`.
 
+## Hooks
+
+**`make hooks` installs Claude Code hooks into `.claude/settings.local.json`.**
+
+- Source files live in `hooks/` (tracked). `make hooks` copies them into `.claude/hooks/` (ignored) and merges the config.
+- `check-conventions.sh` injects `agentdocs/style.md` and `agentdocs/architecture.md` as context after each Rust file edit.
 ## Use cases
 
 **Example agents live in a separate crate and run through `make use_case`.**

@@ -458,6 +458,7 @@ make test           # unit tests bundled by tests/unit (workspace --lib)
 make fmt            # format code
 make clean          # remove build artifacts
 make update         # update dependencies
+make hooks          # install Claude Code hooks
 ```
 
 ## Integration tests
