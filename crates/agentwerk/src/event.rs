@@ -137,6 +137,14 @@ pub enum EventKind {
         reason: CompactReason,
         message: String,
     },
+    /// Layer 2 blocking limit tripped: the estimated next-request token
+    /// count crossed `window - BLOCKING_HEADROOM_TOKENS`. The loop
+    /// synthesizes a `ContextWindowExceeded` and routes it through the
+    /// reactive seam without issuing the provider call.
+    BlockingLimitExceeded {
+        estimated_tokens: u64,
+        threshold_tokens: u64,
+    },
 }
 
 /// Default observer. Prints ticket lifecycle, tool activity, policy
@@ -197,6 +205,14 @@ pub fn default_logger() -> Arc<dyn Fn(Event) + Send + Sync> {
             }
             EventKind::CompactionFailed { reason, message } => {
                 eprintln!("[{agent}] compaction failed ({reason:?}): {message}");
+            }
+            EventKind::BlockingLimitExceeded {
+                estimated_tokens,
+                threshold_tokens,
+            } => {
+                eprintln!(
+                    "[{agent}] blocking limit: estimated {estimated_tokens} tokens >= {threshold_tokens}",
+                );
             }
             _ => {}
         }
@@ -286,6 +302,10 @@ mod tests {
             EventKind::CompactionFailed {
                 reason: CompactReason::Reactive,
                 message: "summarize call failed".into(),
+            },
+            EventKind::BlockingLimitExceeded {
+                estimated_tokens: 197_500,
+                threshold_tokens: 197_000,
             },
         ]
     }

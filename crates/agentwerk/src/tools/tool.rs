@@ -10,11 +10,26 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::agents::knowledge::Knowledge;
 use crate::agents::tickets::TicketSystem;
 use crate::providers::types::ContentBlock;
 use crate::providers::{ProviderResult, ProviderToolDefinition};
 
 use super::error::ToolError;
+
+/// Per-tool ceiling on tool-result bytes. Outputs larger than this are
+/// offloaded into the agent's `Knowledge` store and replaced with a
+/// stub. ~12.5K tokens at the `bytes/4` estimator.
+const PER_TOOL_CAP: usize = 50_000;
+
+/// Aggregate ceiling on a single step's tool-result bytes. When parallel
+/// tools each return moderate but legal sizes, this cap offloads the
+/// largest until the step is under budget. ~50K tokens.
+const PER_STEP_CAP: usize = 200_000;
+
+/// Bytes of original output retained in the stub. Floored to a UTF-8
+/// boundary so multi-byte code points are never split.
+const PREVIEW_CHARS: usize = 2_048;
 
 /// Context passed to tool execution. `tool_registry` and the ticket-side
 /// fields are ambient internals — only the built-in `ToolSearchTool` and
@@ -30,6 +45,7 @@ pub struct ToolContext {
     pub(crate) tool_registry: Option<Arc<ToolRegistry>>,
     pub(crate) ticket_system: Option<Arc<TicketSystem>>,
     pub(crate) agent_name: Option<String>,
+    pub(crate) knowledge: Option<Arc<Knowledge>>,
 }
 
 impl ToolContext {
@@ -44,6 +60,7 @@ impl ToolContext {
             tool_registry: None,
             ticket_system: None,
             agent_name: None,
+            knowledge: None,
         }
     }
 
@@ -66,6 +83,11 @@ impl ToolContext {
 
     pub(crate) fn agent_name(mut self, name: String) -> Self {
         self.agent_name = Some(name);
+        self
+    }
+
+    pub(crate) fn knowledge(mut self, knowledge: Arc<Knowledge>) -> Self {
+        self.knowledge = Some(knowledge);
         self
     }
 
@@ -331,6 +353,13 @@ impl ToolRegistry {
                         set.spawn(async move {
                             let _permit = sem.acquire().await.unwrap();
                             let outcome = invoke(tool_arc, &call_name, input, &ctx).await;
+                            let outcome = cap_oversized_result(
+                                outcome,
+                                &ctx,
+                                &call_name,
+                                &call_id,
+                                PER_TOOL_CAP,
+                            );
                             (call_id, outcome)
                         });
                     }
@@ -345,11 +374,15 @@ impl ToolRegistry {
                 ToolBatch::Serial(call) => {
                     let outcome =
                         invoke(self.get(&call.name), &call.name, call.input.clone(), ctx).await;
+                    let outcome =
+                        cap_oversized_result(outcome, ctx, &call.name, &call.id, PER_TOOL_CAP);
                     let block = content_block_for(&call.id, &outcome);
                     results.push((block, outcome));
                 }
             }
         }
+
+        cap_aggregate_outputs(&mut results, calls, ctx, PER_STEP_CAP);
 
         results
     }
@@ -560,6 +593,163 @@ fn partition_tool_calls(calls: &[ToolCall], registry: &ToolRegistry) -> Vec<Tool
     }
 
     batches
+}
+
+/// Replace `Ok(s)` with a stub when `s.len()` exceeds `per_tool_cap`,
+/// persisting the original output via the agent's `Knowledge` store
+/// (when bound). `Err(_)` outcomes pass through: tool errors are short
+/// by construction and never need offloading.
+fn cap_oversized_result(
+    outcome: std::result::Result<String, ToolError>,
+    ctx: &ToolContext,
+    tool_name: &str,
+    tool_use_id: &str,
+    per_tool_cap: usize,
+) -> std::result::Result<String, ToolError> {
+    match outcome {
+        Err(e) => Err(e),
+        Ok(content) if content.len() <= per_tool_cap => Ok(content),
+        Ok(content) => {
+            let slug = persist_oversized_via_knowledge(ctx, tool_name, tool_use_id, &content);
+            let end = utf8_boundary_floor(&content, PREVIEW_CHARS.min(content.len()));
+            Ok(build_oversized_stub(
+                content.len(),
+                slug.as_deref(),
+                &content[..end],
+            ))
+        }
+    }
+}
+
+/// Aggregate-cap pass: while the total `ContentBlock::ToolResult` bytes
+/// in `results` exceed `per_step_cap`, replace the largest non-stub
+/// result with a stub. Stops when no further offload would help.
+fn cap_aggregate_outputs(
+    results: &mut [(ContentBlock, std::result::Result<String, ToolError>)],
+    calls: &[ToolCall],
+    ctx: &ToolContext,
+    per_step_cap: usize,
+) {
+    loop {
+        let total: usize = results
+            .iter()
+            .map(|(b, _)| match b {
+                ContentBlock::ToolResult { content, .. } => content.len(),
+                _ => 0,
+            })
+            .sum();
+        if total <= per_step_cap {
+            return;
+        }
+        let mut largest: Option<(usize, usize)> = None;
+        for (i, (b, _)) in results.iter().enumerate() {
+            if let ContentBlock::ToolResult { content, .. } = b {
+                if content.starts_with(OVERSIZED_STUB_TAG_OPEN) {
+                    continue;
+                }
+                let len = content.len();
+                if largest.is_none_or(|(_, max_len)| len > max_len) {
+                    largest = Some((i, len));
+                }
+            }
+        }
+        let Some((i, _)) = largest else {
+            return;
+        };
+        let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } = &results[i].0
+        else {
+            return;
+        };
+        let tool_use_id = tool_use_id.clone();
+        let original = content.clone();
+        let is_error = *is_error;
+        let tool_name = calls
+            .iter()
+            .find(|c| c.id == tool_use_id)
+            .map(|c| c.name.as_str())
+            .unwrap_or("tool");
+        let slug = persist_oversized_via_knowledge(ctx, tool_name, &tool_use_id, &original);
+        let end = utf8_boundary_floor(&original, PREVIEW_CHARS.min(original.len()));
+        let stub = build_oversized_stub(original.len(), slug.as_deref(), &original[..end]);
+        results[i].0 = ContentBlock::ToolResult {
+            tool_use_id,
+            content: stub.clone(),
+            is_error,
+        };
+        if let Ok(_) = &results[i].1 {
+            results[i].1 = Ok(stub);
+        }
+    }
+}
+
+/// Write `content` to the agent's `Knowledge` store as a page named
+/// `tool-result-<tool_use_id>`. Returns the normalized slug on
+/// success; `None` when no knowledge handle is bound or the write
+/// fails. Failure is silent on purpose: persistence is a best-effort
+/// sidecar, not load-bearing for the step's correctness. Normalization
+/// is delegated to `Knowledge` so the slug shown in the stub matches
+/// the on-disk file even when `tool_use_id` contains characters that
+/// would be transformed (uppercase, underscore) or when the combined
+/// length would cross the 60-char cap.
+fn persist_oversized_via_knowledge(
+    ctx: &ToolContext,
+    tool_name: &str,
+    tool_use_id: &str,
+    content: &str,
+) -> Option<String> {
+    let knowledge = ctx.knowledge.as_ref()?;
+    let raw = format!("tool-result-{tool_use_id}");
+    let slug = crate::agents::knowledge::normalize_slug(&raw).ok()?;
+    let summary = format!("{tool_name} output, {}", format_bytes(content.len()));
+    knowledge.write_page(&slug, &summary, content, &[]).ok()?;
+    Some(slug)
+}
+
+const OVERSIZED_STUB_TAG_OPEN: &str = "<persisted-output>";
+const OVERSIZED_STUB_TAG_CLOSE: &str = "</persisted-output>";
+
+/// Render the stub the model sees in place of an oversized tool result.
+/// Omits the slug line when `slug` is `None` (persistence failed or no
+/// knowledge handle was available).
+fn build_oversized_stub(original_len: usize, slug: Option<&str>, preview: &str) -> String {
+    let size = format_bytes(original_len);
+    let mut out = format!("{OVERSIZED_STUB_TAG_OPEN}Output too large ({size}).");
+    if let Some(slug) = slug {
+        out.push_str(&format!(
+            " Full output stored as knowledge page `{slug}` (read via knowledge_tool)."
+        ));
+    }
+    out.push_str("\n\nPreview (first 2 KB):\n");
+    out.push_str(preview);
+    out.push('\n');
+    out.push_str(OVERSIZED_STUB_TAG_CLOSE);
+    out
+}
+
+fn format_bytes(n: usize) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    if n < 1024 {
+        format!("{n} B")
+    } else if (n as f64) < MB {
+        format!("{:.1} KB", n as f64 / KB)
+    } else {
+        format!("{:.1} MB", n as f64 / MB)
+    }
+}
+
+/// Floor an index to the largest UTF-8 char boundary `<= i`. Cheap when
+/// `i` already lands on a boundary; otherwise scans back at most three
+/// bytes.
+fn utf8_boundary_floor(s: &str, mut i: usize) -> usize {
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
 }
 
 #[cfg(test)]
@@ -825,5 +1015,187 @@ mod tests {
         let tool = Tool::new("no_handler", "missing");
         let ctx = test_ctx();
         let _ = tool.call(serde_json::json!({}), &ctx).await;
+    }
+
+    // ---- Layer 1: result-cap helpers ----
+
+    fn knowledge_ctx() -> (ToolContext, Arc<Knowledge>, crate::test_util::TempDir) {
+        let dir = crate::test_util::TempDir::new().unwrap();
+        let store = Knowledge::open(dir.path()).unwrap();
+        let ctx = test_ctx().knowledge(Arc::clone(&store));
+        (ctx, store, dir)
+    }
+
+    fn tool_result_block(id: &str, content: &str) -> ContentBlock {
+        ContentBlock::ToolResult {
+            tool_use_id: id.into(),
+            content: content.into(),
+            is_error: false,
+        }
+    }
+
+    fn tool_call(id: &str, name: &str) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            name: name.into(),
+            input: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn cap_oversized_result_passes_through_under_cap() {
+        let ctx = test_ctx();
+        let outcome = cap_oversized_result(Ok("hello".into()), &ctx, "tool", "call-1", 100);
+        assert_eq!(outcome.unwrap(), "hello");
+    }
+
+    #[test]
+    fn cap_oversized_result_replaces_oversized_ok_with_stub() {
+        let (ctx, store, _dir) = knowledge_ctx();
+        let outcome = cap_oversized_result(
+            Ok("a".repeat(500)),
+            &ctx,
+            "bash",
+            "call-xyz",
+            100,
+        );
+        let stub = outcome.unwrap();
+        assert!(stub.starts_with("<persisted-output>"));
+        assert!(stub.contains("tool-result-call-xyz"));
+        assert!(stub.ends_with("</persisted-output>"));
+        let body = store.read_page("tool-result-call-xyz").unwrap();
+        assert!(body.starts_with(&"a".repeat(500)));
+        assert!(store.index().contains("bash output"));
+    }
+
+    #[test]
+    fn cap_oversized_result_passes_through_errs() {
+        let ctx = test_ctx();
+        let outcome = cap_oversized_result(
+            Err(ToolError::ExecutionFailed {
+                tool_name: "tool".into(),
+                message: "boom".into(),
+            }),
+            &ctx,
+            "tool",
+            "call-1",
+            10,
+        );
+        assert!(matches!(outcome, Err(ToolError::ExecutionFailed { .. })));
+    }
+
+    #[test]
+    fn cap_aggregate_offloads_largest_first() {
+        let (ctx, store, _dir) = knowledge_ctx();
+        // Sizes in KB so the stub's own bytes (~200) don't dominate.
+        let small = "a".repeat(40_000);
+        let big = "b".repeat(80_000);
+        let tiny = "c".repeat(30_000);
+        let mut results = vec![
+            (tool_result_block("c1", &small), Ok(small.clone())),
+            (tool_result_block("c2", &big), Ok(big.clone())),
+            (tool_result_block("c3", &tiny), Ok(tiny.clone())),
+        ];
+        let calls = vec![
+            tool_call("c1", "small"),
+            tool_call("c2", "big"),
+            tool_call("c3", "tiny"),
+        ];
+        cap_aggregate_outputs(&mut results, &calls, &ctx, 100_000);
+        // c2 (the largest) was offloaded; the other two stayed inline.
+        match &results[1].0 {
+            ContentBlock::ToolResult { content, .. } => {
+                assert!(content.starts_with("<persisted-output>"));
+                assert!(content.contains("tool-result-c2"));
+            }
+            _ => panic!("expected ToolResult"),
+        }
+        assert!(matches!(
+            &results[0].0,
+            ContentBlock::ToolResult { content, .. } if content.len() == 40_000
+        ));
+        assert!(matches!(
+            &results[2].0,
+            ContentBlock::ToolResult { content, .. } if content.len() == 30_000
+        ));
+        // The big result is in Knowledge under its slug.
+        let body = store.read_page("tool-result-c2").unwrap();
+        assert!(body.starts_with(&"b".repeat(80_000)));
+    }
+
+    #[test]
+    fn cap_aggregate_stops_when_only_small_results_remain() {
+        let (ctx, _store, _dir) = knowledge_ctx();
+        // Many small results whose total far exceeds the cap, but
+        // each is already a stub-marked block. Aggregate should bail
+        // rather than spin: stubs are skipped, so no candidates.
+        let mut results: Vec<(ContentBlock, std::result::Result<String, ToolError>)> = (0..5)
+            .map(|i| {
+                let id = format!("c{i}");
+                let stub = format!("<persisted-output>already stubbed {i}</persisted-output>");
+                (tool_result_block(&id, &stub), Ok(stub))
+            })
+            .collect();
+        let calls: Vec<ToolCall> = (0..5)
+            .map(|i| tool_call(&format!("c{i}"), "tool"))
+            .collect();
+        let before: Vec<String> = results
+            .iter()
+            .map(|(b, _)| match b {
+                ContentBlock::ToolResult { content, .. } => content.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        cap_aggregate_outputs(&mut results, &calls, &ctx, 10);
+        let after: Vec<String> = results
+            .iter()
+            .map(|(b, _)| match b {
+                ContentBlock::ToolResult { content, .. } => content.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(before, after, "aggregate must be a no-op when only stubs remain");
+    }
+
+    #[test]
+    fn build_oversized_stub_includes_size_slug_and_preview() {
+        let stub = build_oversized_stub(1_048_576, Some("test-slug"), "preview-body");
+        assert!(stub.contains("<persisted-output>"));
+        assert!(stub.contains("Output too large"));
+        assert!(stub.contains("1.0 MB"));
+        assert!(stub.contains("test-slug"));
+        assert!(stub.contains("Preview (first 2 KB):"));
+        assert!(stub.contains("preview-body"));
+        assert!(stub.ends_with("</persisted-output>"));
+    }
+
+    #[test]
+    fn build_oversized_stub_omits_slug_when_persistence_failed() {
+        let stub = build_oversized_stub(2_048, None, "hi");
+        assert!(stub.contains("Output too large"));
+        assert!(stub.contains("2.0 KB"));
+        assert!(!stub.contains("knowledge page"));
+        assert!(!stub.contains("knowledge_tool"));
+        assert!(stub.contains("hi"));
+    }
+
+    #[test]
+    fn persist_oversized_writes_a_page_with_expected_slug() {
+        let (ctx, store, _dir) = knowledge_ctx();
+        let slug = persist_oversized_via_knowledge(&ctx, "bash", "call-1", "the full content")
+            .expect("knowledge handle is bound");
+        assert_eq!(slug, "tool-result-call-1");
+        let body = store.read_page(&slug).unwrap();
+        assert!(body.starts_with("the full content"));
+        let index = store.index();
+        assert!(index.contains("tool-result-call-1"));
+        assert!(index.contains("bash output"));
+    }
+
+    #[test]
+    fn persist_oversized_returns_none_without_knowledge_handle() {
+        let ctx = test_ctx();
+        let slug = persist_oversized_via_knowledge(&ctx, "bash", "call-1", "content");
+        assert!(slug.is_none());
     }
 }

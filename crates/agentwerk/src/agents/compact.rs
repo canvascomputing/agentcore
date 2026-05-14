@@ -8,7 +8,8 @@ use std::sync::Arc;
 use crate::prompts::compaction_directive;
 use crate::providers::types::StreamEvent;
 use crate::providers::{
-    ContentBlock, Message, ModelRequest, Provider, ProviderError, ProviderResult, TokenUsage,
+    ContentBlock, Message, ModelRequest, Provider, ProviderError, ProviderResult,
+    ProviderToolDefinition, TokenUsage,
 };
 
 /// Tokens reserved for the model's response. The context window holds
@@ -21,6 +22,12 @@ const RESERVED_RESPONSE_TOKENS: u64 = 20_000;
 /// tends to under-count code and JSON.
 const COMPACTION_HEADROOM_TOKENS: u64 = 13_000;
 
+/// Layer 2 (blocking) headroom: a much tighter line than the proactive
+/// threshold. When the estimate crosses `window - BLOCKING_HEADROOM_TOKENS`
+/// the loop synthesizes a `ContextWindowExceeded` before the provider
+/// call goes out.
+pub(crate) const BLOCKING_HEADROOM_TOKENS: u64 = 3_000;
+
 /// Token count at which the proactive seam fires for a model with
 /// context window `window`. `None` when the window is unknown.
 pub(crate) fn threshold(window: Option<u64>) -> Option<u64> {
@@ -30,12 +37,33 @@ pub(crate) fn threshold(window: Option<u64>) -> Option<u64> {
     })
 }
 
+/// Token count at which the Layer 2 blocking guard fires. Sits much
+/// closer to the actual window than [`threshold`], so it only trips
+/// when proactive compaction has already run (or could not).
+pub(crate) fn blocking_threshold(window: Option<u64>) -> Option<u64> {
+    window.map(|size| size.saturating_sub(BLOCKING_HEADROOM_TOKENS))
+}
+
 /// Estimate of the next request's input-token count: the last response's
-/// reported input tokens plus a `bytes / 4` estimate over any messages
-/// appended since.
-pub(crate) fn estimate_next_request_tokens(last_usage: &TokenUsage, messages: &[Message]) -> u64 {
-    let new_bytes: usize = messages.iter().map(message_bytes).sum();
-    last_usage.input_tokens + (new_bytes / 4) as u64
+/// reported input tokens plus a `bytes / 4` estimate over the full
+/// request body the provider will see: every message in the current
+/// vector, the system prompt, and every tool definition. Sums *all*
+/// messages on purpose: this overcounts after the first iteration but
+/// the resulting conservatism keeps the proactive seam ahead of the
+/// real overflow.
+pub(crate) fn estimate_next_request_tokens(
+    last_usage: &TokenUsage,
+    messages: &[Message],
+    system_prompt: &str,
+    tools: &[ProviderToolDefinition],
+) -> u64 {
+    let mut bytes: usize = messages.iter().map(message_bytes).sum();
+    bytes += system_prompt.len();
+    bytes += tools
+        .iter()
+        .map(|t| t.name.len() + t.description.len() + t.input_schema.to_string().len())
+        .sum::<usize>();
+    last_usage.input_tokens + (bytes / 4) as u64
 }
 
 fn message_bytes(message: &Message) -> usize {
@@ -62,11 +90,13 @@ pub(crate) fn should_compact_proactively(
     window: Option<u64>,
     last_usage: &TokenUsage,
     messages: &[Message],
+    system_prompt: &str,
+    tools: &[ProviderToolDefinition],
 ) -> bool {
     let Some(threshold) = threshold(window) else {
         return false;
     };
-    estimate_next_request_tokens(last_usage, messages) >= threshold
+    estimate_next_request_tokens(last_usage, messages, system_prompt, tools) >= threshold
 }
 
 /// Replace `messages[head_len..]` with one user-role message containing a
@@ -133,7 +163,27 @@ mod tests {
             output_tokens: 200,
         };
         let messages = [Message::user("x".repeat(400))];
-        assert_eq!(estimate_next_request_tokens(&usage, &messages), 5_100);
+        assert_eq!(
+            estimate_next_request_tokens(&usage, &messages, "", &[]),
+            5_100,
+        );
+    }
+
+    #[test]
+    fn estimate_includes_system_prompt_and_tool_definitions() {
+        // bytes = system_prompt + tool(name+description+schema) + message
+        //       = 100 + (3 + 50 + "{}".len()) + 4 = 159
+        // estimate = 0 + 159/4 = 39
+        let usage = TokenUsage::default();
+        let messages = [Message::user("hi!!")];
+        let tools = vec![ProviderToolDefinition {
+            name: "tot".into(),
+            description: "x".repeat(50),
+            input_schema: serde_json::json!({}),
+        }];
+        let system_prompt = "x".repeat(100);
+        let got = estimate_next_request_tokens(&usage, &messages, &system_prompt, &tools);
+        assert_eq!(got, 39);
     }
 
     #[test]
@@ -143,7 +193,7 @@ mod tests {
             output_tokens: 0,
         };
         let messages = [Message::user("hi")];
-        assert!(!should_compact_proactively(None, &usage, &messages));
+        assert!(!should_compact_proactively(None, &usage, &messages, "", &[]));
     }
 
     #[test]
@@ -156,7 +206,9 @@ mod tests {
         assert!(!should_compact_proactively(
             Some(200_000),
             &usage,
-            &messages
+            &messages,
+            "",
+            &[],
         ));
     }
 
@@ -169,7 +221,20 @@ mod tests {
             output_tokens: 0,
         };
         let messages = [Message::user("hi")];
-        assert!(should_compact_proactively(Some(200_000), &usage, &messages));
+        assert!(should_compact_proactively(
+            Some(200_000),
+            &usage,
+            &messages,
+            "",
+            &[],
+        ));
+    }
+
+    #[test]
+    fn blocking_threshold_is_window_minus_3k() {
+        assert_eq!(blocking_threshold(Some(200_000)), Some(197_000));
+        assert_eq!(blocking_threshold(Some(2_000)), Some(0));
+        assert_eq!(blocking_threshold(None), None);
     }
 
     // ---- summarize_and_replace ----

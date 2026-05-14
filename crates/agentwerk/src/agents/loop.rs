@@ -126,6 +126,56 @@ async fn try_compact<F: Fn(EventKind)>(
     }
 }
 
+/// Consume one slot of `compaction_retry`, then run reactive
+/// compaction. If the budget is exhausted, fail the ticket with the
+/// synthesized "after compaction" message and signal `Break(())`.
+///
+/// Called from two sites:
+/// 1. The Layer 2 blocking check, when the estimate crosses the
+///    blocking threshold before the provider call goes out.
+/// 2. The reactive arm of the request retry loop, when the provider
+///    itself returns `ContextWindowExceeded`.
+///
+/// Both sites map the return value: `Continue` => `continue 'outer`,
+/// `Break` => `return` from `process_ticket`.
+#[allow(clippy::too_many_arguments)]
+async fn handle_overflow<F: Fn(EventKind)>(
+    compaction_retry: &mut ImmediateRetry,
+    provider: &Arc<dyn crate::providers::Provider>,
+    model: &str,
+    messages: &mut Vec<Message>,
+    head_len: usize,
+    emit: &F,
+    stats: &super::stats::Stats,
+    labels: &[String],
+    key: &str,
+) -> ControlFlow<()> {
+    if compaction_retry.try_consume().is_none() {
+        fail_request(
+            emit,
+            stats,
+            labels,
+            key,
+            &ProviderError::ContextWindowExceeded {
+                message: "context still exceeds window after compaction".into(),
+            },
+        );
+        return ControlFlow::Break(());
+    }
+    try_compact(
+        CompactReason::Reactive,
+        provider,
+        model,
+        messages,
+        head_len,
+        emit,
+        stats,
+        labels,
+        key,
+    )
+    .await
+}
+
 /// Per-agent claim loop. Picks the next eligible ticket and runs it
 /// through `process_ticket`. Idles on `IDLE_POLL_INTERVAL` when no
 /// work is queued; exits on cancel or policy violation.
@@ -251,14 +301,65 @@ async fn process_ticket(
             None => return,
         }
 
+        // System prompt and tool definitions are byte-stable inputs to
+        // the proactive estimate, the Layer 2 blocking check, and the
+        // request itself: compute once per iteration and feed all
+        // three.
+        let system_prompt_now = agent.system_prompt(Some(&knowledge_contents));
+        let tools_now = agent.tool_definitions();
+
         // ---- proactive compaction: collapse the tail before sending ----
         // Once the previous response's input-token estimate plus the
         // bytes appended since crosses the threshold, summarize the
         // tail in place so the next request fits.
         if let Some(usage) = &last_usage {
-            if compact::should_compact_proactively(window, usage, &messages)
-                && try_compact(
-                    CompactReason::Proactive,
+            if compact::should_compact_proactively(
+                window,
+                usage,
+                &messages,
+                &system_prompt_now,
+                &tools_now,
+            ) && try_compact(
+                CompactReason::Proactive,
+                &agent.provider_handle(),
+                agent.model_str(),
+                &mut messages,
+                head_len,
+                &emit,
+                &ticket_system.stats,
+                &labels,
+                key,
+            )
+            .await
+            .is_break()
+            {
+                return;
+            }
+        }
+
+        // ---- Layer 2 blocking limit ----
+        // After proactive (which may have shrunk `messages`), check the
+        // estimate against `window - BLOCKING_HEADROOM_TOKENS`. Crossing
+        // that line short-circuits the provider call: synthesize an
+        // overflow and route it through the reactive seam. Uses
+        // `handle_overflow`, so the synthetic path consumes the same
+        // `compaction_retry` budget a real overflow would.
+        if let Some(threshold) = compact::blocking_threshold(window) {
+            let default_usage = TokenUsage::default();
+            let usage = last_usage.as_ref().unwrap_or(&default_usage);
+            let estimate = compact::estimate_next_request_tokens(
+                usage,
+                &messages,
+                &system_prompt_now,
+                &tools_now,
+            );
+            if estimate >= threshold {
+                emit(EventKind::BlockingLimitExceeded {
+                    estimated_tokens: estimate,
+                    threshold_tokens: threshold,
+                });
+                match handle_overflow(
+                    &mut compaction_retry,
                     &agent.provider_handle(),
                     agent.model_str(),
                     &mut messages,
@@ -269,9 +370,10 @@ async fn process_ticket(
                     key,
                 )
                 .await
-                .is_break()
-            {
-                return;
+                {
+                    ControlFlow::Continue(()) => continue 'outer,
+                    ControlFlow::Break(()) => return,
+                }
             }
         }
 
@@ -280,9 +382,9 @@ async fn process_ticket(
         });
         let request = ModelRequest {
             model: agent.model_str().to_string(),
-            system_prompt: agent.system_prompt(Some(&knowledge_contents)),
+            system_prompt: system_prompt_now,
             messages: messages.clone(),
-            tools: agent.tool_definitions(),
+            tools: tools_now,
             max_request_tokens,
             tool_choice: None,
         };
@@ -302,20 +404,8 @@ async fn process_ticket(
             match outcome {
                 Ok(r) => break r,
                 Err(ProviderError::ContextWindowExceeded { .. }) => {
-                    if compaction_retry.try_consume().is_none() {
-                        fail_request(
-                            &emit,
-                            &ticket_system.stats,
-                            &labels,
-                            key,
-                            &ProviderError::ContextWindowExceeded {
-                                message: "context still exceeds window after compaction".into(),
-                            },
-                        );
-                        return;
-                    }
-                    match try_compact(
-                        CompactReason::Reactive,
+                    match handle_overflow(
+                        &mut compaction_retry,
                         &agent.provider_handle(),
                         agent.model_str(),
                         &mut messages,
@@ -363,7 +453,6 @@ async fn process_ticket(
             usage: response.usage.clone(),
         });
 
-        compaction_retry.reset();
         last_usage = Some(response.usage.clone());
 
         ticket_system
@@ -378,6 +467,34 @@ async fn process_ticket(
         messages.push(Message::Assistant {
             content: response.content.clone(),
         });
+
+        // ---- Layer 3: status-borne overflow ----
+        // Some providers (e.g. Anthropic) signal overflow as a status
+        // on a successful reply rather than a `ProviderError`. Route
+        // it through `handle_overflow` so the reactive seam catches
+        // it the same way it catches the error variant. The reset
+        // below is intentionally AFTER this branch: a status-overflow
+        // reply must not refill the compaction_retry budget.
+        if response.status == ResponseStatus::ContextWindowExceeded {
+            match handle_overflow(
+                &mut compaction_retry,
+                &agent.provider_handle(),
+                agent.model_str(),
+                &mut messages,
+                head_len,
+                &emit,
+                &ticket_system.stats,
+                &labels,
+                key,
+            )
+            .await
+            {
+                ControlFlow::Continue(()) => continue 'outer,
+                ControlFlow::Break(()) => return,
+            }
+        }
+
+        compaction_retry.reset();
 
         let calls: Vec<ToolCall> = response
             .content
@@ -454,7 +571,8 @@ async fn process_ticket(
             .interrupt_signal(Arc::clone(interrupt_signal))
             .registry(Arc::new(agent.tool_registry().clone()))
             .ticket_system(Arc::clone(ticket_system))
-            .agent_name(agent.get_name().to_string());
+            .agent_name(agent.get_name().to_string())
+            .knowledge(agent.knowledge_or_default());
         let outcomes = agent.tool_registry().execute(&calls, &ctx).await;
 
         let mut schema_failure_message: Option<String> = None;
@@ -2278,16 +2396,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn response_status_context_window_exceeded_is_currently_unhandled() {
-        // The reactive seam fires on ProviderError::ContextWindowExceeded
-        // only. A successful response carrying status=ContextWindowExceeded
-        // flows into the no-tool-call branch: the loop pushes a
-        // schema-retry directive and continues.
-        //
-        // Regression-ready: this test pins the current behavior so
-        // that fixing the gap (wiring the status into the reactive
-        // seam) will visibly flip an assertion.
+    async fn response_status_context_window_exceeded_triggers_reactive_compaction() {
+        // A successful response carrying `status=ContextWindowExceeded`
+        // is the same overflow signal as `ProviderError::ContextWindowExceeded`,
+        // delivered on a 200 OK. Layer 3 routes it through
+        // `handle_overflow`. The setup turn before the overflow
+        // grows the tail past the summarizer's two-message no-op
+        // floor; otherwise summarize_and_replace returns Ok(()) with
+        // no provider call and the next response slot would shift.
         let provider = MockProvider::with_results(vec![
+            Ok(text_response_with_usage("thinking", TokenUsage::default())),
             Ok(ModelResponse {
                 content: vec![ContentBlock::Text {
                     text: "oops".into(),
@@ -2296,48 +2414,78 @@ mod tests {
                 usage: TokenUsage::default(),
                 model: "mock".into(),
             }),
+            Ok(text_response_with_usage("SUMMARY", TokenUsage::default())),
             Ok(write_result_response("recovered")),
         ]);
         let (events, _, settled) = run_one_with_real_model(provider).await;
 
         assert_eq!(
             compaction_started_count(&events, CompactReason::Reactive),
-            0,
-            "ResponseStatus::ContextWindowExceeded must not (yet) fire reactive compaction",
-        );
-        assert_eq!(
-            compaction_started_count(&events, CompactReason::Proactive),
-            0,
-            "single overflow status should not trigger proactive either",
-        );
-        let schema_retries = schema_retries_in(&events);
-        assert_eq!(
-            schema_retries.len(),
             1,
-            "current behavior routes the overflow status through the schema-retry branch",
+            "ResponseStatus::ContextWindowExceeded must trigger reactive compaction",
+        );
+        assert_eq!(
+            compaction_finished_count(&events, CompactReason::Reactive),
+            1,
         );
         assert_eq!(settled.unwrap().status, Status::Done);
     }
 
     #[tokio::test]
-    async fn huge_tool_result_overflows_summarizer_and_fails_ticket() {
+    async fn response_status_context_window_exceeded_consumes_compaction_retry_budget() {
+        // After the setup turn, two consecutive responses carry the
+        // overflow status. The first consumes the ImmediateRetry
+        // budget via handle_overflow; the second finds no budget
+        // left (the reset below the status branch was skipped on the
+        // overflow path) and the ticket fails with the synthesized
+        // "after compaction" message.
+        let provider = MockProvider::with_results(vec![
+            Ok(text_response_with_usage("thinking", TokenUsage::default())),
+            Ok(ModelResponse {
+                content: vec![ContentBlock::Text {
+                    text: "first overflow".into(),
+                }],
+                status: ResponseStatus::ContextWindowExceeded,
+                usage: TokenUsage::default(),
+                model: "mock".into(),
+            }),
+            Ok(text_response_with_usage("SUMMARY", TokenUsage::default())),
+            Ok(ModelResponse {
+                content: vec![ContentBlock::Text {
+                    text: "second overflow".into(),
+                }],
+                status: ResponseStatus::ContextWindowExceeded,
+                usage: TokenUsage::default(),
+                model: "mock".into(),
+            }),
+        ]);
+        let (events, _, _) = run_one_with_real_model(provider).await;
+
+        assert_eq!(
+            compaction_started_count(&events, CompactReason::Reactive),
+            1,
+            "only the first overflow consumes the retry budget",
+        );
+        let failures = failures_in(&events);
+        assert!(!failures.is_empty());
+        assert!(
+            failures[0].contains("after compaction"),
+            "second overflow must surface the exhausted-budget message; got {:?}",
+            failures[0],
+        );
+    }
+
+    #[tokio::test]
+    async fn huge_tool_result_is_persisted_as_knowledge_page_and_ticket_finishes_done() {
+        use crate::agents::Knowledge;
         use crate::tools::{Tool, ToolResult};
 
-        // Turn 1: model calls `dump`; the tool returns ~800 KB of
-        // text. The ToolResult lands in messages.
-        // Top of turn 2: bytes/4 ≈ 200K > 167K threshold (200K Sonnet
-        // window). Proactive seam fires. summarize_and_replace builds
-        // a request from messages[head_len..], which still contains
-        // the giant ToolResult, so that summarize request itself
-        // overflows. The scripted ContextWindowExceeded propagates
-        // out of summarize_and_replace; try_compact emits
-        // CompactionFailed{Proactive} and fail_request surfaces
-        // RequestFailed + TicketFailed.
-        //
-        // Gap surfaced: when a single tool result is itself bigger
-        // than the window, the loop has no fallback (no blind
-        // tail-drop, no tool-result truncation). The ticket dies in
-        // one round trip.
+        // Layer 1: an ~800 KB tool result is far above PER_TOOL_CAP
+        // (50K). ToolRegistry::execute caps it to a stub before the
+        // ContentBlock::ToolResult lands in messages, and persists the
+        // full content as a Knowledge page named `tool-result-call-1`.
+        // The model then finishes the ticket in one more turn. No
+        // compaction fires; no failure surfaces.
         let provider = MockProvider::with_results(vec![
             Ok(ModelResponse {
                 content: vec![ContentBlock::ToolUse {
@@ -2349,9 +2497,7 @@ mod tests {
                 usage: TokenUsage::default(),
                 model: "mock".into(),
             }),
-            Err(ProviderError::ContextWindowExceeded {
-                message: "summarize request itself exceeds window".into(),
-            }),
+            Ok(write_result_response("done")),
         ]);
 
         let collected: Arc<StdMutex<Vec<Event>>> = Arc::new(StdMutex::new(Vec::new()));
@@ -2361,13 +2507,15 @@ mod tests {
         };
 
         let results_dir = crate::test_util::TempDir::new().unwrap();
+        let knowledge_dir = crate::test_util::TempDir::new().unwrap();
+        let store = Knowledge::open(knowledge_dir.path()).unwrap();
         let tickets = TicketSystem::new();
         tickets
             .dir(results_dir.path().to_path_buf())
             .max_request_retries(0)
             .request_retry_delay(Duration::from_millis(1))
             .max_schema_retries(10)
-            .max_time(Duration::from_millis(200));
+            .max_time(Duration::from_millis(500));
 
         let dump = Tool::new("dump", "Returns ~800 KB of text")
             .handler(|_input, _ctx| async move {
@@ -2380,118 +2528,7 @@ mod tests {
             .model("claude-sonnet-4-20250514")
             .role("test")
             .context("static")
-            .tool(dump)
-            .event_handler(handler);
-        tickets.agent(agent);
-        tickets.task("go");
-
-        let _ = tickets.finish().await;
-        let events = collected.lock().unwrap().clone();
-
-        assert_eq!(
-            compaction_started_count(&events, CompactReason::Proactive),
-            1,
-            "proactive compaction must fire exactly once before any retry",
-        );
-        assert!(
-            events.iter().any(|e| matches!(
-                &e.kind,
-                EventKind::CompactionFailed { reason: CompactReason::Proactive, .. },
-            )),
-            "summarize-call overflow must surface as CompactionFailed{{Proactive}}",
-        );
-
-        let failures = failures_in(&events);
-        assert!(!failures.is_empty(), "ticket must surface a request failure");
-        assert!(
-            failures[0].contains("summarize request itself exceeds window"),
-            "first failure must carry the summarizer's overflow message; got {:?}",
-            failures[0],
-        );
-
-        let started_idx = events
-            .iter()
-            .position(|e| matches!(
-                &e.kind,
-                EventKind::CompactionStarted { reason: CompactReason::Proactive },
-            ))
-            .expect("compaction must start");
-        let failed_idx = events
-            .iter()
-            .position(|e| matches!(
-                &e.kind,
-                EventKind::CompactionFailed { reason: CompactReason::Proactive, .. },
-            ))
-            .expect("compaction must fail");
-        let request_failed_idx = events
-            .iter()
-            .position(|e| matches!(&e.kind, EventKind::RequestFailed { .. }))
-            .expect("ticket must fail");
-        assert!(started_idx < failed_idx);
-        assert!(failed_idx < request_failed_idx);
-    }
-
-    #[tokio::test]
-    async fn proactive_compact_does_not_consume_reactive_budget() {
-        use crate::tools::{Tool, ToolResult};
-
-        // Same ticket exercises both seams:
-        //   Turn 1: model calls `dump`, which returns ~700 KB of
-        //   text. The ToolResult lands in messages.
-        //   Top of turn 2: bytes/4 ≈ 175K > 167K threshold →
-        //   proactive fires and summarize_and_replace collapses the
-        //   tail. The compacted main request then errors with a
-        //   (scripted) ContextWindowExceeded, exercising the reactive
-        //   seam in the same ticket.
-        //   Turn 3: write_result_response settles the ticket.
-        //
-        // Reactive's ImmediateRetry budget must still be intact: the
-        // proactive seam does not touch compaction_retry.
-        let provider = MockProvider::with_results(vec![
-            Ok(ModelResponse {
-                content: vec![ContentBlock::ToolUse {
-                    id: "call-1".into(),
-                    name: "dump".into(),
-                    input: serde_json::json!({}),
-                }],
-                status: ResponseStatus::ToolUse,
-                usage: TokenUsage::default(),
-                model: "mock".into(),
-            }),
-            Ok(text_response_with_usage("SUMMARY-A", TokenUsage::default())),
-            Err(ProviderError::ContextWindowExceeded {
-                message: "main request overflow after proactive".into(),
-            }),
-            Ok(text_response_with_usage("SUMMARY-B", TokenUsage::default())),
-            Ok(write_result_response("done")),
-        ]);
-
-        let collected: Arc<StdMutex<Vec<Event>>> = Arc::new(StdMutex::new(Vec::new()));
-        let handler: Arc<dyn Fn(Event) + Send + Sync> = {
-            let c = Arc::clone(&collected);
-            Arc::new(move |e| c.lock().unwrap().push(e))
-        };
-
-        let results_dir = crate::test_util::TempDir::new().unwrap();
-        let tickets = TicketSystem::new();
-        tickets
-            .dir(results_dir.path().to_path_buf())
-            .max_request_retries(0)
-            .request_retry_delay(Duration::from_millis(1))
-            .max_schema_retries(10)
-            .max_time(Duration::from_millis(500));
-
-        let dump = Tool::new("dump", "Returns ~700 KB of text")
-            .handler(|_input, _ctx| async move {
-                Ok(ToolResult::success("x".repeat(700_000)))
-            });
-
-        let agent = Agent::new()
-            .name("tester")
-            .provider(provider.clone() as Arc<dyn Provider>)
-            .model("claude-sonnet-4-20250514")
-            .role("test")
-            .context("static")
+            .knowledge(&store)
             .tool(dump)
             .event_handler(handler);
         tickets.agent(agent);
@@ -2501,7 +2538,75 @@ mod tests {
         let events = collected.lock().unwrap().clone();
         let settled = tickets.first();
 
-        assert_eq!(provider.requests(), 5);
+        assert_eq!(provider.requests(), 2);
+        assert_eq!(
+            compaction_started_count(&events, CompactReason::Proactive),
+            0,
+            "Layer 1 prevents the messages from ever crossing the proactive threshold",
+        );
+        assert!(failures_in(&events).is_empty());
+        assert_eq!(settled.unwrap().status, Status::Done);
+
+        // The Knowledge store carries the full original content under
+        // the expected slug, and the index summary names the tool.
+        let body = store
+            .read_page("tool-result-call-1")
+            .expect("knowledge page must exist");
+        assert!(body.contains(&"x".repeat(800_000)));
+        assert!(store.index().contains("dump output"));
+
+        // The second request (after the tool call) sees the stub in
+        // place of the giant blob.
+        let stub_visible = provider.received()[1].iter().any(|m| match m {
+            Message::User { content } => content.iter().any(|b| match b {
+                ContentBlock::ToolResult { content, .. } => {
+                    content.contains("<persisted-output>")
+                        && content.contains("tool-result-call-1")
+                }
+                _ => false,
+            }),
+            _ => false,
+        });
+        assert!(stub_visible, "stub must appear in the second request's messages");
+    }
+
+    #[tokio::test]
+    async fn proactive_compact_does_not_consume_reactive_budget() {
+        // Both seams must fire on the same ticket. To trip proactive
+        // without relying on tool-result bytes (which Layer 1 now
+        // stubs), prime `last_usage` via a high input_tokens reply.
+        //
+        // Sequence:
+        //   1. text(170K input)  : primes proactive on step 2.
+        //   2. text("SUMMARY-A") : proactive summarize on step 2.
+        //   3. text(default usage): main of step 2; clears last_usage
+        //                           so proactive is quiet on step 3.
+        //   4. Err(ContextWindowExceeded): main of step 3 overflows;
+        //                                  reactive consumes its budget.
+        //   5. text("SUMMARY-B") : reactive summarize on step 3.
+        //   6. write_result_response: settles the ticket on step 3 retry.
+        //
+        // Proactive must not consume compaction_retry: the reactive
+        // seam in step 3 still has its full ImmediateRetry budget.
+        let provider = MockProvider::with_results(vec![
+            Ok(text_response_with_usage(
+                "thinking...",
+                TokenUsage {
+                    input_tokens: 170_000,
+                    output_tokens: 0,
+                },
+            )),
+            Ok(text_response_with_usage("SUMMARY-A", TokenUsage::default())),
+            Ok(text_response_with_usage("thinking again", TokenUsage::default())),
+            Err(ProviderError::ContextWindowExceeded {
+                message: "main request overflow after proactive".into(),
+            }),
+            Ok(text_response_with_usage("SUMMARY-B", TokenUsage::default())),
+            Ok(write_result_response("done")),
+        ]);
+        let (events, provider, settled) = run_one_with_real_model(provider).await;
+
+        assert_eq!(provider.requests(), 6);
         assert_eq!(
             compaction_started_count(&events, CompactReason::Proactive),
             1,
@@ -2521,5 +2626,373 @@ mod tests {
         );
         assert!(failures_in(&events).is_empty());
         assert_eq!(settled.unwrap().status, Status::Done);
+    }
+
+    #[tokio::test]
+    async fn parallel_moderate_results_aggregate_offloads_largest_first() {
+        use crate::agents::Knowledge;
+        use crate::tools::{Tool, ToolResult};
+
+        // Five parallel calls to `size_tool`, each below PER_TOOL_CAP
+        // (50K) but together over PER_STEP_CAP (200K). The aggregate
+        // pass stubs the largest first; one offload brings the step
+        // under budget, so only `c1` is replaced.
+        let provider = MockProvider::with_results(vec![
+            Ok(ModelResponse {
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: "c1".into(),
+                        name: "size_tool".into(),
+                        input: serde_json::json!({"bytes": 48_000}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "c2".into(),
+                        name: "size_tool".into(),
+                        input: serde_json::json!({"bytes": 47_000}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "c3".into(),
+                        name: "size_tool".into(),
+                        input: serde_json::json!({"bytes": 46_000}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "c4".into(),
+                        name: "size_tool".into(),
+                        input: serde_json::json!({"bytes": 45_000}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "c5".into(),
+                        name: "size_tool".into(),
+                        input: serde_json::json!({"bytes": 44_000}),
+                    },
+                ],
+                status: ResponseStatus::ToolUse,
+                usage: TokenUsage::default(),
+                model: "mock".into(),
+            }),
+            Ok(write_result_response("done")),
+        ]);
+
+        let collected: Arc<StdMutex<Vec<Event>>> = Arc::new(StdMutex::new(Vec::new()));
+        let handler: Arc<dyn Fn(Event) + Send + Sync> = {
+            let c = Arc::clone(&collected);
+            Arc::new(move |e| c.lock().unwrap().push(e))
+        };
+
+        let results_dir = crate::test_util::TempDir::new().unwrap();
+        let knowledge_dir = crate::test_util::TempDir::new().unwrap();
+        let store = Knowledge::open(knowledge_dir.path()).unwrap();
+        let tickets = TicketSystem::new();
+        tickets
+            .dir(results_dir.path().to_path_buf())
+            .max_request_retries(0)
+            .request_retry_delay(Duration::from_millis(1))
+            .max_schema_retries(10)
+            .max_time(Duration::from_millis(500));
+
+        let size_tool = Tool::new("size_tool", "Returns N bytes of 'x'")
+            .schema(serde_json::json!({
+                "type": "object",
+                "properties": {"bytes": {"type": "integer"}},
+                "required": ["bytes"],
+            }))
+            .read_only(true)
+            .handler(|input, _ctx| async move {
+                let bytes = input["bytes"].as_u64().unwrap_or(0) as usize;
+                Ok(ToolResult::success("x".repeat(bytes)))
+            });
+
+        tickets.agent(
+            Agent::new()
+                .name("tester")
+                .provider(provider.clone() as Arc<dyn Provider>)
+                .model("mock")
+                .role("test")
+                .knowledge(&store)
+                .tool(size_tool)
+                .event_handler(handler),
+        );
+        tickets.task("go");
+
+        let _ = tickets.finish().await;
+        let settled = tickets.first();
+        assert_eq!(settled.unwrap().status, Status::Done);
+
+        // The second request carries one stub (for c1) and four
+        // unchanged tool results (c2..c5).
+        let second = &provider.received()[1];
+        let tool_results: Vec<&String> = second
+            .iter()
+            .flat_map(|m| match m {
+                Message::User { content } => content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::ToolResult { content, .. } => Some(content),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect();
+        let stub_count = tool_results
+            .iter()
+            .filter(|c| c.starts_with("<persisted-output>"))
+            .count();
+        assert_eq!(stub_count, 1, "exactly one tool result gets offloaded");
+
+        // The lone stub belongs to c1 (the largest input).
+        let stub = tool_results
+            .iter()
+            .find(|c| c.starts_with("<persisted-output>"))
+            .expect("stub must be present");
+        assert!(stub.contains("tool-result-c1"));
+
+        // The offloaded content survives in Knowledge at full size.
+        let body = store.read_page("tool-result-c1").unwrap();
+        assert!(body.starts_with(&"x".repeat(48_000)));
+    }
+
+    #[tokio::test]
+    async fn next_ticket_sees_offloaded_results_in_knowledge_index() {
+        use crate::agents::Knowledge;
+        use crate::tools::{Tool, ToolResult};
+
+        // Ticket 1 offloads a giant `dump` result; ticket 2 should
+        // see the page under `## Knowledge` in its system prompt at
+        // step 1 (knowledge index is captured at the top of each
+        // ticket).
+        let provider = MockProvider::with_results(vec![
+            Ok(ModelResponse {
+                content: vec![ContentBlock::ToolUse {
+                    id: "call-1".into(),
+                    name: "dump".into(),
+                    input: serde_json::json!({}),
+                }],
+                status: ResponseStatus::ToolUse,
+                usage: TokenUsage::default(),
+                model: "mock".into(),
+            }),
+            Ok(write_result_response("first")),
+            Ok(write_result_response("second")),
+        ]);
+
+        let results_dir = crate::test_util::TempDir::new().unwrap();
+        let knowledge_dir = crate::test_util::TempDir::new().unwrap();
+        let store = Knowledge::open(knowledge_dir.path()).unwrap();
+        let tickets = TicketSystem::new();
+        tickets
+            .dir(results_dir.path().to_path_buf())
+            .max_request_retries(0)
+            .request_retry_delay(Duration::from_millis(1))
+            .max_time(Duration::from_millis(500));
+
+        let dump = Tool::new("dump", "Returns ~800 KB of text")
+            .handler(|_input, _ctx| async move {
+                Ok(ToolResult::success("x".repeat(800_000)))
+            });
+
+        tickets.agent(
+            Agent::new()
+                .name("tester")
+                .provider(provider.clone() as Arc<dyn Provider>)
+                .model("mock")
+                .role("test")
+                .knowledge(&store)
+                .tool(dump),
+        );
+        tickets.task("first");
+        tickets.task("second");
+        let _ = tickets.finish().await;
+
+        let prompts = provider.received_system_prompts();
+        assert_eq!(prompts.len(), 3);
+        assert!(
+            !prompts[0].contains("tool-result-call-1"),
+            "ticket 1's first step has an empty knowledge index",
+        );
+        assert!(
+            prompts[2].contains("## Knowledge"),
+            "ticket 2 should render the knowledge section: {:?}",
+            prompts[2],
+        );
+        assert!(
+            prompts[2].contains("tool-result-call-1"),
+            "ticket 2 should see the offloaded slug: {:?}",
+            prompts[2],
+        );
+        assert!(
+            prompts[2].contains("dump output"),
+            "ticket 2's index entry names the tool: {:?}",
+            prompts[2],
+        );
+    }
+
+    // =====================================================================
+    // Bucket H — Layer 2 blocking limit (pre-flight)
+    // =====================================================================
+
+    fn blocking_limit_count(events: &[Event]) -> usize {
+        events
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::BlockingLimitExceeded { .. }))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn blocking_limit_exceeded_emits_event_and_skips_provider_call() {
+        // Step 1 primes last_usage above the 197K blocking threshold
+        // for the 200K Sonnet window. On step 2 both seams cross
+        // their lines: proactive runs first, blocking runs after, and
+        // handle_overflow routes the synthetic overflow through the
+        // reactive seam.
+        //
+        // The contract: every BlockingLimitExceeded is immediately
+        // followed by a CompactionStarted{Reactive} (or a
+        // RequestFailed when the budget is exhausted), and never by a
+        // RequestStarted. The synthetic path does not call the
+        // provider.
+        let provider = MockProvider::with_results(vec![
+            Ok(text_response_with_usage(
+                "thinking",
+                TokenUsage {
+                    input_tokens: 198_000,
+                    output_tokens: 0,
+                },
+            )),
+            Ok(text_response_with_usage("SUMMARY-A", TokenUsage::default())),
+            Ok(text_response_with_usage("SUMMARY-B", TokenUsage::default())),
+            Ok(text_response_with_usage("SUMMARY-C", TokenUsage::default())),
+        ]);
+        let (events, _, _) = run_one_with_real_model(provider).await;
+
+        assert!(
+            blocking_limit_count(&events) >= 1,
+            "blocking guard must trip when estimate >= window - 3K",
+        );
+
+        for window in events.windows(2) {
+            if matches!(&window[0].kind, EventKind::BlockingLimitExceeded { .. }) {
+                assert!(
+                    matches!(
+                        &window[1].kind,
+                        EventKind::CompactionStarted { reason: CompactReason::Reactive }
+                            | EventKind::RequestFailed { .. },
+                    ),
+                    "BlockingLimitExceeded must be followed by CompactionStarted{{Reactive}} \
+                     or RequestFailed, never a provider call. Got: {:?}",
+                    window[1].kind,
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn blocking_limit_uses_compaction_retry_budget() {
+        // Two iterations trip the blocking guard. The first consumes
+        // the ImmediateRetry budget via handle_overflow; the second
+        // finds no budget left and fail_request surfaces the
+        // synthesized "context still exceeds window after compaction"
+        // message.
+        let provider = MockProvider::with_results(vec![
+            Ok(text_response_with_usage("low", TokenUsage::default())),
+            Ok(text_response_with_usage(
+                "huge",
+                TokenUsage {
+                    input_tokens: 198_000,
+                    output_tokens: 0,
+                },
+            )),
+            Ok(text_response_with_usage("SUMMARY-A", TokenUsage::default())),
+            Ok(text_response_with_usage("SUMMARY-B", TokenUsage::default())),
+            Ok(text_response_with_usage("SUMMARY-C", TokenUsage::default())),
+        ]);
+        let (events, _, _) = run_one_with_real_model(provider).await;
+
+        assert!(
+            blocking_limit_count(&events) >= 2,
+            "two consecutive iterations should trip the blocking guard",
+        );
+
+        let failures = failures_in(&events);
+        assert!(!failures.is_empty());
+        assert!(
+            failures[0].contains("after compaction"),
+            "first failure must carry the synthesized \"after compaction\" message; got {:?}",
+            failures[0],
+        );
+    }
+
+    #[tokio::test]
+    async fn blocking_limit_does_not_fire_in_first_iteration() {
+        // last_usage is None on step 1, so the estimate floor is 0 +
+        // (tiny prompt/tools/messages) / 4. Far below the 197K
+        // blocking threshold. No BlockingLimitExceeded event.
+        let provider = MockProvider::with_results(vec![Ok(write_result_response("done"))]);
+        let (events, _, settled) = run_one_with_real_model(provider).await;
+
+        assert_eq!(blocking_limit_count(&events), 0);
+        assert_eq!(settled.unwrap().status, Status::Done);
+    }
+
+    #[tokio::test]
+    async fn blocking_limit_includes_system_prompt_and_tools_in_estimate() {
+        // last_usage = 195_500 sits below the 197K blocking threshold
+        // on its own. A tool with a hefty description adds ~1.5K
+        // tokens (6K bytes / 4) to the estimate; the addition pushes
+        // the total over the line and the blocking guard fires.
+        // Without that tool contribution, blocking would not trip.
+        use crate::tools::{Tool, ToolResult};
+
+        let provider = MockProvider::with_results(vec![
+            Ok(text_response_with_usage(
+                "thinking",
+                TokenUsage {
+                    input_tokens: 195_500,
+                    output_tokens: 0,
+                },
+            )),
+            Ok(text_response_with_usage("SUMMARY-A", TokenUsage::default())),
+            Ok(text_response_with_usage("SUMMARY-B", TokenUsage::default())),
+            Ok(text_response_with_usage("SUMMARY-C", TokenUsage::default())),
+        ]);
+
+        let collected: Arc<StdMutex<Vec<Event>>> = Arc::new(StdMutex::new(Vec::new()));
+        let handler: Arc<dyn Fn(Event) + Send + Sync> = {
+            let c = Arc::clone(&collected);
+            Arc::new(move |e| c.lock().unwrap().push(e))
+        };
+
+        let big_desc = "x".repeat(6_000);
+        let big_tool = Tool::new("big_tool", big_desc)
+            .handler(|_input, _ctx| async { Ok(ToolResult::success("ok")) });
+
+        let results_dir = crate::test_util::TempDir::new().unwrap();
+        let tickets = TicketSystem::new();
+        tickets
+            .dir(results_dir.path().to_path_buf())
+            .max_request_retries(0)
+            .request_retry_delay(Duration::from_millis(1))
+            .max_schema_retries(10)
+            .max_time(Duration::from_millis(500));
+
+        tickets.agent(
+            Agent::new()
+                .name("tester")
+                .provider(provider.clone() as Arc<dyn Provider>)
+                .model("claude-sonnet-4-20250514")
+                .role("test")
+                .context("static")
+                .tool(big_tool)
+                .event_handler(handler),
+        );
+        tickets.task("go");
+
+        let _ = tickets.finish().await;
+        let events = collected.lock().unwrap().clone();
+
+        assert!(
+            blocking_limit_count(&events) >= 1,
+            "tool-description bytes must contribute to the estimate and push it over threshold",
+        );
     }
 }

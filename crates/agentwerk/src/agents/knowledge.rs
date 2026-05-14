@@ -246,7 +246,7 @@ impl Knowledge {
 /// Slashes, dots, underscores, spaces, and other non-alphanumeric
 /// characters are replaced with hyphens; consecutive hyphens are
 /// collapsed; file extensions are stripped.
-fn normalize_slug(raw: &str) -> Result<String, String> {
+pub(crate) fn normalize_slug(raw: &str) -> Result<String, String> {
     let slug: String = raw
         .to_ascii_lowercase()
         .chars()
