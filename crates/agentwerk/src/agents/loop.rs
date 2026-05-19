@@ -15,7 +15,7 @@ use super::agent::Agent;
 use super::compact;
 use super::retry::{ExponentialRetry, ImmediateRetry, Retry};
 use super::stats::LoopStats;
-use super::tickets::{policy_violated_kind, Status};
+use super::tickets::{policy_violated_kind, to_messages, Comment, Status};
 use crate::prompts::{retry_directive, schema_retry_detail};
 use crate::tools::{missing_finisher_detail, FINISHER_TOOL_NAMES};
 
@@ -37,6 +37,7 @@ struct TicketScope<'a, F> {
 
     emit: &'a F,
     stats: &'a super::stats::Stats,
+    ticket_system: &'a Arc<crate::agents::tickets::TicketSystem>,
 }
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -92,16 +93,43 @@ fn fail_ticket<F: Fn(EventKind)>(scope: &TicketScope<'_, F>, err: &ProviderError
 }
 
 /// `Proceed` on success, `Stop` (ticket already failed) on error.
+/// Operates entirely on the ticket's comments: reads them, derives
+/// `Message` values, runs the summariser, and writes the boundary
+/// plus summary back through `replace_comment_tail`. Noop-by-tail-too-
+/// short is preserved by checking whether the summariser actually
+/// shrank the derived message list.
 async fn try_compact<F: Fn(EventKind)>(
     reason: CompactReason,
     scope: &TicketScope<'_, F>,
-    messages: &mut Vec<Message>,
 ) -> LoopAction {
     (scope.emit)(EventKind::CompactionStarted { reason });
-    match compact::summarize_and_replace(scope.provider, scope.model_name, messages, scope.preserved_len)
-        .await
+    let Some(ticket) = scope.ticket_system.get(scope.key) else {
+        return LoopAction::Stop;
+    };
+    let comments = ticket.comments();
+    let messages_preserved_len = to_messages(&comments[..scope.preserved_len]).len();
+    let mut messages = to_messages(comments);
+    let pre_len = messages.len();
+    match compact::summarize_and_replace(
+        scope.provider,
+        scope.model_name,
+        &mut messages,
+        messages_preserved_len,
+    )
+    .await
     {
         Ok(()) => {
+            if messages.len() != pre_len {
+                let summary = summary_text(&messages[messages_preserved_len]);
+                scope.ticket_system.replace_comment_tail(
+                    scope.key,
+                    scope.preserved_len,
+                    vec![
+                        Comment::system_text(format!("compacted: reason={reason:?}")),
+                        Comment::user_text(summary),
+                    ],
+                );
+            }
             (scope.emit)(EventKind::CompactionFinished { reason });
             LoopAction::Proceed
         }
@@ -116,11 +144,27 @@ async fn try_compact<F: Fn(EventKind)>(
     }
 }
 
+/// Extract the text body of a user-role summary message produced by
+/// `summarize_and_replace`. Returns an empty string if the message
+/// shape changes; the caller still records a boundary so observers can
+/// see where compaction landed.
+fn summary_text(message: &Message) -> String {
+    match message {
+        Message::User { content } => content
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
 /// `Replay` on success, `Stop` when exhausted or on failure.
 async fn compact_or_stop<F: Fn(EventKind)>(
     compaction_retry: &mut ImmediateRetry,
     scope: &TicketScope<'_, F>,
-    messages: &mut Vec<Message>,
 ) -> LoopAction {
     if compaction_retry.try_consume().is_none() {
         fail_ticket(
@@ -131,7 +175,7 @@ async fn compact_or_stop<F: Fn(EventKind)>(
         );
         return LoopAction::Stop;
     }
-    match try_compact(CompactReason::Reactive, scope, messages).await {
+    match try_compact(CompactReason::Reactive, scope).await {
         LoopAction::Proceed => LoopAction::Replay,
         other => other,
     }
@@ -205,12 +249,26 @@ async fn process_ticket(
 
     let policies = ticket_system.policies();
     let window = Model::from_name(agent.model_str()).context_window_size;
-    let mut messages: Vec<Message> = Vec::new();
+
+    // Hoist the system prompt: it's byte-stable per ticket and we both
+    // record it once as the leading transcript comment and reuse it for
+    // every request in this loop.
+    let system_prompt = agent.system_prompt(Some(&knowledge_index));
+
+    // Seed the ticket's transcript with the system prompt, the optional
+    // context prelude, and the task body. `preserved_len` is the count
+    // of seeded comments: compaction summarises everything past it.
+    ticket_system.add_comment(key, Comment::system_text(system_prompt.clone()));
+    let mut preserved_len = 1usize;
     if let Some(context_msg) = agent.context_message(&policies, &ticket_system.stats) {
-        messages.push(Message::user(context_msg));
+        ticket_system.add_comment(key, Comment::user_text(context_msg));
+        preserved_len += 1;
     }
-    messages.push(task_message);
-    let preserved_len = messages.len();
+    let Message::User { content: task_blocks } = &task_message else {
+        unreachable!("Ticket::as_user_message returns Message::User");
+    };
+    ticket_system.add_comment(key, Comment::user(task_blocks));
+    preserved_len += 1;
     emit(EventKind::TicketStarted {
         key: key.to_string(),
     });
@@ -224,6 +282,7 @@ async fn process_ticket(
         preserved_len,
         emit: &emit,
         stats: &ticket_system.stats,
+        ticket_system,
     };
 
     let max_request_tokens = policies.max_request_tokens;
@@ -249,16 +308,19 @@ async fn process_ticket(
         if interrupt_signal.load(Ordering::Relaxed) {
             return;
         }
-        match ticket_system.get(key) {
+        let ticket = match ticket_system.get(key) {
             Some(t) if matches!(t.status, Status::Done | Status::Failed) => {
                 emit(event_for_status(t.status, key));
                 return;
             }
+            Some(t) => t,
             None => return,
-            _ => {}
-        }
+        };
+        // Derive messages from the ticket each turn so the loop carries
+        // no parallel transcript: every `add_comment` is visible on the
+        // next iteration without manual bookkeeping.
+        let mut messages = to_messages(ticket.comments());
 
-        let system_prompt = agent.system_prompt(Some(&knowledge_index));
         let tools = agent.tool_definitions();
 
         let exceeds_proactive_threshold = last_usage.as_ref().is_some_and(|usage| {
@@ -271,11 +333,17 @@ async fn process_ticket(
             )
         });
         if exceeds_proactive_threshold {
-            if matches!(
-                try_compact(CompactReason::Proactive, &scope, &mut messages).await,
-                LoopAction::Stop
-            ) {
-                return;
+            match try_compact(CompactReason::Proactive, &scope).await {
+                LoopAction::Stop => return,
+                _ => {
+                    // Proactive compaction may have rewritten the
+                    // ticket's tail; re-read so the request below sees
+                    // the post-compaction transcript.
+                    messages = ticket_system
+                        .get(key)
+                        .map(|t| to_messages(t.comments()))
+                        .unwrap_or_default();
+                }
             }
         }
 
@@ -298,7 +366,7 @@ async fn process_ticket(
             true
         });
         if exceeds_blocking_limit {
-            match compact_or_stop(&mut compaction_retry, &scope, &mut messages).await {
+            match compact_or_stop(&mut compaction_retry, &scope).await {
                 LoopAction::Replay => continue 'outer,
                 LoopAction::Stop => return,
                 LoopAction::Proceed => {}
@@ -310,8 +378,8 @@ async fn process_ticket(
         });
         let request = ModelRequest {
             model: agent.model_str().to_string(),
-            system_prompt,
-            messages: messages.clone(),
+            system_prompt: system_prompt.clone(),
+            messages,
             tools,
             max_request_tokens,
             tool_choice: None,
@@ -327,7 +395,7 @@ async fn process_ticket(
             match outcome {
                 Ok(resp) => break resp,
                 Err(ProviderError::ContextWindowExceeded { .. }) => {
-                    match compact_or_stop(&mut compaction_retry, &scope, &mut messages).await {
+                    match compact_or_stop(&mut compaction_retry, &scope).await {
                         LoopAction::Replay => continue 'outer,
                         LoopAction::Stop => return,
                         LoopAction::Proceed => {}
@@ -374,14 +442,12 @@ async fn process_ticket(
                 .stats_for_label(label)
                 .record_request(response.usage.input_tokens, response.usage.output_tokens);
         }
-        messages.push(Message::Assistant {
-            content: response.content.clone(),
-        });
+        ticket_system.add_comment(key, Comment::assistant(&response.content));
 
         // Reset is intentionally AFTER this branch: a status-overflow
         // reply must not refill the compaction_retry budget.
         if response.status == ResponseStatus::ContextWindowExceeded {
-            match compact_or_stop(&mut compaction_retry, &scope, &mut messages).await {
+            match compact_or_stop(&mut compaction_retry, &scope).await {
                 LoopAction::Replay => continue 'outer,
                 LoopAction::Stop => return,
                 LoopAction::Proceed => {}
@@ -422,11 +488,10 @@ async fn process_ticket(
                     max_attempts: max_schema_retries,
                     message: finisher_detail.clone(),
                 });
-                messages.push(Message::User {
-                    content: vec![ContentBlock::Text {
-                        text: retry_directive(&finisher_detail),
-                    }],
-                });
+                ticket_system.add_comment(
+                    key,
+                    Comment::user_text(retry_directive(&finisher_detail)),
+                );
                 if consecutive_schema_failures >= max_schema_retries {
                     fail_ticket_schema_exhausted(ticket_system, key, max_schema_retries, &emit);
                     return;
@@ -521,7 +586,7 @@ async fn process_ticket(
                 text: retry_directive(&schema_detail),
             });
         }
-        messages.push(Message::User { content: blocks });
+        ticket_system.add_comment(key, Comment::user(&blocks));
 
         for _ in 0..calls.len() {
             ticket_system.stats.record_tool_call();
@@ -580,7 +645,7 @@ mod tests {
     use crate::schemas::Schema;
     use crate::tools::ManageTicketsTool;
 
-    use super::super::tickets::{Ticket, TicketSystem};
+    use super::super::tickets::{CommentContent, Ticket, TicketSystem};
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
@@ -2860,5 +2925,159 @@ mod tests {
             blocking_limit_events(&events) >= 1,
             "tool-description bytes must contribute to the estimate and push it over threshold",
         );
+    }
+
+    // Comment transcript
+
+    #[tokio::test]
+    async fn comments_capture_full_transcript() {
+        let provider = MockProvider::with_results(vec![Ok(write_result_response("ok"))]);
+        let (_, _, ticket) = run_one(provider, 3, 10, None).await;
+
+        let comments = ticket.comments();
+        // [system(prompt), user(context prelude), user(task), assistant(tool_use), user(tool_result)]
+        assert_eq!(comments.len(), 5, "got {comments:?}");
+
+        assert_eq!(comments[0].author, "system");
+        assert!(matches!(&comments[0].content[..], [CommentContent::Text(_)]));
+
+        assert_eq!(comments[1].author, "user");
+        assert!(
+            matches!(&comments[1].content[..], [CommentContent::Text(t)] if t.starts_with("## Context")),
+            "second comment must be the auto-injected context prelude",
+        );
+
+        assert_eq!(comments[2].author, "user");
+        assert!(
+            matches!(&comments[2].content[..], [CommentContent::Text(t)] if t == "go"),
+            "third comment must carry the task body",
+        );
+
+        assert_eq!(comments[3].author, "assistant");
+        assert!(
+            matches!(&comments[3].content[..], [CommentContent::ToolUse { name, .. }] if name == "write_result_tool"),
+            "assistant comment must mirror the model's ToolUse block",
+        );
+
+        assert_eq!(comments[4].author, "user");
+        assert!(
+            matches!(&comments[4].content[..], [CommentContent::ToolResult { .. }]),
+            "tool-result comment must carry a ToolResult block",
+        );
+
+        for w in comments.windows(2) {
+            assert!(
+                w[0].created_at <= w[1].created_at,
+                "comment timestamps must be monotonic",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn comments_record_schema_retry_directive() {
+        // Mirrors text_reply_no_schema_retries_then_recovers: a text-only
+        // reply triggers a no-finisher retry directive, then the model
+        // recovers with a write_result_tool call.
+        let provider = MockProvider::with_results(vec![
+            Ok(text_response("Hello!")),
+            Ok(write_result_response("done")),
+        ]);
+        let (_, _, ticket) = run_one(provider, 3, 10, None).await;
+
+        let comments = ticket.comments();
+
+        // First assistant comment is the text-only reply.
+        let first_assistant = comments
+            .iter()
+            .position(|c| {
+                c.author == "assistant"
+                    && matches!(&c.content[..], [CommentContent::Text(t)] if t == "Hello!")
+            })
+            .expect("expected the text-only assistant reply in the transcript");
+
+        // Directive comment lands immediately after.
+        let directive = &comments[first_assistant + 1];
+        assert_eq!(directive.author, "user");
+        let directive_text = match &directive.content[..] {
+            [CommentContent::Text(t)] => t,
+            other => panic!("expected a single text block for the directive, got {other:?}"),
+        };
+        assert!(
+            directive_text.contains("write_result_tool"),
+            "directive must name the missing finisher: {directive_text}",
+        );
+
+        // The recovering ToolUse comes after the directive.
+        let second_assistant = comments
+            .iter()
+            .skip(first_assistant + 2)
+            .find(|c| {
+                c.author == "assistant"
+                    && matches!(&c.content[..], [CommentContent::ToolUse { name, .. }] if name == "write_result_tool")
+            });
+        assert!(
+            second_assistant.is_some(),
+            "expected a recovering ToolUse assistant comment after the directive",
+        );
+    }
+
+    #[tokio::test]
+    async fn comments_record_compaction_boundary() {
+        // Mirrors reactive_overflow_compacts_then_succeeds: turn 1 pads
+        // the messages, turn 2 overflows and triggers compaction, the
+        // summarizer reply (turn 3) becomes the new tail, turn 4
+        // finishes. Compaction rewrites the ticket's comments by
+        // truncating the tail and appending a boundary marker plus the
+        // summary, so the pre-compaction "turn 1" entry is gone.
+        let provider = MockProvider::with_results(vec![
+            Ok(text_response("turn 1")),
+            Err(ProviderError::ContextWindowExceeded {
+                message: "exceeded".into(),
+            }),
+            Ok(text_response_with_usage("SUMMARY", TokenUsage::default())),
+            Ok(write_result_response("ok")),
+        ]);
+        let (_, _, ticket) = run_one(provider, 0, 10, None).await;
+
+        let comments = ticket.comments();
+
+        let boundary_idx = comments
+            .iter()
+            .position(|c| {
+                c.author == "system"
+                    && matches!(&c.content[..], [CommentContent::Text(t)] if t.starts_with("compacted:"))
+            })
+            .expect("expected a 'compacted:' system comment");
+
+        let boundary_text = match &comments[boundary_idx].content[..] {
+            [CommentContent::Text(t)] => t,
+            other => panic!("boundary comment must be a single text block, got {other:?}"),
+        };
+        assert!(
+            boundary_text.contains("Reactive"),
+            "boundary must record the reason: {boundary_text}",
+        );
+
+        // The boundary is immediately followed by the user-author
+        // summary comment carrying the summariser's reply.
+        let summary = &comments[boundary_idx + 1];
+        assert_eq!(summary.author, "user");
+        assert!(
+            matches!(&summary.content[..], [CommentContent::Text(t)] if t == "SUMMARY"),
+            "summary comment must carry the summariser's text, got {:?}",
+            summary.content,
+        );
+
+        // Pre-compaction tail entries (turn-1 assistant text, the
+        // intervening no-finisher directive) were truncated.
+        assert!(
+            !comments.iter().any(|c| {
+                matches!(&c.content[..], [CommentContent::Text(t)] if t == "turn 1")
+            }),
+            "compaction must drop pre-boundary tail entries",
+        );
+
+        // System prompt remains the first comment.
+        assert_eq!(comments[0].author, "system");
     }
 }

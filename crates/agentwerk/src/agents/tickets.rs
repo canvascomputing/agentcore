@@ -15,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use tokio::task::JoinHandle;
 
-use crate::providers::{AsUserMessage, Message};
+use crate::providers::{AsUserMessage, ContentBlock, Message};
 
 use super::agent::Agent;
 use super::policy::Policies;
@@ -48,6 +48,12 @@ pub struct Ticket {
     /// Back-reference to another ticket, or `None` when the ticket
     /// has no parent. Caller-settable via [`Ticket::parent`].
     pub(crate) parent: Option<String>,
+    /// Append-only transcript of the messages the agent loop sent to
+    /// the provider for this ticket, plus a leading `system` entry for
+    /// the system prompt and synthetic `system` entries marking
+    /// compaction boundaries. System-managed: callers cannot push
+    /// directly.
+    pub(crate) comments: Vec<Comment>,
 }
 
 impl Ticket {
@@ -70,6 +76,7 @@ impl Ticket {
             failed_at: None,
             result: None,
             parent: None,
+            comments: Vec::new(),
         }
     }
 
@@ -196,6 +203,14 @@ impl Ticket {
     pub fn parent_key(&self) -> Option<&str> {
         self.parent.as_deref()
     }
+
+    /// Transcript of messages the agent loop sent to the provider for
+    /// this ticket, in order. Includes a leading `system` entry for
+    /// the system prompt and synthetic `system` entries at compaction
+    /// boundaries.
+    pub fn comments(&self) -> &[Comment] {
+        &self.comments
+    }
 }
 
 impl AsUserMessage for Ticket {
@@ -227,6 +242,140 @@ impl Status {
             Status::Done => "done",
             Status::Failed => "failed",
         }
+    }
+}
+
+/// One entry in a ticket's transcript.
+#[derive(Debug, Clone)]
+pub struct Comment {
+    /// Role of the originating message: `"user"` or `"assistant"`. The
+    /// agent loop also writes `"system"` entries for the system prompt
+    /// and for compaction boundaries; those are filtered when
+    /// projecting comments back into `Message` values for the provider.
+    pub author: String,
+    pub content: Vec<CommentContent>,
+    /// Millis since epoch.
+    pub created_at: u64,
+}
+
+/// Ticket-side mirror of [`ContentBlock`]. Keeps the public ticket
+/// surface free of provider types while still recording every payload
+/// shape the agent loop sends.
+#[derive(Debug, Clone)]
+pub enum CommentContent {
+    Text(String),
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    ToolResult {
+        id: String,
+        output: String,
+        is_error: bool,
+    },
+}
+
+impl Comment {
+    /// Build a `"user"` comment from the provider blocks the loop sent.
+    pub(crate) fn user(blocks: &[ContentBlock]) -> Self {
+        Self {
+            author: "user".into(),
+            content: to_comment_content(blocks),
+            created_at: now_millis(),
+        }
+    }
+
+    /// Build a `"user"` comment carrying a single text payload.
+    pub(crate) fn user_text(text: impl Into<String>) -> Self {
+        Self {
+            author: "user".into(),
+            content: vec![CommentContent::Text(text.into())],
+            created_at: now_millis(),
+        }
+    }
+
+    /// Build an `"assistant"` comment from the model's reply content.
+    pub(crate) fn assistant(blocks: &[ContentBlock]) -> Self {
+        Self {
+            author: "assistant".into(),
+            content: to_comment_content(blocks),
+            created_at: now_millis(),
+        }
+    }
+
+    /// Build a `"system"` comment carrying a single text payload. Used
+    /// for the leading system-prompt entry and compaction boundaries.
+    pub(crate) fn system_text(text: impl Into<String>) -> Self {
+        Self {
+            author: "system".into(),
+            content: vec![CommentContent::Text(text.into())],
+            created_at: now_millis(),
+        }
+    }
+}
+
+/// Project a slice of comments into the provider's `Message` values.
+/// Skips `system`-author comments: the system prompt is passed via
+/// `request.system_prompt`, and compaction-boundary comments are
+/// audit markers only.
+pub(crate) fn to_messages(comments: &[Comment]) -> Vec<Message> {
+    comments.iter().filter_map(comment_to_message).collect()
+}
+
+fn to_comment_content(blocks: &[ContentBlock]) -> Vec<CommentContent> {
+    blocks.iter().map(content_block_to_comment).collect()
+}
+
+fn content_block_to_comment(b: &ContentBlock) -> CommentContent {
+    match b {
+        ContentBlock::Text { text } => CommentContent::Text(text.clone()),
+        ContentBlock::ToolUse { id, name, input } => CommentContent::ToolUse {
+            id: id.clone(),
+            name: name.clone(),
+            input: input.clone(),
+        },
+        ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } => CommentContent::ToolResult {
+            id: tool_use_id.clone(),
+            output: content.clone(),
+            is_error: *is_error,
+        },
+    }
+}
+
+fn to_content_blocks(content: &[CommentContent]) -> Vec<ContentBlock> {
+    content
+        .iter()
+        .map(|c| match c {
+            CommentContent::Text(text) => ContentBlock::Text { text: text.clone() },
+            CommentContent::ToolUse { id, name, input } => ContentBlock::ToolUse {
+                id: id.clone(),
+                name: name.clone(),
+                input: input.clone(),
+            },
+            CommentContent::ToolResult {
+                id,
+                output,
+                is_error,
+            } => ContentBlock::ToolResult {
+                tool_use_id: id.clone(),
+                content: output.clone(),
+                is_error: *is_error,
+            },
+        })
+        .collect()
+}
+
+fn comment_to_message(c: &Comment) -> Option<Message> {
+    let content = to_content_blocks(&c.content);
+    match c.author.as_str() {
+        "user" => Some(Message::User { content }),
+        "assistant" => Some(Message::Assistant { content }),
+        _ => None,
     }
 }
 
@@ -484,6 +633,32 @@ impl TicketSystem {
         };
         self.record_transition(&key, prev, Status::InProgress, now, durations, &labels);
         Some(key)
+    }
+
+    /// Append `comment` to the ticket's transcript. No-op when the
+    /// ticket is missing: the loop drops out shortly afterwards on the
+    /// same condition.
+    pub(crate) fn add_comment(&self, key: &str, comment: Comment) {
+        if let Some(t) = self.tickets.lock().unwrap().get_mut(key) {
+            t.comments.push(comment);
+        }
+    }
+
+    /// Truncate the ticket's comments to `preserved_len` and append
+    /// `replacement`. Used by compaction to swap the tail for a
+    /// boundary marker plus a summary. No-op when the ticket is
+    /// missing.
+    pub(crate) fn replace_comment_tail(
+        &self,
+        key: &str,
+        preserved_len: usize,
+        replacement: Vec<Comment>,
+    ) {
+        if let Some(t) = self.tickets.lock().unwrap().get_mut(key) {
+            let preserved = preserved_len.min(t.comments.len());
+            t.comments.truncate(preserved);
+            t.comments.extend(replacement);
+        }
     }
 
     /// Transition a ticket to `Done`.
