@@ -1,7 +1,7 @@
 //! Agent implementations.
 
 pub mod agent;
-pub(crate) mod compact;
+pub(crate) mod compaction;
 pub mod knowledge;
 pub mod r#loop;
 pub mod policy;

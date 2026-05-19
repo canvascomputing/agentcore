@@ -12,7 +12,7 @@ use crate::providers::{AsUserMessage, ContentBlock, Message, Model, ModelRequest
 use crate::tools::{ToolCall, ToolContext, ToolError};
 
 use super::agent::Agent;
-use super::compact;
+use super::compaction;
 use super::retry::{ExponentialRetry, ImmediateRetry, Retry};
 use super::stats::LoopStats;
 use super::tickets::{policy_violated_kind, to_messages, Comment, Status};
@@ -33,7 +33,6 @@ struct TicketScope<'a, F> {
 
     provider: &'a Arc<dyn crate::providers::Provider>,
     model_name: &'a str,
-    preserved_len: usize,
 
     emit: &'a F,
     stats: &'a super::stats::Stats,
@@ -93,11 +92,10 @@ fn fail_ticket<F: Fn(EventKind)>(scope: &TicketScope<'_, F>, err: &ProviderError
 }
 
 /// `Proceed` on success, `Stop` (ticket already failed) on error.
-/// Operates entirely on the ticket's comments: reads them, derives
-/// `Message` values, runs the summariser, and writes the boundary
-/// plus summary back through `replace_comment_tail`. Noop-by-tail-too-
-/// short is preserved by checking whether the summariser actually
-/// shrank the derived message list.
+/// Reads the ticket, projects its comments into `Message` values,
+/// hands them to the summariser, and rewrites the ticket's transcript
+/// via [`crate::agents::tickets::Ticket::summarize`]. Short transcripts
+/// short-circuit inside the summariser and return without mutation.
 async fn try_compact<F: Fn(EventKind)>(
     reason: CompactReason,
     scope: &TicketScope<'_, F>,
@@ -106,29 +104,19 @@ async fn try_compact<F: Fn(EventKind)>(
     let Some(ticket) = scope.ticket_system.get(scope.key) else {
         return LoopAction::Stop;
     };
-    let comments = ticket.comments();
-    let messages_preserved_len = to_messages(&comments[..scope.preserved_len]).len();
-    let mut messages = to_messages(comments);
-    let pre_len = messages.len();
-    match compact::summarize_and_replace(
-        scope.provider,
-        scope.model_name,
-        &mut messages,
-        messages_preserved_len,
-    )
-    .await
-    {
-        Ok(()) => {
-            if messages.len() != pre_len {
-                let summary = summary_text(&messages[messages_preserved_len]);
-                scope.ticket_system.replace_comment_tail(
-                    scope.key,
-                    scope.preserved_len,
-                    vec![
-                        Comment::system_text(format!("compacted: reason={reason:?}")),
-                        Comment::user_text(summary),
-                    ],
-                );
+    let messages = to_messages(ticket.comments());
+    match compaction::compact(scope.provider, scope.model_name, &messages).await {
+        Ok(summary) => {
+            if let Some(summary) = summary {
+                if let Some(t) = scope
+                    .ticket_system
+                    .tickets
+                    .lock()
+                    .unwrap()
+                    .get_mut(scope.key)
+                {
+                    t.summarize(summary);
+                }
             }
             (scope.emit)(EventKind::CompactionFinished { reason });
             LoopAction::Proceed
@@ -141,23 +129,6 @@ async fn try_compact<F: Fn(EventKind)>(
             fail_ticket(scope, &e);
             LoopAction::Stop
         }
-    }
-}
-
-/// Extract the text body of a user-role summary message produced by
-/// `summarize_and_replace`. Returns an empty string if the message
-/// shape changes; the caller still records a boundary so observers can
-/// see where compaction landed.
-fn summary_text(message: &Message) -> String {
-    match message {
-        Message::User { content } => content
-            .iter()
-            .find_map(|b| match b {
-                ContentBlock::Text { text } => Some(text.clone()),
-                _ => None,
-            })
-            .unwrap_or_default(),
-        _ => String::new(),
     }
 }
 
@@ -255,20 +226,18 @@ async fn process_ticket(
     // every request in this loop.
     let system_prompt = agent.system_prompt(Some(&knowledge_index));
 
-    // Seed the ticket's transcript with the system prompt, the optional
-    // context prelude, and the task body. `preserved_len` is the count
-    // of seeded comments: compaction summarises everything past it.
+    // Seed the ticket's transcript with the system prompt, the
+    // optional context prelude, and the task body. Compaction later
+    // collapses every non-system comment into a single summary, so no
+    // anchor index is recorded here.
     ticket_system.add_comment(key, Comment::system_text(system_prompt.clone()));
-    let mut preserved_len = 1usize;
     if let Some(context_msg) = agent.context_message(&policies, &ticket_system.stats) {
         ticket_system.add_comment(key, Comment::user_text(context_msg));
-        preserved_len += 1;
     }
     let Message::User { content: task_blocks } = &task_message else {
         unreachable!("Ticket::as_user_message returns Message::User");
     };
     ticket_system.add_comment(key, Comment::user(task_blocks));
-    preserved_len += 1;
     emit(EventKind::TicketStarted {
         key: key.to_string(),
     });
@@ -279,7 +248,6 @@ async fn process_ticket(
         labels: &labels,
         provider: &provider,
         model_name: agent.model_str(),
-        preserved_len,
         emit: &emit,
         stats: &ticket_system.stats,
         ticket_system,
@@ -324,7 +292,7 @@ async fn process_ticket(
         let tools = agent.tool_definitions();
 
         let exceeds_proactive_threshold = last_usage.as_ref().is_some_and(|usage| {
-            compact::should_compact_proactively(
+            compaction::should_compact_proactively(
                 window,
                 usage,
                 &messages,
@@ -347,10 +315,10 @@ async fn process_ticket(
             }
         }
 
-        let exceeds_blocking_limit = compact::blocking_threshold(window).is_some_and(|threshold| {
+        let exceeds_blocking_limit = compaction::blocking_threshold(window).is_some_and(|threshold| {
             let default_usage = TokenUsage::default();
             let usage = last_usage.as_ref().unwrap_or(&default_usage);
-            let estimate = compact::estimate_next_request_tokens(
+            let estimate = compaction::estimate_next_request_tokens(
                 usage,
                 &messages,
                 &system_prompt,
@@ -1981,16 +1949,17 @@ mod tests {
 
     #[tokio::test]
     async fn first_overflow_attempts_compaction_before_request_failed() {
-        // Single scripted overflow with no tail to summarize (messages
-        // is just [ctx, task] when overflow hits, so the summarizer
-        // short-circuits and returns Ok). The contract: the loop tries
-        // compaction before the ticket fails. The Started/Finished
-        // pair fires from the attempt, then turn 2 surfaces the
-        // RequestFailed via the exhausted-fallback.
-        let provider =
-            MockProvider::with_results(vec![Err(ProviderError::ContextWindowExceeded {
+        // Turn 1 overflows. Turn 2 is the summariser call (provider
+        // returns "SUMMARY"). Turn 3 retries the main request and hits
+        // the MockProvider exhausted-fallback (auth-failed). Contract:
+        // CompactionStarted → CompactionFinished fire before
+        // RequestFailed.
+        let provider = MockProvider::with_results(vec![
+            Err(ProviderError::ContextWindowExceeded {
                 message: "prompt is 250000 tokens, exceeds 200000".into(),
-            })]);
+            }),
+            Ok(text_response_with_usage("SUMMARY", TokenUsage::default())),
+        ]);
         let (events, _, _) = run_one(provider, 0, 10, None).await;
 
         let started_idx = events
@@ -2000,7 +1969,7 @@ mod tests {
         let finished_idx = events
             .iter()
             .position(|e| matches!(&e.kind, EventKind::CompactionFinished { .. }))
-            .expect("compaction must have finished (no-op when tail is empty)");
+            .expect("compaction must have finished");
         let request_failed_idx = events
             .iter()
             .position(|e| matches!(&e.kind, EventKind::RequestFailed { .. }))
@@ -2074,13 +2043,10 @@ mod tests {
         assert_eq!(ticket.status, Status::Done);
 
         // Prove compaction actually happened: the fourth (retried)
-        // request's user-side texts are just the task and the summary,
-        // not the original turn-1 trail.
+        // request's user-side texts are just the summary; the task
+        // and the turn-1 trail were folded into it.
         let fourth = &provider.received()[3];
-        assert_eq!(
-            user_texts(fourth),
-            vec!["go".to_string(), "SUMMARY".to_string()]
-        );
+        assert_eq!(user_texts(fourth), vec!["SUMMARY".to_string()]);
     }
 
     #[tokio::test]
@@ -2124,9 +2090,9 @@ mod tests {
     }
 
     /// Run one ticket against `provider` with a model whose context
-    /// window is known (so proactive compaction can fire) and without
-    /// the auto-injected context prelude (so `preserved_len` is exactly 1
-    /// and the test can reason about request shapes precisely).
+    /// window is known (so proactive compaction can fire) and with a
+    /// fixed context prelude (so the test can reason about request
+    /// shapes precisely).
     async fn run_compaction(
         provider: Arc<MockProvider>,
     ) -> (Vec<Event>, Arc<MockProvider>, Ticket) {
@@ -2167,8 +2133,8 @@ mod tests {
         // Turn 1: text reply with input_tokens above the 167K threshold
         //         (200K window − 20K reserve − 13K headroom). No tool
         //         call, so the loop pushes a retry directive and loops.
-        // Top of turn 2: proactive_event fires; summarizer collapses
-        //                the messages tail to [ctx, task, "SUMMARY"].
+        // Top of turn 2: proactive compaction fires; the summariser
+        //                folds the entire transcript into "SUMMARY".
         // Turn 2:  write_result_response finishes the ticket.
         let provider = MockProvider::with_results(vec![
             Ok(text_response_with_usage(
@@ -2194,11 +2160,11 @@ mod tests {
         );
         assert_eq!(ticket.status, Status::Done);
 
-        // The third request — the retry after compaction — sees the
-        // compacted message vector: context, task, summary.
+        // The third request — the retry after compaction — sees only
+        // the summary: every non-system comment was collapsed into it.
         let third = &provider.received()[2];
-        assert_eq!(third.len(), 3);
-        match &third[2] {
+        assert_eq!(third.len(), 1);
+        match &third[0] {
             Message::User { content } => match &content[0] {
                 ContentBlock::Text { text } => assert_eq!(text, "SUMMARY"),
                 other => panic!("expected text summary, got {other:?}"),
@@ -2235,7 +2201,7 @@ mod tests {
         // trivial bytes/4 > 167K threshold for the 200K Sonnet
         // window).
         // Turn 2 (summarize call): RateLimited. The variant is
-        // retryable in the main request loop, but summarize_and_replace
+        // retryable in the main request loop, but `compaction::compact`
         // has no retry policy: the error propagates immediately,
         // CompactionFailed{Proactive} fires, and the ticket dies.
         let provider = MockProvider::with_results(vec![
@@ -2282,13 +2248,13 @@ mod tests {
     async fn summary_empty_text_replaces_tail_with_empty_user_message() {
         // Turn 1: high-input-tokens text reply forces proactive on
         // turn 2.
-        // Turn 2 (summarize call): Ok with empty text. summarize_and_replace
+        // Turn 2 (summarize call): Ok with empty text. `compaction::compact`
         // accepts it as a valid summary today, so the tail collapses
         // to a single user message whose content is "".
         // Turn 3 (retried main request): write_result_response settles
         // the ticket.
         //
-        // Documents that summarize_and_replace does not reject empty
+        // Documents that `compaction::compact` does not reject empty
         // summaries: the loop will continue with effectively no
         // working context.
         let provider = MockProvider::with_results(vec![
@@ -2315,11 +2281,11 @@ mod tests {
         );
         assert_eq!(ticket.status, Status::Done);
 
-        // The third request sees [ctx, task, user("")]: the empty
-        // user message is the collapsed summary.
+        // The third request sees [user("")]: the empty user message
+        // is the collapsed summary.
         let third = &provider.received()[2];
-        assert_eq!(third.len(), 3);
-        match &third[2] {
+        assert_eq!(third.len(), 1);
+        match &third[0] {
             Message::User { content } => match &content[0] {
                 ContentBlock::Text { text } => assert_eq!(text, ""),
                 other => panic!("expected empty text block, got {other:?}"),
@@ -2335,8 +2301,8 @@ mod tests {
         // delivered on a 200 OK. Layer 3 routes it through
         // `compact_or_stop`. The setup turn before the overflow
         // grows the tail past the summarizer's two-message no-op
-        // floor; otherwise summarize_and_replace returns Ok(()) with
-        // no provider call and the next response slot would shift.
+        // floor; otherwise `compaction::compact` returns `Ok(None)`
+        // with no provider call and the next response slot would shift.
         let provider = MockProvider::with_results(vec![
             Ok(text_response_with_usage("thinking", TokenUsage::default())),
             Ok(ModelResponse {
@@ -3022,13 +2988,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn comments_record_compaction_boundary() {
-        // Mirrors reactive_overflow_compacts_then_succeeds: turn 1 pads
-        // the messages, turn 2 overflows and triggers compaction, the
-        // summarizer reply (turn 3) becomes the new tail, turn 4
-        // finishes. Compaction rewrites the ticket's comments by
-        // truncating the tail and appending a boundary marker plus the
-        // summary, so the pre-compaction "turn 1" entry is gone.
+    async fn comments_after_compaction_keep_only_system_and_summary() {
+        // Mirrors reactive_overflow_compacts_then_succeeds: turn 1
+        // pads the transcript, turn 2 overflows and triggers
+        // compaction, turn 3 is the summariser, turn 4 finishes.
+        // After compaction every non-system comment collapses into a
+        // single `user` comment carrying the summariser's text.
         let provider = MockProvider::with_results(vec![
             Ok(text_response("turn 1")),
             Err(ProviderError::ContextWindowExceeded {
@@ -3041,43 +3006,30 @@ mod tests {
 
         let comments = ticket.comments();
 
-        let boundary_idx = comments
+        // System prompt survived as the leading entry.
+        assert_eq!(comments[0].author, "system");
+
+        // The summary lands as a `user` comment carrying the
+        // summariser's text. The assistant turn that came after it
+        // (write_result_tool) and its tool-result follow-up sit on
+        // top of that.
+        let summary_idx = comments
             .iter()
             .position(|c| {
-                c.author == "system"
-                    && matches!(&c.content[..], [CommentContent::Text(t)] if t.starts_with("compacted:"))
+                c.author == "user"
+                    && matches!(&c.content[..], [CommentContent::Text(t)] if t == "SUMMARY")
             })
-            .expect("expected a 'compacted:' system comment");
+            .expect("expected a `user` comment carrying the summariser text");
+        assert!(summary_idx >= 1, "summary must follow the system prompt");
 
-        let boundary_text = match &comments[boundary_idx].content[..] {
-            [CommentContent::Text(t)] => t,
-            other => panic!("boundary comment must be a single text block, got {other:?}"),
-        };
-        assert!(
-            boundary_text.contains("Reactive"),
-            "boundary must record the reason: {boundary_text}",
-        );
-
-        // The boundary is immediately followed by the user-author
-        // summary comment carrying the summariser's reply.
-        let summary = &comments[boundary_idx + 1];
-        assert_eq!(summary.author, "user");
-        assert!(
-            matches!(&summary.content[..], [CommentContent::Text(t)] if t == "SUMMARY"),
-            "summary comment must carry the summariser's text, got {:?}",
-            summary.content,
-        );
-
-        // Pre-compaction tail entries (turn-1 assistant text, the
-        // intervening no-finisher directive) were truncated.
+        // Pre-compaction entries (the original task body, the turn-1
+        // text reply, the no-finisher retry directive) were folded
+        // into the summary.
         assert!(
             !comments.iter().any(|c| {
-                matches!(&c.content[..], [CommentContent::Text(t)] if t == "turn 1")
+                matches!(&c.content[..], [CommentContent::Text(t)] if t == "turn 1" || t == "go")
             }),
-            "compaction must drop pre-boundary tail entries",
+            "compaction must drop pre-compaction non-system comments",
         );
-
-        // System prompt remains the first comment.
-        assert_eq!(comments[0].author, "system");
     }
 }

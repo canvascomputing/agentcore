@@ -23,7 +23,7 @@ Where code lives and the rules that govern placement.
 **Holds the per-agent builder, the ticket system, and the multi-agent loop.**
 
 - `agent.rs` holds the `Agent` builder and ticket-dispatch helpers; an `Agent` carries a `Weak<TicketSystem>` stamped at `bind_agent` time.
-- `tickets.rs` holds `Ticket`, `Status`, `TicketError`, and `TicketSystem`: the orchestrator that owns the shared queue, registered agents, policies, interrupt signal, and stats.
+- `tickets.rs` holds `Ticket`, `Status`, `TicketError`, `Comment`, `CommentContent`, and `TicketSystem`: the orchestrator that owns the shared queue, registered agents, policies, interrupt signal, and stats. `Comment` is the per-ticket transcript entry; `CommentContent` mirrors `providers::ContentBlock` so the ticket surface stays free of provider types.
 - `loop.rs` holds the `Runnable` trait (implemented by `TicketSystem`) and the per-agent loop driver.
 - `knowledge.rs` holds `Knowledge`: the cross-ticket store backed by a `pages/` directory of markdown files and a compact `index.md`. Mutations go through `write_page` / `read_page` / `remove_page` / `clear`.
 - `policy.rs` holds `Policies` and the limit checks the loop applies on each step.

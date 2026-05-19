@@ -1,7 +1,5 @@
-//! Context-window compaction. `should_compact_proactively` answers
-//! whether the next request is about to overflow; `summarize_and_replace`
-//! collapses the tail of an agent's message vector into a single
-//! user-role summary by calling the provider with no tools.
+//! Context-window compaction: collapse an over-long transcript into
+//! a single summary message before the next request would overflow.
 
 use std::sync::Arc;
 
@@ -99,26 +97,23 @@ pub(crate) fn should_compact_proactively(
     estimate_next_request_tokens(last_usage, messages, system_prompt, tools) >= threshold
 }
 
-/// Replace `messages[preserved_len..]` with one user-role message containing a
-/// model-generated summary. The first `preserved_len` entries (the context
-/// message, if any, and the task message) stay verbatim; everything
-/// after is passed to the provider with no tools, and the assistant's
-/// text reply becomes the new tail.
-///
-/// No-ops when there are fewer than two messages to summarize.
-pub(crate) async fn summarize_and_replace(
+/// Compact `messages` into a single summary line by sending them to
+/// the provider with no tools and the compaction directive as the
+/// system prompt. Returns `Ok(None)` when `messages` is too short
+/// (zero or one entry) to be worth summarising; the caller treats
+/// that as a no-op.
+pub(crate) async fn compact(
     provider: &Arc<dyn Provider>,
     model: &str,
-    messages: &mut Vec<Message>,
-    preserved_len: usize,
-) -> ProviderResult<()> {
-    if messages.len() <= preserved_len + 1 {
-        return Ok(());
+    messages: &[Message],
+) -> ProviderResult<Option<String>> {
+    if messages.len() <= 1 {
+        return Ok(None);
     }
     let request = ModelRequest {
         model: model.to_string(),
         system_prompt: compaction_directive().to_string(),
-        messages: messages[preserved_len..].to_vec(),
+        messages: messages.to_vec(),
         tools: Vec::new(),
         max_request_tokens: None,
         tool_choice: None,
@@ -135,9 +130,7 @@ pub(crate) async fn summarize_and_replace(
         .ok_or_else(|| ProviderError::ResponseMalformed {
             message: "compaction reply contained no text".into(),
         })?;
-    messages.truncate(preserved_len);
-    messages.push(Message::user(summary));
-    Ok(())
+    Ok(Some(summary))
 }
 
 #[cfg(test)]
@@ -237,7 +230,7 @@ mod tests {
         assert_eq!(blocking_threshold(None), None);
     }
 
-    // ---- summarize_and_replace ----
+    // ---- compact ----
 
     use crate::providers::types::{ModelResponse, ResponseStatus};
     use std::future::Future;
@@ -294,114 +287,60 @@ mod tests {
         }
     }
 
-    /// Conversation with `preserved_len` preserved messages (`ctx`, `task`) and
-    /// `tail` alternating assistant/user messages, so tests can spell
-    /// the message shape they need without scattering vec![...] noise.
-    fn conversation(preserved_len: usize, tail: usize) -> Vec<Message> {
-        assert!((1..=2).contains(&preserved_len), "preserved_len must be 1 or 2");
-        let mut msgs = Vec::with_capacity(preserved_len + tail);
-        if preserved_len == 2 {
-            msgs.push(Message::user("ctx"));
-        }
-        msgs.push(Message::user("task"));
-        for i in 0..tail {
-            msgs.push(if i % 2 == 0 {
-                Message::assistant(format!("turn {i}"))
-            } else {
-                Message::user(format!("turn {i} result"))
-            });
-        }
-        msgs
-    }
-
-    /// Last message's first text block, for tests that want to
-    /// confirm the summary landed where they expect.
-    fn last_text(messages: &[Message]) -> &str {
-        match messages.last().expect("messages must be non-empty") {
-            Message::User { content } | Message::Assistant { content } => match &content[0] {
-                ContentBlock::Text { text } => text,
-                other => panic!("expected text block, got {other:?}"),
-            },
-            Message::System { content } => content,
-        }
-    }
-
     #[tokio::test]
-    async fn summarize_and_replace_keeps_head_and_replaces_tail() {
+    async fn compact_returns_the_provider_summary() {
         let provider: Arc<dyn Provider> =
             ScriptedProvider::new(vec![Ok(summary_response("SUMMARY"))]);
-        let mut messages = conversation(2, 3);
+        let messages = vec![
+            Message::user("task"),
+            Message::assistant("turn 0"),
+            Message::user("turn 1 result"),
+        ];
 
-        summarize_and_replace(&provider, "mock", &mut messages, 2)
+        let summary = compact(&provider, "mock", &messages)
             .await
-            .expect("summarize should succeed");
+            .expect("compact should succeed");
 
-        assert_eq!(messages.len(), 3);
-        assert_eq!(last_text(&messages), "SUMMARY");
+        assert_eq!(summary.as_deref(), Some("SUMMARY"));
     }
 
     #[tokio::test]
-    async fn summarize_and_replace_keeps_a_single_head_message() {
-        // No context message: head_len = 1, so only the task survives.
-        let provider: Arc<dyn Provider> =
-            ScriptedProvider::new(vec![Ok(summary_response("SUMMARY"))]);
-        let mut messages = conversation(1, 3);
-
-        summarize_and_replace(&provider, "mock", &mut messages, 1)
-            .await
-            .unwrap();
-
-        assert_eq!(messages.len(), 2);
-        assert!(matches!(&messages[0], Message::User { content }
-            if matches!(&content[0], ContentBlock::Text { text } if text == "task")));
-        assert_eq!(last_text(&messages), "SUMMARY");
-    }
-
-    #[tokio::test]
-    async fn summarize_and_replace_is_a_noop_when_tail_too_short_to_summarize() {
-        // Boundary: nothing gained from summarizing zero or one message.
-        for tail in [0, 1] {
+    async fn compact_is_a_noop_when_messages_are_too_short() {
+        for len in [0, 1] {
             let provider = ScriptedProvider::new(Vec::new());
             let provider_handle: Arc<dyn Provider> = provider.clone();
-            let mut messages = conversation(2, tail);
-            let original = messages.clone();
+            let messages: Vec<Message> = (0..len).map(|i| Message::user(format!("m{i}"))).collect();
 
-            summarize_and_replace(&provider_handle, "mock", &mut messages, 2)
+            let summary = compact(&provider_handle, "mock", &messages)
                 .await
                 .expect("no-op should succeed");
 
-            assert_eq!(messages.len(), original.len(), "tail={tail}");
+            assert!(summary.is_none(), "len={len}: must short-circuit");
             assert_eq!(
                 provider.call_count(),
                 0,
-                "tail={tail}: provider must not be called"
+                "len={len}: provider must not be called"
             );
         }
     }
 
     #[tokio::test]
-    async fn summarize_and_replace_propagates_provider_error() {
+    async fn compact_propagates_provider_error() {
         let provider: Arc<dyn Provider> =
             ScriptedProvider::new(vec![Err(ProviderError::ConnectionFailed {
                 message: "dns".into(),
             })]);
-        let mut messages = conversation(2, 2);
-        let original_len = messages.len();
+        let messages = vec![Message::user("task"), Message::assistant("turn 0")];
 
-        let err = summarize_and_replace(&provider, "mock", &mut messages, 2)
+        let err = compact(&provider, "mock", &messages)
             .await
             .expect_err("should propagate the connection failure");
 
         assert!(matches!(err, ProviderError::ConnectionFailed { .. }));
-        assert_eq!(
-            messages.len(),
-            original_len,
-            "messages must not be mutated on error"
-        );
     }
 
     #[tokio::test]
-    async fn summarize_and_replace_rejects_text_less_reply() {
+    async fn compact_rejects_text_less_reply() {
         let no_text = ModelResponse {
             content: vec![ContentBlock::ToolUse {
                 id: "x".into(),
@@ -413,9 +352,9 @@ mod tests {
             model: "mock".into(),
         };
         let provider: Arc<dyn Provider> = ScriptedProvider::new(vec![Ok(no_text)]);
-        let mut messages = conversation(2, 2);
+        let messages = vec![Message::user("task"), Message::assistant("turn 0")];
 
-        let err = summarize_and_replace(&provider, "mock", &mut messages, 2)
+        let err = compact(&provider, "mock", &messages)
             .await
             .expect_err("text-less reply must fail");
 
@@ -423,19 +362,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn builds_a_tool_less_summarization_request() {
+    async fn compact_builds_a_tool_less_request() {
         let provider = ScriptedProvider::new(vec![Ok(summary_response("SUMMARY"))]);
         let provider_handle: Arc<dyn Provider> = provider.clone();
-        let mut messages = conversation(2, 2);
+        let messages = vec![
+            Message::user("task"),
+            Message::assistant("turn 0"),
+            Message::user("turn 1 result"),
+        ];
 
-        summarize_and_replace(&provider_handle, "mock", &mut messages, 2)
-            .await
-            .unwrap();
+        compact(&provider_handle, "mock", &messages).await.unwrap();
 
         let req = provider.last_request().expect("provider was called");
         assert!(req.tools.is_empty(), "tools must be disabled");
         assert!(req.tool_choice.is_none(), "tool_choice must be unset");
-        assert_eq!(req.messages.len(), 2, "only the tail is summarized");
+        assert_eq!(req.messages.len(), messages.len());
         assert_eq!(req.system_prompt, compaction_directive());
     }
 }

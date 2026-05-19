@@ -205,11 +205,21 @@ impl Ticket {
     }
 
     /// Transcript of messages the agent loop sent to the provider for
-    /// this ticket, in order. Includes a leading `system` entry for
-    /// the system prompt and synthetic `system` entries at compaction
-    /// boundaries.
+    /// this ticket, in order. Starts with a leading `system` entry
+    /// carrying the system prompt; everything after is `user` /
+    /// `assistant` turns.
     pub fn comments(&self) -> &[Comment] {
         &self.comments
+    }
+
+    /// Reduce the transcript to just `summary_text`: every non-system
+    /// comment is dropped and a single `user` comment carrying
+    /// `summary_text` is appended. System-author comments (the system
+    /// prompt) survive unchanged. Used by the loop after a successful
+    /// compaction.
+    pub(crate) fn summarize(&mut self, summary_text: String) {
+        self.comments.retain(|c| c.author == "system");
+        self.comments.push(Comment::user_text(summary_text));
     }
 }
 
@@ -641,23 +651,6 @@ impl TicketSystem {
     pub(crate) fn add_comment(&self, key: &str, comment: Comment) {
         if let Some(t) = self.tickets.lock().unwrap().get_mut(key) {
             t.comments.push(comment);
-        }
-    }
-
-    /// Truncate the ticket's comments to `preserved_len` and append
-    /// `replacement`. Used by compaction to swap the tail for a
-    /// boundary marker plus a summary. No-op when the ticket is
-    /// missing.
-    pub(crate) fn replace_comment_tail(
-        &self,
-        key: &str,
-        preserved_len: usize,
-        replacement: Vec<Comment>,
-    ) {
-        if let Some(t) = self.tickets.lock().unwrap().get_mut(key) {
-            let preserved = preserved_len.min(t.comments.len());
-            t.comments.truncate(preserved);
-            t.comments.extend(replacement);
         }
     }
 
