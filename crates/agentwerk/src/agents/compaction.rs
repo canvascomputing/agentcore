@@ -26,12 +26,6 @@ const COMPACTION_HEADROOM_TOKENS: u64 = 13_000;
 /// call goes out.
 pub(crate) const BLOCKING_HEADROOM_TOKENS: u64 = 3_000;
 
-/// Output-token budget for the compaction summariser. Caps thinking-model
-/// reasoning so the summariser cannot occupy the full remaining context
-/// window when inputs are large (which would otherwise cause a hang
-/// proportional to the reasoning budget × generation speed).
-const COMPACTION_MAX_TOKENS: u32 = 8_192;
-
 /// Token count at which the proactive seam fires for a model with
 /// context window `window`. `None` when the window is unknown.
 pub(crate) fn threshold(window: Option<u64>) -> Option<u64> {
@@ -121,7 +115,7 @@ pub(crate) async fn compact(
         system_prompt: compaction_directive().to_string(),
         messages: messages.to_vec(),
         tools: Vec::new(),
-        max_request_tokens: Some(COMPACTION_MAX_TOKENS),
+        max_request_tokens: None,
         tool_choice: None,
     };
     let on_stream: Arc<dyn Fn(StreamEvent) + Send + Sync> = Arc::new(|_| {});
