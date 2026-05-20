@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use crate::event::{default_logger, Event};
 use crate::prompts::{default_context, PromptBuilder, Section};
-use crate::providers::{Provider, ProviderToolDefinition};
+use crate::providers::{Model, Provider, ProviderToolDefinition};
 use crate::tools::{KnowledgeTool, ToolLike, ToolRegistry, WriteResultTool};
 
 use super::knowledge::Knowledge;
@@ -34,7 +34,7 @@ fn default_agent_name() -> String {
 pub struct Agent {
     pub(crate) name: String,
     provider: Option<Arc<dyn Provider>>,
-    model: Option<String>,
+    pub(crate) model: Option<Model>,
     role: Option<String>,
     context: Option<String>,
     pub(crate) labels: Vec<String>,
@@ -112,7 +112,7 @@ impl Agent {
         self.provider(provider)
     }
 
-    pub fn model(mut self, m: impl Into<String>) -> Self {
+    pub fn model(mut self, m: impl Into<Model>) -> Self {
         self.model = Some(m.into());
         self
     }
@@ -304,12 +304,6 @@ impl Agent {
                 .as_ref()
                 .expect("Agent::run requires .provider(...) to be set"),
         )
-    }
-
-    pub(super) fn model_str(&self) -> &str {
-        self.model
-            .as_deref()
-            .expect("Agent::run requires .model(...) to be set")
     }
 
     /// Build the system prompt. `knowledge` is the index body the loop

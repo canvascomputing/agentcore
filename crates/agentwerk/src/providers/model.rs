@@ -5,34 +5,34 @@ use super::{AnthropicProvider, MistralProvider, OpenAiProvider};
 /// Model metadata: the name plus anything we know about its capabilities.
 ///
 /// Built by [`Model::from_name`] (registry-backed) or
-/// [`Model::context_window_size`] (explicit override). The agent loop reads
-/// `Model::context_window_size` to decide when a conversation needs to be
+/// [`Model::context_window`] (explicit override). The agent loop reads
+/// `Model::context_window` to decide when a conversation needs to be
 /// shrunk before the next request.
 #[derive(Debug, Clone)]
 pub struct Model {
     pub name: String,
-    pub context_window_size: Option<u64>,
+    pub context_window: Option<u64>,
 }
 
 impl Model {
     /// Build a `Model` by asking each provider in turn for its known context
-    /// window. Unknown names produce a `Model` with `context_window_size:
-    /// None` — compaction stays dormant, no error.
+    /// window. Unknown names produce a `Model` with `context_window: None`
+    /// — compaction stays dormant, no error.
     pub fn from_name(name: impl Into<String>) -> Self {
         let name = name.into();
-        let context_window_size = AnthropicProvider::lookup_context_window_size(&name)
+        let context_window = AnthropicProvider::lookup_context_window_size(&name)
             .or_else(|| OpenAiProvider::lookup_context_window_size(&name))
             .or_else(|| MistralProvider::lookup_context_window_size(&name));
         Self {
             name,
-            context_window_size,
+            context_window,
         }
     }
 
     /// Explicit override — skips the registry. Useful for local proxies or
     /// private deployments whose name isn't in any provider's table.
-    pub fn context_window_size(mut self, size: u64) -> Self {
-        self.context_window_size = Some(size);
+    pub fn context_window(mut self, size: u64) -> Self {
+        self.context_window = Some(size);
         self
     }
 }
@@ -62,37 +62,34 @@ mod tests {
     #[test]
     fn from_name_resolves_claude_models() {
         assert_eq!(
-            Model::from_name("claude-sonnet-4-20250514").context_window_size,
+            Model::from_name("claude-sonnet-4-20250514").context_window,
             Some(200_000)
         );
     }
 
     #[test]
     fn from_name_resolves_openai_models() {
-        assert_eq!(Model::from_name("gpt-5").context_window_size, Some(400_000));
-        assert_eq!(
-            Model::from_name("gpt-4o").context_window_size,
-            Some(128_000)
-        );
+        assert_eq!(Model::from_name("gpt-5").context_window, Some(400_000));
+        assert_eq!(Model::from_name("gpt-4o").context_window, Some(128_000));
     }
 
     #[test]
     fn from_name_resolves_mistral_models() {
         assert_eq!(
-            Model::from_name("mistral-large-2411").context_window_size,
+            Model::from_name("mistral-large-2411").context_window,
             Some(131_072)
         );
     }
 
     #[test]
-    fn from_name_unknown_has_no_context_window_size() {
-        assert_eq!(Model::from_name("unknown").context_window_size, None);
-        assert_eq!(Model::from_name("mock").context_window_size, None);
+    fn from_name_unknown_has_no_context_window() {
+        assert_eq!(Model::from_name("unknown").context_window, None);
+        assert_eq!(Model::from_name("mock").context_window, None);
     }
 
     #[test]
-    fn context_window_size_overrides() {
-        let m = Model::from_name("unknown").context_window_size(50_000);
-        assert_eq!(m.context_window_size, Some(50_000));
+    fn context_window_overrides() {
+        let m = Model::from_name("unknown").context_window(50_000);
+        assert_eq!(m.context_window, Some(50_000));
     }
 }

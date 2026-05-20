@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::event::{CompactReason, Event, EventKind, ToolFailureKind};
 use crate::providers::types::{ResponseStatus, StreamEvent, TokenUsage};
-use crate::providers::{AsUserMessage, ContentBlock, Message, Model, ModelRequest, ProviderError};
+use crate::providers::{AsUserMessage, ContentBlock, Message, ModelRequest, ProviderError};
 use crate::tools::{ToolCall, ToolContext, ToolError};
 
 use super::agent::Agent;
@@ -226,7 +226,11 @@ async fn process_ticket(
     let knowledge_index = agent.knowledge_or_default().index();
 
     let policies = ticket_system.policies();
-    let window = Model::from_name(agent.model_str()).context_window_size;
+    let model = agent
+        .model
+        .as_ref()
+        .expect("Agent::run requires .model(...) to be set");
+    let window = model.context_window;
 
     // Hoist the system prompt: it's byte-stable per ticket and we both
     // record it once as the leading transcript comment and reuse it for
@@ -254,7 +258,7 @@ async fn process_ticket(
         key,
         labels: &labels,
         provider: &provider,
-        model_name: agent.model_str(),
+        model_name: &model.name,
         emit: &emit,
         stats: &ticket_system.stats,
         ticket_system,
@@ -349,10 +353,10 @@ async fn process_ticket(
         }
 
         emit(EventKind::RequestStarted {
-            model: agent.model_str().to_string(),
+            model: model.name.clone(),
         });
         let request = ModelRequest {
-            model: agent.model_str().to_string(),
+            model: model.name.clone(),
             system_prompt: system_prompt.clone(),
             messages,
             tools,

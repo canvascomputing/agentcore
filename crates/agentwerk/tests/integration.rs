@@ -10,6 +10,9 @@ mod test_util;
 #[path = "integration/bash_usage.rs"]
 mod bash_usage;
 
+#[path = "integration/compaction.rs"]
+mod compaction;
+
 #[path = "integration/edit_file_replaces_content.rs"]
 mod edit_file_replaces_content;
 
