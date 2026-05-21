@@ -113,7 +113,7 @@ pub async fn run_loop(mut rx: mpsc::Receiver<AuditEvent>) {
 Given the above, what is the single most important code change to make the
 audit pipeline robust under back-pressure, and how should it be tested?
 
-Call write_result_tool with your answer as the result string.";
+Call close_ticket with your answer as the result string.";
 
 #[tokio::test]
 async fn summariser_condenses_transcript_and_ticket_completes(
@@ -135,7 +135,7 @@ async fn summariser_condenses_transcript_and_ticket_completes(
         .event_handler(Arc::new(move |e| {
             log.lock().unwrap().push(e);
         }))
-        .role("Answer the question in the task by calling write_result_tool with your answer.");
+        .role("Answer the question in the task by calling close_ticket with your answer.");
     tickets.agent(agent);
     tickets.ticket(Ticket::new(TASK));
     assert!(

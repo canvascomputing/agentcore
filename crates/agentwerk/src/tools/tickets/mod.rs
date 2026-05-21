@@ -1,8 +1,8 @@
 //! Ticket tools — give an agent a call surface for reading and mutating
 //! the surrounding `TicketSystem`. Two multi-action tools share one
 //! dispatch helper: `ReadTicketsTool` (read-only) and `ManageTicketsTool`
-//! (read + write). `WriteResultTool` is the sole way for an agent to
-//! finish its current ticket.
+//! (read + write). `CloseTicketTool` (`close_ticket`) is the sole way for
+//! an agent to finish its current ticket.
 
 use serde_json::Value;
 
@@ -12,15 +12,15 @@ use crate::schemas::{format_violations, Schema};
 
 use super::tool::{ToolContext, ToolResult};
 
+mod close_ticket;
+mod handover_ticket;
 mod manage_tickets;
 mod read_tickets;
-mod write_handover;
-mod write_result;
 
+pub use close_ticket::CloseTicketTool;
+pub use handover_ticket::HandoverTicketTool;
 pub use manage_tickets::ManageTicketsTool;
 pub use read_tickets::ReadTicketsTool;
-pub use write_handover::WriteHandoverTool;
-pub use write_result::WriteResultTool;
 
 /// Action sets each multi-action tool exposes. Keeps the dispatch logic
 /// in one place and lets each tool reject actions outside its
@@ -32,7 +32,7 @@ pub(super) const WRITE_ACTIONS: &[&str] = &["create", "edit"];
 /// classify successful tool calls (resetting the schema-retry counter)
 /// and to build the missing-finisher directive against the agent's
 /// actual tool registry.
-pub(crate) const FINISHER_TOOL_NAMES: &[&str] = &["write_result_tool", "write_handover_tool"];
+pub(crate) const TICKET_CLOSING_TOOLS: &[&str] = &["close_ticket", "handover_ticket"];
 
 pub(super) fn dispatch(input: Value, ctx: &ToolContext, allowed: &[&str]) -> ToolResult {
     let action = match input["action"].as_str() {
@@ -360,20 +360,6 @@ pub(super) fn write_result(
         if let Err(violations) = schema.validate(&result) {
             return ToolResult::schema_error(format_violations(&violations));
         }
-    } else {
-        match &result {
-            Value::Null => return ToolResult::error("`result` must not be null"),
-            Value::String(s) if s.is_empty() => {
-                return ToolResult::error("`result` must not be an empty string");
-            }
-            Value::Object(m) if m.is_empty() => {
-                return ToolResult::error("`result` must not be an empty object");
-            }
-            Value::Array(a) if a.is_empty() => {
-                return ToolResult::error("`result` must not be an empty array");
-            }
-            _ => {}
-        }
     }
 
     let log_line = serde_json::json!({
@@ -384,7 +370,7 @@ pub(super) fn write_result(
 
     let target_dir = ticket_system.dir_value();
     {
-        let _guard = write_result::results_write_lock().lock().unwrap();
+        let _guard = close_ticket::results_write_lock().lock().unwrap();
         if let Err(e) = Results::append(&target_dir, &log_line) {
             return ToolResult::error(format!(
                 "Cannot write result to {}: {e}",

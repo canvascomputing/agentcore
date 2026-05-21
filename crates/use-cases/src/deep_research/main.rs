@@ -4,10 +4,10 @@
 //! single starter ticket pinned to `researcher_1`. Each researcher
 //! calls `brave_search`, reads its parent ticket via
 //! `read_tickets_tool` to build on prior findings, and hands off via
-//! `write_handover_tool` to the next agent. The final researcher
+//! `handover_ticket` to the next agent. The final researcher
 //! attaches the report schema to its handover so the report writer's
 //! result is validated by the framework. The report writer finishes
-//! the chain with `write_result_tool`.
+//! the chain with `close_ticket`.
 //!
 //! Usage: deep-research <QUESTION>
 //!
@@ -20,7 +20,7 @@ use std::sync::Arc;
 use agentwerk::event::{Event, EventKind};
 use agentwerk::providers::{provider_from_env, ProviderResult};
 use agentwerk::schemas::Schema;
-use agentwerk::tools::{ReadTicketsTool, Tool, ToolResult, WriteHandoverTool};
+use agentwerk::tools::{ReadTicketsTool, Tool, ToolResult, HandoverTicketTool};
 use agentwerk::{Agent, Ticket, TicketSystem};
 
 const RESEARCHER_1_ROLE: &str = include_str!("prompts/researcher_1.role.md");
@@ -53,7 +53,7 @@ async fn main() {
         .label("researcher_1")
         .tool(brave_search_tool(brave_key.clone()))
         .tool(ReadTicketsTool)
-        .tool(WriteHandoverTool)
+        .tool(HandoverTicketTool)
         .event_handler(Arc::clone(&event_handler));
 
     let researcher_2 = Agent::empty()
@@ -65,7 +65,7 @@ async fn main() {
         .template_variable("schema_json", schema_json_pretty.clone())
         .tool(brave_search_tool(brave_key.clone()))
         .tool(ReadTicketsTool)
-        .tool(WriteHandoverTool)
+        .tool(HandoverTicketTool)
         .event_handler(Arc::clone(&event_handler));
 
     let report_writer = Agent::new()
@@ -87,7 +87,7 @@ async fn main() {
          extend the coverage."
     );
     // The schema-bound starter forces researcher_1 down the
-    // `write_handover_tool` path: a text-only reply leaves no result
+    // `handover_ticket` path: a text-only reply leaves no result
     // attached, and the loop's terminal-reply path then transitions
     // the ticket to `Failed` rather than silently `Done`.
     let starter_schema = Schema::parse(serde_json::json!({
@@ -404,7 +404,7 @@ fn format_tool_call(tool_name: &str, input: &serde_json::Value) -> Vec<String> {
             };
             vec![format!("📖 read tickets {action}{suffix}")]
         }
-        "write_handover_tool" => {
+        "handover_ticket" => {
             let to = input["to"].as_str().unwrap_or("?");
             let task = preview_value(input.get("task"), 70);
             let result = preview_value(input.get("result"), 70);
@@ -419,7 +419,7 @@ fn format_tool_call(tool_name: &str, input: &serde_json::Value) -> Vec<String> {
                 format!("      · findings: {result}"),
             ]
         }
-        "write_result_tool" => {
+        "close_ticket" => {
             let result = preview_value(input.get("result"), 80);
             vec![format!("✅ final result: {result}")]
         }

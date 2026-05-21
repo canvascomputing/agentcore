@@ -1,5 +1,5 @@
 {
-  "name": "write_handover_tool",
+  "name": "handover_ticket",
   "summary": [
     "Finish the current ticket and hand follow-up work to another agent in one atomic call. Writes the current ticket's `result`, marks it `Done`, and creates a new `Todo` ticket pinned to `to` with the current ticket recorded as its `parent`.",
     "`result` is a JSON value of its natural type: string for plain text, object/array/number/boolean for structured payloads. The tool stores it verbatim. `task` is the body for the new child ticket and accepts any JSON value the same way."
@@ -14,14 +14,14 @@
     "When `schema` is supplied, the child ticket carries it and the receiving agent's final result must validate against it."
   ],
   "anti_patterns": [
-    "To record a result without spawning a follow-up — call `write_result_tool` instead.",
+    "To record a result without spawning a follow-up — call `close_ticket` instead.",
     "To create or edit other tickets without finishing the current one — call `manage_tickets_tool`.",
     "Calling this tool mid-task to 'check in' or 'save progress'. `Done` is terminal: finish the work first, then call."
   ],
   "cautions": [
     "IMPORTANT: `Done` is terminal. Once the call succeeds, the current ticket cannot be re-opened or amended.",
     "IMPORTANT: a schema validation failure on `result` counts toward `max_schema_retries`. Read the violation message, correct the shape, and retry; do not loop blindly.",
-    "IMPORTANT: this is the only way to finish-and-chain in one step. Splitting it into `write_result_tool` + `manage_tickets_tool` requires careful ordering and leaves the current ticket re-picked if the order is wrong."
+    "IMPORTANT: this is the only way to finish-and-chain in one step. Splitting it into `close_ticket` + `manage_tickets_tool` requires careful ordering and leaves the current ticket re-picked if the order is wrong."
   ],
   "output": [
     "Success: `Ticket TICKET-N marked done; handed off to TICKET-M (to: alice)`.",
@@ -42,7 +42,7 @@
       },
       "result": {
         "type": "string",
-        "description": "Final answer for the current ticket as a non-empty plain-text string summarising your work before the handover. For schema-bound parents whose result is structured, use `write_result_tool` instead."
+        "description": "Final answer for the current ticket as a non-empty plain-text string summarising your work before the handover."
       },
       "schema": {
         "type": "object",

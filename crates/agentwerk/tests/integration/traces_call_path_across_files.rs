@@ -89,7 +89,7 @@ async fn traces_three_hop_call_path() -> std::result::Result<(), Box<dyn std::er
              available read-only tools as you see fit. Multiple functions in \
              this codebase share names: rely on the source of each function, \
              not just its name, to decide what calls what. When you have the \
-             full chain, finish the ticket via `write_result_tool` with the \
+             full chain, finish the ticket via `close_ticket` with the \
              result shaped to match the schema.",
         )
         .tool(GrepTool)

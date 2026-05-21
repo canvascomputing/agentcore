@@ -15,7 +15,7 @@ use serde::Serialize;
 use crate::event::{default_logger, Event};
 use crate::prompts::{default_context, PromptBuilder, Section};
 use crate::providers::{Model, Provider, ProviderToolDefinition};
-use crate::tools::{KnowledgeTool, ToolLike, ToolRegistry, WriteResultTool};
+use crate::tools::{KnowledgeTool, ToolLike, ToolRegistry, CloseTicketTool};
 
 use super::knowledge::Knowledge;
 
@@ -49,7 +49,7 @@ pub struct Agent {
 impl Default for Agent {
     fn default() -> Self {
         let mut tools = ToolRegistry::default();
-        tools.register(WriteResultTool);
+        tools.register(CloseTicketTool);
         Self {
             name: default_agent_name(),
             provider: None,
@@ -73,11 +73,11 @@ impl Agent {
     }
 
     /// Construct an `Agent` with no tools pre-registered. Use this
-    /// when the agent must not have `WriteResultTool` available — for
+    /// when the agent must not have `CloseTicketTool` available — for
     /// example, a researcher in a chain that should only ever call
-    /// `WriteHandoverTool`. The caller is responsible for registering
-    /// at least one finisher tool (`WriteResultTool` or
-    /// `WriteHandoverTool`) via [`Self::tool`].
+    /// `HandoverTicketTool`. The caller is responsible for registering
+    /// at least one finisher tool (`CloseTicketTool` or
+    /// `HandoverTicketTool`) via [`Self::tool`].
     pub fn empty() -> Self {
         Self {
             name: default_agent_name(),
@@ -557,7 +557,7 @@ mod tests {
             .into_iter()
             .map(|d| d.name)
             .collect();
-        assert!(names.iter().any(|n| n == "write_result_tool"));
+        assert!(names.iter().any(|n| n == "close_ticket"));
     }
 
     #[test]

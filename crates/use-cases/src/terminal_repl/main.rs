@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use agentwerk::event::{Event, EventKind};
-use agentwerk::tools::{GlobTool, GrepTool, ListDirectoryTool, ReadFileTool};
+use agentwerk::tools::{GlobTool, GrepTool, ListDirectoryTool, ManageTicketsTool, ReadFileTool, ReadTicketsTool};
 use agentwerk::{Agent, Knowledge, TicketSystem};
 
 const ROLE: &str = include_str!("prompts/repl.role.md");
@@ -84,6 +84,8 @@ async fn main() {
             .tool(GrepTool)
             .tool(ListDirectoryTool)
             .tool(ReadFileTool)
+            .tool(ReadTicketsTool)
+            .tool(ManageTicketsTool)
             .event_handler(handler)
             .knowledge(&knowledge),
     );
@@ -196,14 +198,14 @@ async fn main() {
         // "agent › " left stdout mid-line; mark so the first event
         // breaks out before its own content.
         midstream.store(true, Ordering::Relaxed);
-        match &chat_key {
-            Some(k) => {
+        let key = match chat_key.as_deref() {
+            Some(k) if tickets.tickets().iter().any(|t| t.key() == k && t.status() == "in_progress") => {
                 tickets.comment(k, line);
+                k.to_string()
             }
-            None => {
-                chat_key = Some(tickets.task(line));
-            }
-        }
+            _ => tickets.task(line),
+        };
+        chat_key = Some(key);
 
         let run_fut = tickets.finish();
         tokio::pin!(run_fut);
@@ -224,11 +226,16 @@ async fn main() {
         };
 
         let stats = tickets.stats();
-        let outcome = match tickets.tickets().last().map(|t| t.status()) {
-            Some("done") => "completed",
-            Some("failed") => "failed",
-            _ if cancelled => "cancelled",
-            _ => "incomplete",
+        let outcome = {
+            let status = chat_key.as_deref().and_then(|k| {
+                tickets.tickets().into_iter().find(|t| t.key() == k).map(|t| t.status().to_string())
+            });
+            match status.as_deref() {
+                Some("done") => { chat_key = None; "completed" }
+                Some("failed") => { chat_key = None; "failed" }
+                _ if cancelled => "cancelled",
+                _ => "incomplete",
+            }
         };
 
         let steps = stats.steps().saturating_sub(prev_steps);
@@ -350,18 +357,7 @@ fn print_event(event: &Event, style: &Style, test_window: Option<u64>, midstream
                 style.dim, style.reset,
             );
         }
-        EventKind::SchemaRetried {
-            attempt,
-            max_attempts,
-            message,
-        } => {
-            break_stream();
-            let short = message.split_once(':').map(|(h, _)| h).unwrap_or(message);
-            eprintln!(
-                "{}↻ schema retry {attempt}/{max_attempts}: {short}{}",
-                style.dim, style.reset,
-            );
-        }
+        EventKind::SchemaRetried { .. } => {}
         EventKind::PolicyViolated { kind, limit } => {
             break_stream();
             eprintln!(

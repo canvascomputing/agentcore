@@ -41,7 +41,7 @@ async fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .role(
             "Step 1: call `ls`, `cat Cargo.toml`, and `wc -l Cargo.toml` to \
              gather the file list and Cargo.toml line count. \
-             Step 2: immediately call `write_result_tool` with `result` \
+             Step 2: immediately call `close_ticket` with `result` \
              set to a JSON object in exactly this shape: \
              {\"files\": [\"<filename>\", ...], \"line_count\": <integer>}. \
              Pass the result as a JSON value, not a JSON-encoded string. \

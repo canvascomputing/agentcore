@@ -21,11 +21,11 @@ use super::super::tool::{ToolContext, ToolLike, ToolResult};
 use super::super::tool_file::ToolFile;
 use super::{resolve_current_key, write_result};
 
-pub struct WriteResultTool;
+pub struct CloseTicketTool;
 
 fn tool_file() -> &'static ToolFile {
     static FILE: OnceLock<ToolFile> = OnceLock::new();
-    FILE.get_or_init(|| ToolFile::parse(include_str!("write_result.tool.json")))
+    FILE.get_or_init(|| ToolFile::parse(include_str!("close_ticket.tool.json")))
 }
 
 fn description() -> &'static str {
@@ -33,7 +33,7 @@ fn description() -> &'static str {
     DESC.get_or_init(|| tool_file().render_markdown())
 }
 
-impl ToolLike for WriteResultTool {
+impl ToolLike for CloseTicketTool {
     fn name(&self) -> &str {
         &tool_file().name
     }
@@ -65,10 +65,7 @@ impl ToolLike for WriteResultTool {
                 Ok(k) => k,
                 Err(e) => return Ok(e),
             };
-            let result = match input.get("result") {
-                Some(v) => v.clone(),
-                None => return Ok(ToolResult::error("Missing required parameter: result")),
-            };
+            let result = input.get("result").cloned().unwrap_or(Value::Null);
             Ok(write_result(&ticket_system, ctx, &key, result))
         })
     }
@@ -115,7 +112,7 @@ mod tests {
         let (sys, key) = one_ticket("alice");
         sys.dir(dir.path().to_path_buf());
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
-        let outcome = WriteResultTool
+        let outcome = CloseTicketTool
             .call(serde_json::json!({"result": "the answer"}), &ctx)
             .await
             .unwrap();
@@ -133,52 +130,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_empty_string_when_no_schema() {
-        let dir = crate::test_util::TempDir::new().unwrap();
-        let (sys, key) = one_ticket("alice");
-        sys.dir(dir.path().to_path_buf());
-        let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
-        let outcome = WriteResultTool
-            .call(serde_json::json!({"result": ""}), &ctx)
-            .await
-            .unwrap();
-        assert!(matches!(outcome, ToolResult::Error(_)));
-        let t = sys.get(&key).unwrap();
-        assert_eq!(t.status, Status::InProgress);
-        assert!(!dir.path().join("results.jsonl").exists());
+    async fn accepts_any_value_when_no_schema() {
+        for value in [
+            serde_json::json!(""),
+            serde_json::json!(null),
+            serde_json::json!({}),
+            serde_json::json!([]),
+        ] {
+            let dir = crate::test_util::TempDir::new().unwrap();
+            let (sys, key) = one_ticket("alice");
+            sys.dir(dir.path().to_path_buf());
+            let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
+            let outcome = CloseTicketTool
+                .call(serde_json::json!({"result": value}), &ctx)
+                .await
+                .unwrap();
+            assert!(
+                matches!(outcome, ToolResult::Success(_)),
+                "expected success for {value:?}"
+            );
+            let t = sys.get(&key).unwrap();
+            assert_eq!(t.status, Status::Done);
+        }
     }
 
-    #[tokio::test]
-    async fn rejects_empty_object_when_no_schema() {
-        let dir = crate::test_util::TempDir::new().unwrap();
-        let (sys, key) = one_ticket("alice");
-        sys.dir(dir.path().to_path_buf());
-        let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
-        let outcome = WriteResultTool
-            .call(serde_json::json!({"result": {}}), &ctx)
-            .await
-            .unwrap();
-        assert!(matches!(outcome, ToolResult::Error(_)));
-        let t = sys.get(&key).unwrap();
-        assert_eq!(t.status, Status::InProgress);
-        assert!(!dir.path().join("results.jsonl").exists());
-    }
-
-    #[tokio::test]
-    async fn rejects_empty_array_when_no_schema() {
-        let dir = crate::test_util::TempDir::new().unwrap();
-        let (sys, key) = one_ticket("alice");
-        sys.dir(dir.path().to_path_buf());
-        let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
-        let outcome = WriteResultTool
-            .call(serde_json::json!({"result": []}), &ctx)
-            .await
-            .unwrap();
-        assert!(matches!(outcome, ToolResult::Error(_)));
-        let t = sys.get(&key).unwrap();
-        assert_eq!(t.status, Status::InProgress);
-        assert!(!dir.path().join("results.jsonl").exists());
-    }
 
     #[tokio::test]
     async fn accepts_structured_value_when_no_schema() {
@@ -186,7 +161,7 @@ mod tests {
         let (sys, key) = one_ticket("alice");
         sys.dir(dir.path().to_path_buf());
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
-        let outcome = WriteResultTool
+        let outcome = CloseTicketTool
             .call(serde_json::json!({"result": {"x": 1, "y": [2, 3]}}), &ctx)
             .await
             .unwrap();
@@ -204,19 +179,6 @@ mod tests {
             "expected raw object, got {parsed}"
         );
         assert_eq!(parsed["result"]["x"], 1);
-    }
-
-    #[tokio::test]
-    async fn rejects_null_result_when_no_schema() {
-        let dir = crate::test_util::TempDir::new().unwrap();
-        let (sys, _key) = one_ticket("alice");
-        sys.dir(dir.path().to_path_buf());
-        let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
-        let outcome = WriteResultTool
-            .call(serde_json::json!({"result": null}), &ctx)
-            .await
-            .unwrap();
-        assert!(matches!(outcome, ToolResult::Error(_)));
     }
 
     #[tokio::test]
@@ -241,7 +203,7 @@ mod tests {
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
 
         // wrong shape
-        let outcome = WriteResultTool
+        let outcome = CloseTicketTool
             .call(serde_json::json!({"result": {"x": 7}}), &ctx)
             .await
             .unwrap();
@@ -250,7 +212,7 @@ mod tests {
         assert_eq!(t.status, Status::InProgress);
 
         // valid shape
-        let outcome = WriteResultTool
+        let outcome = CloseTicketTool
             .call(serde_json::json!({"result": {"x": "ok"}}), &ctx)
             .await
             .unwrap();
@@ -266,24 +228,13 @@ mod tests {
         let sys = TicketSystem::new();
         sys.dir(shared_test_dir().to_path_buf());
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
-        let outcome = WriteResultTool
+        let outcome = CloseTicketTool
             .call(serde_json::json!({"result": "x"}), &ctx)
             .await
             .unwrap();
         assert!(matches!(outcome, ToolResult::Error(_)));
     }
 
-    #[tokio::test]
-    async fn errors_when_result_missing() {
-        let dir = crate::test_util::TempDir::new().unwrap();
-        let (sys, _key) = one_ticket("alice");
-        let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
-        let outcome = WriteResultTool
-            .call(serde_json::json!({}), &ctx)
-            .await
-            .unwrap();
-        assert!(matches!(outcome, ToolResult::Error(_)));
-    }
 
     #[tokio::test]
     async fn appends_one_line_per_completed_ticket() {
@@ -297,7 +248,7 @@ mod tests {
             .claim(|t| t.key() == "TICKET-1", "alice")
             .expect("claim must succeed");
         let ctx_alice = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
-        WriteResultTool
+        CloseTicketTool
             .call(serde_json::json!({"result": "from alice"}), &ctx_alice)
             .await
             .unwrap();
@@ -307,7 +258,7 @@ mod tests {
             .claim(|t| t.key() == "TICKET-2", "bob")
             .expect("claim must succeed");
         let ctx_bob = ctx_with(Arc::clone(&sys), "bob", dir.path().to_path_buf());
-        WriteResultTool
+        CloseTicketTool
             .call(serde_json::json!({"result": "from bob"}), &ctx_bob)
             .await
             .unwrap();
@@ -353,7 +304,7 @@ mod tests {
             let agent = agent.clone();
             handles.push(tokio::spawn(async move {
                 let ctx = ctx_with(sys, &agent, dir_path);
-                WriteResultTool
+                CloseTicketTool
                     .call(serde_json::json!({"result": format!("payload_{i}")}), &ctx)
                     .await
                     .unwrap()

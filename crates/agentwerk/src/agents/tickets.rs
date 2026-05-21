@@ -103,7 +103,7 @@ impl Ticket {
     }
 
     /// Record a back-reference to another ticket. The meaning is
-    /// caller-defined: `write_handover_tool` uses it to chain a
+    /// caller-defined: `handover_ticket` uses it to chain a
     /// child to the ticket that handed off, but any code building a
     /// ticket may set it to express a parent relationship.
     pub fn parent(mut self, key: impl Into<String>) -> Self {

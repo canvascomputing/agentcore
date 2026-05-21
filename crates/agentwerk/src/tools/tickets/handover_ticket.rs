@@ -1,7 +1,7 @@
 //! Atomic finisher + spawner: validate the agent's `result`, finish the
 //! current ticket through the shared `write_result` helper, then insert
 //! a child ticket pinned to `to` with the current ticket recorded as
-//! its `parent`. Sister tool to `WriteResultTool` — both finish the
+//! its `parent`. Sister tool to `CloseTicketTool` — both finish the
 //! current ticket; this one also chains a follow-up.
 
 use std::future::Future;
@@ -18,7 +18,7 @@ use super::super::tool::{ToolContext, ToolLike, ToolResult};
 use super::super::tool_file::ToolFile;
 use super::{resolve_current_key, write_result};
 
-pub struct WriteHandoverTool;
+pub struct HandoverTicketTool;
 
 /// Reserved placeholders substituted into the child ticket's `task`
 /// string at handover time: `{parent_key}` and `{parent_result}`.
@@ -37,7 +37,7 @@ fn apply_handover_templates(task: Value, parent_key: &str, parent_result: &str) 
 
 fn tool_file() -> &'static ToolFile {
     static FILE: OnceLock<ToolFile> = OnceLock::new();
-    FILE.get_or_init(|| ToolFile::parse(include_str!("write_handover.tool.json")))
+    FILE.get_or_init(|| ToolFile::parse(include_str!("handover_ticket.tool.json")))
 }
 
 fn description() -> &'static str {
@@ -45,7 +45,7 @@ fn description() -> &'static str {
     DESC.get_or_init(|| tool_file().render_markdown())
 }
 
-impl ToolLike for WriteHandoverTool {
+impl ToolLike for HandoverTicketTool {
     fn name(&self) -> &str {
         &tool_file().name
     }
@@ -98,7 +98,7 @@ impl ToolLike for WriteHandoverTool {
                 }
                 Some(_) => {
                     return Ok(ToolResult::error(
-                        "`result` must be a string — pass plain prose, not numbers or arrays. For structured results use `write_result_tool` instead.",
+                        "`result` must be a string — pass plain prose, not numbers or arrays. For structured results use `close_ticket` instead.",
                     ))
                 }
             };
@@ -197,7 +197,7 @@ mod tests {
         sys.dir(dir.path().to_path_buf());
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
 
-        let outcome = WriteHandoverTool
+        let outcome = HandoverTicketTool
             .call(
                 serde_json::json!({
                     "to": "bob",
@@ -231,7 +231,7 @@ mod tests {
         sys.dir(dir.path().to_path_buf());
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
 
-        WriteHandoverTool
+        HandoverTicketTool
             .call(
                 serde_json::json!({"to": "bob", "task": "next", "result": "done part 1"}),
                 &ctx,
@@ -275,7 +275,7 @@ mod tests {
             .expect("claim must succeed");
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
 
-        let outcome = WriteHandoverTool
+        let outcome = HandoverTicketTool
             .call(
                 serde_json::json!({"to": "bob", "task": "next", "result": "too short"}),
                 &ctx,
@@ -301,7 +301,7 @@ mod tests {
         sys.dir(dir.path().to_path_buf());
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
 
-        let outcome = WriteHandoverTool
+        let outcome = HandoverTicketTool
             .call(
                 serde_json::json!({
                     "to": "bob",
@@ -328,7 +328,7 @@ mod tests {
         sys.dir(dir.path().to_path_buf());
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
 
-        WriteHandoverTool
+        HandoverTicketTool
             .call(
                 serde_json::json!({
                     "to": "bob",
@@ -350,7 +350,7 @@ mod tests {
         let dir = crate::test_util::TempDir::new().unwrap();
         let (sys, _key) = one_ticket("alice");
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
-        let outcome = WriteHandoverTool
+        let outcome = HandoverTicketTool
             .call(serde_json::json!({"task": "x", "result": "y"}), &ctx)
             .await
             .unwrap();
@@ -362,7 +362,7 @@ mod tests {
         let dir = crate::test_util::TempDir::new().unwrap();
         let (sys, _key) = one_ticket("alice");
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
-        let outcome = WriteHandoverTool
+        let outcome = HandoverTicketTool
             .call(
                 serde_json::json!({"to": "  ", "task": "x", "result": "y"}),
                 &ctx,
@@ -377,7 +377,7 @@ mod tests {
         let dir = crate::test_util::TempDir::new().unwrap();
         let (sys, _key) = one_ticket("alice");
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
-        let outcome = WriteHandoverTool
+        let outcome = HandoverTicketTool
             .call(serde_json::json!({"to": "bob", "result": "y"}), &ctx)
             .await
             .unwrap();
@@ -389,7 +389,7 @@ mod tests {
         let dir = crate::test_util::TempDir::new().unwrap();
         let (sys, _key) = one_ticket("alice");
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
-        let outcome = WriteHandoverTool
+        let outcome = HandoverTicketTool
             .call(serde_json::json!({"to": "bob", "task": "x"}), &ctx)
             .await
             .unwrap();
@@ -406,7 +406,7 @@ mod tests {
             serde_json::json!({"to": "bob", "task": "x", "result": null}),
             serde_json::json!({"to": "bob", "task": "x", "result": ""}),
         ] {
-            let outcome = WriteHandoverTool.call(body, &ctx).await.unwrap();
+            let outcome = HandoverTicketTool.call(body, &ctx).await.unwrap();
             assert!(matches!(outcome, ToolResult::Error(_)));
         }
     }
@@ -422,7 +422,7 @@ mod tests {
             serde_json::json!({"to": "bob", "task": "next", "result": [1, 2, 3]}),
             serde_json::json!({"to": "bob", "task": "next", "result": {"k": "v"}}),
         ] {
-            let outcome = WriteHandoverTool.call(non_string, &ctx).await.unwrap();
+            let outcome = HandoverTicketTool.call(non_string, &ctx).await.unwrap();
             assert!(matches!(outcome, ToolResult::Error(_)));
         }
         assert_eq!(sys.get(&parent_key).unwrap().status, Status::InProgress);
@@ -434,7 +434,7 @@ mod tests {
         let dir = crate::test_util::TempDir::new().unwrap();
         let (sys, _key) = one_ticket("alice");
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
-        let outcome = WriteHandoverTool
+        let outcome = HandoverTicketTool
             .call(
                 serde_json::json!({"to": "bob", "task": 42, "result": "ok"}),
                 &ctx,
@@ -450,7 +450,7 @@ mod tests {
         let sys = TicketSystem::new();
         sys.dir(shared_test_dir().to_path_buf());
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
-        let outcome = WriteHandoverTool
+        let outcome = HandoverTicketTool
             .call(
                 serde_json::json!({"to": "bob", "task": "x", "result": "y"}),
                 &ctx,
@@ -467,7 +467,7 @@ mod tests {
         sys.dir(dir.path().to_path_buf());
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
 
-        WriteHandoverTool
+        HandoverTicketTool
             .call(
                 serde_json::json!({
                     "to": "bob",
@@ -493,7 +493,7 @@ mod tests {
         sys.dir(dir.path().to_path_buf());
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
 
-        WriteHandoverTool
+        HandoverTicketTool
             .call(
                 serde_json::json!({
                     "to": "bob",
@@ -522,7 +522,7 @@ mod tests {
         sys.dir(dir.path().to_path_buf());
         let ctx = ctx_with(Arc::clone(&sys), "alice", dir.path().to_path_buf());
 
-        WriteHandoverTool
+        HandoverTicketTool
             .call(
                 serde_json::json!({
                     "to": "bob",

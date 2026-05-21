@@ -19,7 +19,7 @@ use super::retry::{ExponentialRetry, ImmediateRetry, Retry};
 use super::stats::LoopStats;
 use super::tickets::{policy_violated_kind, to_messages, Comment, Status};
 use crate::prompts::{retry_directive, schema_retry_detail};
-use crate::tools::FINISHER_TOOL_NAMES;
+use crate::tools::TICKET_CLOSING_TOOLS;
 
 /// Per-iteration control signal for the compaction helpers.
 enum LoopAction {
@@ -455,6 +455,42 @@ async fn process_ticket(
             .collect();
 
         if calls.is_empty() {
+            let has_schema = ticket_system
+                .get(key)
+                .map(|t| t.schema.is_some())
+                .unwrap_or(false);
+            if has_schema {
+                let registered: Vec<&str> = TICKET_CLOSING_TOOLS
+                    .iter()
+                    .copied()
+                    .filter(|&n| agent.tool_registry().get(n).is_some())
+                    .collect();
+                if !registered.is_empty() {
+                    consecutive_schema_failures =
+                        consecutive_schema_failures.saturating_add(1);
+                    let detail = format!(
+                        "Your reply was text-only. Call `{}` to finish the ticket \
+                         — your work is not recorded until you do.",
+                        registered.join("` or `")
+                    );
+                    emit(EventKind::SchemaRetried {
+                        attempt: consecutive_schema_failures,
+                        max_attempts: max_schema_retries,
+                        message: detail.clone(),
+                    });
+                    ticket_system
+                        .add_comment(key, Comment::user_text(retry_directive(&detail)));
+                    if consecutive_schema_failures >= max_schema_retries {
+                        fail_ticket_schema_exhausted(
+                            ticket_system,
+                            key,
+                            max_schema_retries,
+                            &emit,
+                        );
+                        return;
+                    }
+                }
+            }
             continue 'outer;
         }
 
@@ -483,7 +519,7 @@ async fn process_ticket(
             let tool_name = call.map(|c| c.name.clone()).unwrap_or_default();
             match tool_result {
                 Ok(output) => {
-                    if call.is_some_and(|c| FINISHER_TOOL_NAMES.contains(&c.name.as_str())) {
+                    if call.is_some_and(|c| TICKET_CLOSING_TOOLS.contains(&c.name.as_str())) {
                         consecutive_schema_failures = 0;
                     }
                     emit(EventKind::ToolCallFinished {
@@ -677,14 +713,14 @@ mod tests {
 
     // ---- response builders ----
 
-    /// `write_result_tool` call carrying a string `result`. For
+    /// `close_ticket` call carrying a string `result`. For
     /// no-schema tickets this settles the ticket Done; for schema-bound
     /// tickets it relies on the schema accepting strings.
     fn write_result_response(result: &str) -> ModelResponse {
         ModelResponse {
             content: vec![ContentBlock::ToolUse {
                 id: "call-1".into(),
-                name: "write_result_tool".into(),
+                name: "close_ticket".into(),
                 input: serde_json::json!({ "result": result }),
             }],
             status: ResponseStatus::ToolUse,
@@ -693,13 +729,13 @@ mod tests {
         }
     }
 
-    /// `write_result_tool` call carrying a structured `result` value.
+    /// `close_ticket` call carrying a structured `result` value.
     /// Used by schema-bound ticket tests.
     fn write_result_value(result: serde_json::Value) -> ModelResponse {
         ModelResponse {
             content: vec![ContentBlock::ToolUse {
                 id: "call-1".into(),
-                name: "write_result_tool".into(),
+                name: "close_ticket".into(),
                 input: serde_json::json!({ "result": result }),
             }],
             status: ResponseStatus::ToolUse,
@@ -834,9 +870,9 @@ mod tests {
             .provider(provider.clone() as Arc<dyn Provider>)
             .model("mock")
             .role("test")
-            // ManageTicketsTool drives create/edit. WriteResultTool is
+            // ManageTicketsTool drives create/edit. CloseTicketTool is
             // auto-registered on every Agent and is the only path to
-            // settle a ticket.
+            // finish a ticket.
             .tool(ManageTicketsTool)
             .event_handler(handler);
         tickets.agent(agent);
@@ -1097,43 +1133,32 @@ mod tests {
     // Text-only replies
 
     #[tokio::test]
-    async fn text_reply_no_schema_retries_then_recovers() {
-        // First reply is text-only with no result → retry directive
-        // fires. Second reply calls write_result_tool successfully.
-        let provider = MockProvider::with_results(vec![
-            Ok(text_response("Hello!")),
-            Ok(write_result_response("done")),
-        ]);
+    async fn text_reply_no_schema_exits_cleanly() {
+        // Schema-less ticket: a text-only reply is valid completion.
+        // No retry directive fires; the loop exits in one request.
+        let provider = MockProvider::with_results(vec![Ok(text_response("Hello!"))]);
         let (events, provider, ticket) = run_one(provider, 3, 10, None).await;
 
-        assert_eq!(provider.requests(), 2);
-        let retries = schema_retries_in(&events);
-        assert_eq!(retries.len(), 1);
-        assert!(retries[0].2.contains("write_result_tool"));
-        let done = events
-            .iter()
-            .filter(|e| matches!(e.kind, EventKind::TicketDone { .. }))
-            .count();
+        assert_eq!(provider.requests(), 1);
+        assert_eq!(schema_retries_in(&events).len(), 0);
         let failed = events
             .iter()
             .filter(|e| matches!(e.kind, EventKind::TicketFailed { .. }))
             .count();
-        assert_eq!(done, 1);
         assert_eq!(failed, 0);
-        assert_eq!(ticket.status, Status::Done);
+        assert_eq!(ticket.status, Status::InProgress);
     }
 
     #[tokio::test]
-    async fn text_reply_no_schema_exhausts_retries_and_fails() {
-        // Three text-only replies with `max_schema_retries(2)` exhaust
-        // the budget and fail the ticket with a MaxSchemaRetries
-        // PolicyViolated event.
+    async fn text_reply_with_schema_exhausts_retries_and_fails() {
+        // Schema-bound ticket: text-only replies exhaust the retry budget
+        // and fail the ticket with a MaxSchemaRetries PolicyViolated event.
         let provider = MockProvider::with_results(vec![
             Ok(text_response("a")),
             Ok(text_response("b")),
             Ok(text_response("c")),
         ]);
-        let (events, _, ticket) = run_one(provider, 3, 2, None).await;
+        let (events, _, ticket) = run_one(provider, 3, 2, Some(schema_for_partial_sum())).await;
 
         let retries = schema_retries_in(&events);
         assert_eq!(retries.len(), 2);
@@ -1154,7 +1179,7 @@ mod tests {
     async fn text_reply_with_schema_retries_then_recovers() {
         // Schema-bound ticket; first reply is text-only (no result
         // attached) → retry directive fires. Second reply attaches a
-        // valid result via write_result_tool → Done.
+        // valid result via close_ticket → Done.
         let provider = MockProvider::with_results(vec![
             Ok(text_response("Hello!")),
             Ok(write_result_value(serde_json::json!({"partial_sum": 1}))),
@@ -1165,7 +1190,7 @@ mod tests {
         assert_eq!(provider.requests(), 2);
         let retries = schema_retries_in(&events);
         assert_eq!(retries.len(), 1);
-        assert!(retries[0].2.contains("write_result_tool"));
+        assert!(retries[0].2.contains("close_ticket"));
         let done = events
             .iter()
             .filter(|e| matches!(e.kind, EventKind::TicketDone { .. }))
@@ -1203,6 +1228,10 @@ mod tests {
     }
 
     // Schema retries
+
+    fn string_schema() -> Schema {
+        Schema::parse(serde_json::json!({"type": "string"})).expect("valid schema")
+    }
 
     fn schema_for_partial_sum() -> Schema {
         Schema::parse(serde_json::json!({
@@ -1558,10 +1587,10 @@ mod tests {
         // Ticket 1 (3 turns):
         //   1. Model calls knowledge_tool write (api-config)
         //   2. Model calls knowledge_tool read (api-config)
-        //   3. Model calls write_result_tool to finish
+        //   3. Model calls close_ticket to finish
         //
         // Ticket 2 (1 turn):
-        //   1. Model calls write_result_tool immediately
+        //   1. Model calls close_ticket immediately
 
         let provider = MockProvider::with_results(vec![
             // Ticket 1, turn 1: write a page
@@ -2016,7 +2045,7 @@ mod tests {
             Ok(text_response_with_usage("SUMMARY", TokenUsage::default())),
             Ok(write_result_response("ok")),
         ]);
-        let (events, provider, ticket) = run_one(provider, 0, 10, None).await;
+        let (events, provider, ticket) = run_one(provider, 0, 10, Some(string_schema())).await;
 
         assert_eq!(provider.requests(), 4);
         assert_eq!(compaction_starts(&events, CompactReason::Reactive), 1);
@@ -2050,7 +2079,7 @@ mod tests {
                 message: "second overflow".into(),
             }),
         ]);
-        let (events, _, _) = run_one(provider, 0, 10, None).await;
+        let (events, _, _) = run_one(provider, 0, 10, Some(string_schema())).await;
 
         // First overflow: Started + Finished pair (compaction succeeded).
         // Second overflow: circuit breaker trips before Started can fire.
@@ -2096,7 +2125,8 @@ mod tests {
             .tool(ManageTicketsTool)
             .event_handler(handler);
         tickets.agent(agent);
-        tickets.task("go");
+        let schema = Schema::parse(serde_json::json!({"type": "string"})).unwrap();
+        tickets.ticket(Ticket::new("go").schema(schema));
 
         let _ = tickets.finish().await;
         let events = collected.lock().unwrap().clone();
@@ -2777,7 +2807,7 @@ mod tests {
                 .tool(big_tool)
                 .event_handler(handler),
         );
-        tickets.task("go");
+        tickets.ticket(Ticket::new("go").schema(string_schema()));
 
         let _ = tickets.finish().await;
         let events = collected.lock().unwrap().clone();
@@ -2819,7 +2849,7 @@ mod tests {
 
         assert_eq!(comments[3].author, "assistant");
         assert!(
-            matches!(&comments[3].content[..], [CommentContent::ToolUse { name, .. }] if name == "write_result_tool"),
+            matches!(&comments[3].content[..], [CommentContent::ToolUse { name, .. }] if name == "close_ticket"),
             "assistant comment must mirror the model's ToolUse block",
         );
 
@@ -2841,15 +2871,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn comments_record_schema_retry_directive() {
-        // Mirrors text_reply_no_schema_retries_then_recovers: a text-only
-        // reply triggers a no-finisher retry directive, then the model
-        // recovers with a write_result_tool call.
+    async fn text_reply_with_schema_injects_directive_into_transcript() {
+        // Schema-bound ticket: a text-only reply triggers a no-finisher
+        // retry directive, then the model recovers with a close_ticket call.
         let provider = MockProvider::with_results(vec![
             Ok(text_response("Hello!")),
-            Ok(write_result_response("done")),
+            Ok(write_result_value(serde_json::json!({"partial_sum": 1}))),
         ]);
-        let (_, _, ticket) = run_one(provider, 3, 10, None).await;
+        let (_, _, ticket) = run_one(provider, 3, 10, Some(schema_for_partial_sum())).await;
 
         let comments = ticket.comments();
 
@@ -2870,7 +2899,7 @@ mod tests {
             other => panic!("expected a single text block for the directive, got {other:?}"),
         };
         assert!(
-            directive_text.contains("write_result_tool"),
+            directive_text.contains("close_ticket"),
             "directive must name the missing finisher: {directive_text}",
         );
 
@@ -2880,7 +2909,7 @@ mod tests {
             .skip(first_assistant + 2)
             .find(|c| {
                 c.author == "assistant"
-                    && matches!(&c.content[..], [CommentContent::ToolUse { name, .. }] if name == "write_result_tool")
+                    && matches!(&c.content[..], [CommentContent::ToolUse { name, .. }] if name == "close_ticket")
             });
         assert!(
             second_assistant.is_some(),
@@ -2903,7 +2932,7 @@ mod tests {
             Ok(text_response_with_usage("SUMMARY", TokenUsage::default())),
             Ok(write_result_response("ok")),
         ]);
-        let (_, _, ticket) = run_one(provider, 0, 10, None).await;
+        let (_, _, ticket) = run_one(provider, 0, 10, Some(string_schema())).await;
 
         let comments = ticket.comments();
 
@@ -2912,7 +2941,7 @@ mod tests {
 
         // The summary lands as a `user` comment carrying the
         // summariser's text. The assistant turn that came after it
-        // (write_result_tool) and its tool-result follow-up sit on
+        // (close_ticket) and its tool-result follow-up sit on
         // top of that.
         let summary_idx = comments
             .iter()

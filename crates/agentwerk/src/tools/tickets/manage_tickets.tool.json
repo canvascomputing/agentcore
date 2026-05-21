@@ -3,7 +3,7 @@
   "summary": [
     "Read and mutate the ticket queue from one tool: union of `read_tickets_tool` and `write_tickets_tool`.",
     "Use `get` / `list` / `search` to read, and `create` / `edit` to write.",
-    "Finishing a ticket is done with `write_result_tool`, not this tool."
+    "Finishing a ticket is done with `close_ticket`, not this tool."
   ],
   "constraints": [
     "One `action` per call. Five actions total — see the `action` parameter.",
@@ -14,12 +14,12 @@
   "anti_patterns": [
     "When the agent only needs reads — register `read_tickets_tool` instead. Smaller surface = fewer mistakes.",
     "When the agent should never read tickets it does not own — register `write_tickets_tool` to block listing/searching.",
-    "To finish the agent's current ticket — call `write_result_tool`.",
+    "To finish the agent's current ticket — call `close_ticket`.",
     "To find code or files in the working directory — use `grep_tool` / `glob_tool`."
   ],
   "cautions": [
-    "IMPORTANT: this tool cannot transition status. Use `write_result_tool` to finish; `Failed` is reserved for ticket-system-driven outcomes (schema-retry trip, policy violations).",
-    "ALWAYS finish the current ticket with `write_result_tool` before the response ends. Returning text without a result leaves the ticket `InProgress` and the loop will re-pick it."
+    "IMPORTANT: this tool cannot transition status. Use `close_ticket` to finish; `Failed` is reserved for ticket-system-driven outcomes (schema-retry trip, policy violations).",
+    "ALWAYS finish the current ticket with `close_ticket` before the response ends. Returning text without a result leaves the ticket `InProgress` and the loop will re-pick it."
   ],
   "output": [
     "Reads (`get`): markdown ticket block with key, status, reporter, labels, task body, result.",
@@ -60,7 +60,7 @@
       },
       "schema": {
         "type": "object",
-        "description": "For `create` or `edit` (optional): a JSON Schema document. When set, the agent's final result (written via `write_result_tool`) must validate against it; failures count toward `max_schema_retries`."
+        "description": "For `create` or `edit` (optional): a JSON Schema document. When set, the agent's final result (written via `close_ticket`) must validate against it; failures count toward `max_schema_retries`."
       }
     },
     "required": ["action"]

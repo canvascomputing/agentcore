@@ -92,7 +92,7 @@ async fn finds_every_lib_rs_in_nested_tree() -> std::result::Result<(), Box<dyn 
             "Investigate the working directory and answer the user's question. \
              Use the available tools — pick whichever one fits the question. \
              When you have the answer, settle the ticket via \
-             `write_result_tool`.",
+             `close_ticket`.",
         )
         .tool(GlobTool)
         .tool(GrepTool)
