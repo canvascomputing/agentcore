@@ -132,35 +132,48 @@ Each provider exposes `.base_url(url)` and `.timeout(duration)` to override the 
 The `TicketSystem` is the core data structure of agentwerk to orchestrate complex collaboration between agents. A `task` is the work itself, a `ticket` wraps it with additional metadata, like labels and schemas. Labels route work to matching agents.
 
 ```rust
-use agentwerk::{Ticket, TicketSystem};
+use agentwerk::{Agent, Ticket, TicketSystem};
+use agentwerk::tools::WebFetchTool;
 
 let tickets = TicketSystem::new();
 
-tickets.agent(security_reviewer);
-tickets.agent(performance_reviewer);
+tickets.pool(4, |i| {
+    Agent::new()
+        .name(format!("researcher_{i}"))
+        .label("research")
+        .from_env()
+        .tool(WebFetchTool)
+});
 
-for path in ["src/auth.rs", "src/session.rs", "src/tokens.rs"] {
+tickets.agent(
+    Agent::new()
+        .name("analyst")
+        .label("analysis")
+        .from_env()
+);
+
+for url in pricing_pages {
     tickets.task_labeled(
-        format!("Audit {path} for input-validation gaps."),
-        "security",
+        format!("Fetch {url} and extract pricing tiers, limits, and features."),
+        "research",
     );
 }
 
-let audit = Ticket::new("Audit src/api/ for blocking I/O in async handlers.")
-    .label("performance")
-    .schema(finding_schema);
-
-tickets.ticket(audit);
+tickets.ticket(
+    Ticket::new("Rank all products by value for a 10-person engineering team.")
+        .label("analysis")
+        .schema(comparison_schema)
+);
 ```
 
 | Method | Description |
 |--------|-------------|
-| `agent(agent)` | Register an agent with the system. |
-| `pool(n, build)` | Register `n` agents built by `build(i)`, where `i` is the 0-based worker index. |
+| `agent(agent)` | Add an agent to this ticket system. |
+| `pool(n, build)` | Add `n` agents built by `build(i)`, where `i` is the 0-based agent index. |
 | `dir(d)` | Set the directory where knowledge, results, and ticket logs are persisted. |
 | `task(t)` | Submit a task. |
 | `task_labeled(t, l)` | Submit a task tagged with `l` for label-scoped routing. |
-| `ticket(t)` | Submit a caller-built `Ticket`. Compose schemas, labels, and parent links via `Ticket::new(...).schema(...).label(...)`. |
+| `ticket(t)` | Submit a `Ticket` with custom labels, a schema, or a parent link. |
 
 ### Execution
 
