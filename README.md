@@ -159,7 +159,7 @@ tickets.ticket(audit);
 | `dir(d)` | Set the directory where knowledge, results, and ticket logs are persisted. |
 | `task(t)` | Submit a task. |
 | `task_labeled(t, l)` | Submit a task tagged with `l` for label-scoped routing. |
-| `ticket(t)` | Submit a caller-built `Ticket`. Compose schemas, labels, and parent links via `Ticket::new(...).schema(...).label(...)` or `Ticket::new(...).schema_as::<R>()`. |
+| `ticket(t)` | Submit a caller-built `Ticket`. Compose schemas, labels, and parent links via `Ticket::new(...).schema(...).label(...)`. |
 
 ### Execution
 
@@ -345,26 +345,6 @@ let schema = Schema::parse(json!({
 }))?;
 
 tickets.ticket(Ticket::new("Write a report.").schema(schema));
-```
-
-You can also use Rust types for enforcing schemas:
-
-```rust
-use agentwerk::Ticket;
-
-#[derive(serde::Deserialize)]
-struct Report {
-    title: String,
-    sections: Vec<String>,
-}
-
-tickets.ticket(Ticket::new("Write a report on Rust async runtimes.").schema_as::<Report>());
-tickets.finish().await;
-
-for ticket in tickets.tickets() {
-    let report: Report = ticket.result_as::<Report>().unwrap();
-    println!("{}: {} sections", report.title, report.sections.len());
-}
 ```
 
 ## Compaction

@@ -365,8 +365,7 @@ impl Agent {
     /// Enqueue a fully-built `Ticket`. System-managed fields (key,
     /// reporter, created_at, status, result) are overwritten. To pin the
     /// ticket to a specific agent, label it with the agent's name.
-    /// Compose schema and label via `Ticket::new(...).schema(...).label(...)`
-    /// or `Ticket::new(...).schema_as::<R>()`.
+    /// Compose schema and label via `Ticket::new(...).schema(...).label(...)`.
     pub fn ticket(&self, ticket: Ticket) -> &Self {
         self.dispatch(ticket);
         self

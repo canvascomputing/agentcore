@@ -23,10 +23,9 @@ use super::policy::Policies;
 use super::r#loop::run_main_loop;
 use super::stats::{Stats, TicketStats};
 
-/// A ticket. Caller-settable fields: `task`, `labels`, `schema` (or
-/// `schema_as::<R>()` to derive a serde-backed validator from a Rust
-/// type). System-managed fields (`key`, `status`, `reporter`,
-/// `created_at`, `result`) are stamped at insertion time.
+/// A ticket. Caller-settable fields: `task`, `labels`, `schema`.
+/// System-managed fields (`key`, `status`, `reporter`, `created_at`,
+/// `result`) are stamped at insertion time.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Ticket {
     pub task: serde_json::Value,
@@ -101,17 +100,6 @@ impl Ticket {
     pub fn schema(mut self, schema: crate::schemas::Schema) -> Self {
         self.schema = Some(schema);
         self
-    }
-
-    /// Attach a serde-backed schema derived from `R`. The ticket's
-    /// final `done` result must deserialize into `R`; deserialize
-    /// errors flow through the same retry path as JSON-Schema
-    /// violations. Equivalent to `schema(Schema::from_type::<R>())`.
-    pub fn schema_as<R>(self) -> Self
-    where
-        R: serde::de::DeserializeOwned + 'static,
-    {
-        self.schema(crate::schemas::Schema::from_type::<R>())
     }
 
     /// Record a back-reference to another ticket. The meaning is
@@ -581,8 +569,7 @@ impl TicketSystem {
     /// Enqueue a fully-built `Ticket`. System-managed fields (key,
     /// reporter, created_at, status, result) are overwritten. To pin the
     /// ticket to a specific agent, label it with the agent's name.
-    /// Compose schema and label via `Ticket::new(...).schema(...).label(...)`
-    /// or `Ticket::new(...).schema_as::<R>()`.
+    /// Compose schema and label via `Ticket::new(...).schema(...).label(...)`.
     pub fn ticket(&self, ticket: Ticket) -> &Self {
         self.dispatch(ticket);
         self

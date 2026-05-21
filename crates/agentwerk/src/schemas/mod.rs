@@ -21,36 +21,17 @@ use std::sync::Arc;
 use serde_json::{Map, Number, Value};
 
 /// A compiled schema. Cheap to clone (Arc-backed); validation is
-/// read-only. Two flavours sit behind the same surface:
-///
-/// - [`Schema::parse`] builds a JSON-Schema-backed validator (the
-///   hand-rolled subset documented at the top of this module).
-/// - [`Schema::from_type`] builds a type-backed validator that
-///   delegates to `serde_json::from_value::<R>`. The deserialize is
-///   the validation: any error becomes a [`SchemaViolation`].
-///
-/// Both variants flow through the same [`Schema::validate`] and
-/// [`format_violations`] path, so the retry budget and the
-/// schema-retry directive treat them identically. The two are not
-/// distinguishable through this type's public surface: validation
-/// is all the framework reads.
+/// read-only. Constructed via [`Schema::parse`] from a JSON-Schema
+/// document (the hand-rolled subset documented at the top of this
+/// module).
 #[derive(Clone)]
 pub struct Schema {
     inner: Arc<SchemaInner>,
 }
 
 enum SchemaInner {
-    Json {
-        compiled: Node,
-    },
-    Typed {
-        validate: TypedValidator,
-        type_name: &'static str,
-    },
+    Json { compiled: Node },
 }
-
-type TypedValidator =
-    Box<dyn Fn(&Value) -> Result<(), Vec<SchemaViolation>> + Send + Sync + 'static>;
 
 impl Schema {
     /// Parse and compile a schema document. Compilation failures
@@ -64,69 +45,27 @@ impl Schema {
         })
     }
 
-    /// Build a schema whose validator is `serde_json::from_value::<R>`.
-    /// Any deserialize error becomes a single [`SchemaViolation`] with
-    /// the serde error message — that wording already names the
-    /// offending field and expected type, which is what the
-    /// schema-retry directive surfaces to the model.
-    ///
-    /// `R` is recorded by name (`std::any::type_name`) for `Debug`.
-    pub fn from_type<R>() -> Self
-    where
-        R: serde::de::DeserializeOwned + 'static,
-    {
-        let validate: TypedValidator =
-            Box::new(
-                |instance: &Value| match serde_json::from_value::<R>(instance.clone()) {
-                    Ok(_) => Ok(()),
-                    Err(err) => Err(vec![SchemaViolation {
-                        instance_path: String::new(),
-                        schema_path: String::new(),
-                        message: err.to_string(),
-                    }]),
-                },
-            );
-        Self {
-            inner: Arc::new(SchemaInner::Typed {
-                validate,
-                type_name: std::any::type_name::<R>(),
-            }),
-        }
-    }
-
     /// Validate `instance` against this schema. On success returns
     /// `Ok(())`. On failure returns every violation the validator
     /// reported, each tagged with the instance path so the model can
     /// find the field it got wrong.
     pub fn validate(&self, instance: &Value) -> Result<(), Vec<SchemaViolation>> {
-        match self.inner.as_ref() {
-            SchemaInner::Json { compiled, .. } => {
-                let mut violations = Vec::new();
-                compiled.check(instance, "", &mut violations);
-                if violations.is_empty() {
-                    Ok(())
-                } else {
-                    Err(violations)
-                }
-            }
-            SchemaInner::Typed { validate, .. } => validate(instance),
+        let SchemaInner::Json { compiled } = self.inner.as_ref();
+        let mut violations = Vec::new();
+        compiled.check(instance, "", &mut violations);
+        if violations.is_empty() {
+            Ok(())
+        } else {
+            Err(violations)
         }
     }
 }
 
 impl fmt::Debug for Schema {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.inner.as_ref() {
-            SchemaInner::Json { .. } => f
-                .debug_struct("Schema")
-                .field("kind", &"json")
-                .finish_non_exhaustive(),
-            SchemaInner::Typed { type_name, .. } => f
-                .debug_struct("Schema")
-                .field("kind", &"typed")
-                .field("type", type_name)
-                .finish_non_exhaustive(),
-        }
+        f.debug_struct("Schema")
+            .field("kind", &"json")
+            .finish_non_exhaustive()
     }
 }
 
@@ -963,59 +902,4 @@ mod tests {
         assert!(schema.validate(&json!("anything")).is_err());
     }
 
-    // ---------- typed variant ----------
-
-    #[derive(serde::Deserialize)]
-    #[allow(dead_code)]
-    struct Person {
-        name: String,
-        age: u32,
-    }
-
-    #[test]
-    fn typed_schema_accepts_valid_json() {
-        let schema = Schema::from_type::<Person>();
-        assert!(schema
-            .validate(&json!({"name": "alice", "age": 30}))
-            .is_ok());
-    }
-
-    #[test]
-    fn typed_schema_rejects_missing_field() {
-        let schema = Schema::from_type::<Person>();
-        let violations = schema.validate(&json!({"name": "alice"})).unwrap_err();
-        assert_eq!(violations.len(), 1);
-        assert!(
-            violations[0].message.contains("age"),
-            "expected message to mention the missing field, got: {}",
-            violations[0].message
-        );
-    }
-
-    #[test]
-    fn typed_schema_rejects_wrong_type() {
-        let schema = Schema::from_type::<Person>();
-        let violations = schema.validate(&json!({"name": 7, "age": 30})).unwrap_err();
-        assert_eq!(violations.len(), 1);
-        let msg = &violations[0].message;
-        assert!(
-            msg.contains("string"),
-            "expected message to name the expected type, got: {msg}"
-        );
-    }
-
-    #[test]
-    fn typed_schema_clone_is_cheap() {
-        let schema = Schema::from_type::<Person>();
-        let cloned = schema.clone();
-        assert!(Arc::ptr_eq(&schema.inner, &cloned.inner));
-    }
-
-    #[test]
-    fn typed_schema_debug_names_the_type() {
-        let schema = Schema::from_type::<Person>();
-        let dbg = format!("{schema:?}");
-        assert!(dbg.contains("Person"), "got: {dbg}");
-        assert!(dbg.contains("typed"), "got: {dbg}");
-    }
 }
