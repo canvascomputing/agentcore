@@ -138,7 +138,10 @@ async fn summariser_condenses_transcript_and_ticket_completes(
         .role("Answer the question in the task by calling write_result_tool with your answer.");
     tickets.agent(agent);
     tickets.ticket(Ticket::new(TASK));
-    assert!(tickets.last_result().is_none(), "no result before run starts");
+    assert!(
+        tickets.last_result().is_none(),
+        "no result before run starts"
+    );
 
     tickets.finish().await;
 
@@ -163,8 +166,14 @@ async fn summariser_condenses_transcript_and_ticket_completes(
 
     common::print_result(&tickets, tickets.stats());
 
-    assert!(compacted, "CompactionStarted must fire before the first request (blocking limit exceeded)");
-    assert!(compaction_succeeded, "CompactionFinished must fire — summariser must return text");
+    assert!(
+        compacted,
+        "CompactionStarted must fire before the first request (blocking limit exceeded)"
+    );
+    assert!(
+        compaction_succeeded,
+        "CompactionFinished must fire — summariser must return text"
+    );
 
     // The summary replaces all non-system comments in the ticket. Verify
     // it is substantive: a degenerate "ok" or empty response would pass
@@ -182,9 +191,7 @@ async fn summariser_condenses_transcript_and_ticket_completes(
                         .and_then(|v| v["content"].as_array().map(|a| a.to_owned()))
                         .unwrap_or_default()
                         .into_iter()
-                        .filter_map(|block| {
-                            block["Text"].as_str().map(|s| s.len())
-                        })
+                        .filter_map(|block| block["Text"].as_str().map(|s| s.len()))
                         .collect::<Vec<_>>()
                 })
                 .collect::<Vec<_>>()

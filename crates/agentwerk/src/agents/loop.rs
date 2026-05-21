@@ -247,7 +247,10 @@ async fn process_ticket(
     if let Some(context_msg) = agent.context_message(&policies, &ticket_system.stats) {
         ticket_system.add_comment(key, Comment::user_text(context_msg));
     }
-    let Message::User { content: task_blocks } = &task_message else {
+    let Message::User {
+        content: task_blocks,
+    } = &task_message
+    else {
         unreachable!("Ticket::as_user_message returns Message::User");
     };
     ticket_system.add_comment(key, Comment::user(task_blocks, &HashMap::new()));
@@ -305,13 +308,7 @@ async fn process_ticket(
         let tools = agent.tool_definitions();
 
         let exceeds_proactive_threshold = last_usage.as_ref().is_some_and(|usage| {
-            compaction::should_compact_proactively(
-                window,
-                usage,
-                &messages,
-                &system_prompt,
-                &tools,
-            )
+            compaction::should_compact_proactively(window, usage, &messages, &system_prompt, &tools)
         });
         if exceeds_proactive_threshold {
             match try_compact(CompactReason::Proactive, &scope).await {
@@ -328,24 +325,25 @@ async fn process_ticket(
             }
         }
 
-        let exceeds_blocking_limit = compaction::blocking_threshold(window).is_some_and(|threshold| {
-            let default_usage = TokenUsage::default();
-            let usage = last_usage.as_ref().unwrap_or(&default_usage);
-            let estimate = compaction::estimate_next_request_tokens(
-                usage,
-                &messages,
-                &system_prompt,
-                &tools,
-            );
-            if estimate < threshold {
-                return false;
-            }
-            emit(EventKind::BlockingLimitExceeded {
-                estimated_tokens: estimate,
-                threshold_tokens: threshold,
+        let exceeds_blocking_limit =
+            compaction::blocking_threshold(window).is_some_and(|threshold| {
+                let default_usage = TokenUsage::default();
+                let usage = last_usage.as_ref().unwrap_or(&default_usage);
+                let estimate = compaction::estimate_next_request_tokens(
+                    usage,
+                    &messages,
+                    &system_prompt,
+                    &tools,
+                );
+                if estimate < threshold {
+                    return false;
+                }
+                emit(EventKind::BlockingLimitExceeded {
+                    estimated_tokens: estimate,
+                    threshold_tokens: threshold,
+                });
+                true
             });
-            true
-        });
         if exceeds_blocking_limit {
             match compact_or_stop(&mut compaction_retry, &scope).await {
                 LoopAction::Replay => continue 'outer,
@@ -469,10 +467,8 @@ async fn process_ticket(
                     max_attempts: max_schema_retries,
                     message: finisher_detail.clone(),
                 });
-                ticket_system.add_comment(
-                    key,
-                    Comment::user_text(retry_directive(&finisher_detail)),
-                );
+                ticket_system
+                    .add_comment(key, Comment::user_text(retry_directive(&finisher_detail)));
                 if consecutive_schema_failures >= max_schema_retries {
                     fail_ticket_schema_exhausted(ticket_system, key, max_schema_retries, &emit);
                     return;
@@ -531,8 +527,7 @@ async fn process_ticket(
                 }
                 Err(err) => {
                     if matches!(err, ToolError::SchemaValidationFailed { .. }) {
-                        consecutive_schema_failures =
-                            consecutive_schema_failures.saturating_add(1);
+                        consecutive_schema_failures = consecutive_schema_failures.saturating_add(1);
                         if schema_failure_message.is_none() {
                             schema_failure_message = Some(err.message());
                         }
@@ -559,11 +554,7 @@ async fn process_ticket(
         let mut paths: HashMap<String, PathBuf> = HashMap::new();
         let mut blocks: Vec<ContentBlock> = Vec::with_capacity(outcomes.len());
         for (block, _, path) in outcomes {
-            if let (
-                ContentBlock::ToolResult { tool_use_id, .. },
-                Some(p),
-            ) = (&block, path)
-            {
+            if let (ContentBlock::ToolResult { tool_use_id, .. }, Some(p)) = (&block, path) {
                 paths.insert(tool_use_id.clone(), p);
             }
             blocks.push(block);
@@ -584,7 +575,10 @@ async fn process_ticket(
         for _ in 0..calls.len() {
             ticket_system.stats.record_tool_call();
             for label in &labels {
-                ticket_system.stats.stats_for_label(label).record_tool_call();
+                ticket_system
+                    .stats
+                    .stats_for_label(label)
+                    .record_tool_call();
             }
         }
 
@@ -2058,14 +2052,8 @@ mod tests {
         let (events, provider, ticket) = run_one(provider, 0, 10, None).await;
 
         assert_eq!(provider.requests(), 4);
-        assert_eq!(
-            compaction_starts(&events, CompactReason::Reactive),
-            1
-        );
-        assert_eq!(
-            compaction_finishes(&events, CompactReason::Reactive),
-            1
-        );
+        assert_eq!(compaction_starts(&events, CompactReason::Reactive), 1);
+        assert_eq!(compaction_finishes(&events, CompactReason::Reactive), 1);
         assert!(failures_in(&events).is_empty());
         assert_eq!(ticket.status, Status::Done);
 
@@ -2099,14 +2087,8 @@ mod tests {
 
         // First overflow: Started + Finished pair (compaction succeeded).
         // Second overflow: circuit breaker trips before Started can fire.
-        assert_eq!(
-            compaction_starts(&events, CompactReason::Reactive),
-            1
-        );
-        assert_eq!(
-            compaction_finishes(&events, CompactReason::Reactive),
-            1
-        );
+        assert_eq!(compaction_starts(&events, CompactReason::Reactive), 1);
+        assert_eq!(compaction_finishes(&events, CompactReason::Reactive), 1);
         let failures = failures_in(&events);
         assert!(!failures.is_empty());
         assert!(
@@ -2177,14 +2159,8 @@ mod tests {
         let (events, provider, ticket) = run_compaction(provider).await;
 
         assert_eq!(provider.requests(), 3);
-        assert_eq!(
-            compaction_starts(&events, CompactReason::Proactive),
-            1
-        );
-        assert_eq!(
-            compaction_finishes(&events, CompactReason::Proactive),
-            1
-        );
+        assert_eq!(compaction_starts(&events, CompactReason::Proactive), 1);
+        assert_eq!(compaction_finishes(&events, CompactReason::Proactive), 1);
         assert_eq!(ticket.status, Status::Done);
 
         // The third request — the retry after compaction — sees only
@@ -2243,10 +2219,7 @@ mod tests {
         ]);
         let (events, _, _) = run_compaction(provider).await;
 
-        assert_eq!(
-            compaction_starts(&events, CompactReason::Proactive),
-            1,
-        );
+        assert_eq!(compaction_starts(&events, CompactReason::Proactive), 1,);
         assert!(
             events.iter().any(|e| matches!(
                 &e.kind,
@@ -2263,7 +2236,10 @@ mod tests {
             retries_in(&events),
         );
         let failures = failures_in(&events);
-        assert!(!failures.is_empty(), "ticket must surface a request failure");
+        assert!(
+            !failures.is_empty(),
+            "ticket must surface a request failure"
+        );
         assert!(
             failures[0].contains("rate limited"),
             "first failure must carry the rate-limited error; got {:?}",
@@ -2297,10 +2273,7 @@ mod tests {
         ]);
         let (events, provider, ticket) = run_compaction(provider).await;
 
-        assert_eq!(
-            compaction_starts(&events, CompactReason::Proactive),
-            1,
-        );
+        assert_eq!(compaction_starts(&events, CompactReason::Proactive), 1,);
         assert_eq!(
             compaction_finishes(&events, CompactReason::Proactive),
             1,
@@ -2350,10 +2323,7 @@ mod tests {
             1,
             "ResponseStatus::ContextWindowExceeded must trigger reactive compaction",
         );
-        assert_eq!(
-            compaction_finishes(&events, CompactReason::Reactive),
-            1,
-        );
+        assert_eq!(compaction_finishes(&events, CompactReason::Reactive), 1,);
         assert_eq!(ticket.status, Status::Done);
     }
 
@@ -2442,9 +2412,7 @@ mod tests {
             .max_time(Duration::from_millis(500));
 
         let dump = Tool::new("dump", "Returns ~800 KB of text")
-            .handler(|_input, _ctx| async move {
-                Ok(ToolResult::success("x".repeat(800_000)))
-            });
+            .handler(|_input, _ctx| async move { Ok(ToolResult::success("x".repeat(800_000))) });
 
         let agent = Agent::new()
             .name("tester")
@@ -2502,7 +2470,10 @@ mod tests {
             }),
             _ => false,
         });
-        assert!(stub_visible, "stub must appear in the second request's messages");
+        assert!(
+            stub_visible,
+            "stub must appear in the second request's messages"
+        );
     }
 
     #[tokio::test]
@@ -2532,7 +2503,10 @@ mod tests {
                 },
             )),
             Ok(text_response_with_usage("SUMMARY-A", TokenUsage::default())),
-            Ok(text_response_with_usage("thinking again", TokenUsage::default())),
+            Ok(text_response_with_usage(
+                "thinking again",
+                TokenUsage::default(),
+            )),
             Err(ProviderError::ContextWindowExceeded {
                 message: "main request overflow after proactive".into(),
             }),
@@ -2542,23 +2516,14 @@ mod tests {
         let (events, provider, ticket) = run_compaction(provider).await;
 
         assert_eq!(provider.requests(), 6);
-        assert_eq!(
-            compaction_starts(&events, CompactReason::Proactive),
-            1,
-        );
-        assert_eq!(
-            compaction_finishes(&events, CompactReason::Proactive),
-            1,
-        );
+        assert_eq!(compaction_starts(&events, CompactReason::Proactive), 1,);
+        assert_eq!(compaction_finishes(&events, CompactReason::Proactive), 1,);
         assert_eq!(
             compaction_starts(&events, CompactReason::Reactive),
             1,
             "reactive must have a full budget after a successful proactive",
         );
-        assert_eq!(
-            compaction_finishes(&events, CompactReason::Reactive),
-            1,
-        );
+        assert_eq!(compaction_finishes(&events, CompactReason::Reactive), 1,);
         assert!(failures_in(&events).is_empty());
         assert_eq!(ticket.status, Status::Done);
     }
@@ -2735,8 +2700,9 @@ mod tests {
                 assert!(
                     matches!(
                         &window[1].kind,
-                        EventKind::CompactionStarted { reason: CompactReason::Reactive }
-                            | EventKind::RequestFailed { .. },
+                        EventKind::CompactionStarted {
+                            reason: CompactReason::Reactive
+                        } | EventKind::RequestFailed { .. },
                     ),
                     "BlockingLimitExceeded must be followed by CompactionStarted{{Reactive}} \
                      or RequestFailed, never a provider call. Got: {:?}",
@@ -2868,7 +2834,10 @@ mod tests {
         assert_eq!(comments.len(), 5, "got {comments:?}");
 
         assert_eq!(comments[0].author, "system");
-        assert!(matches!(&comments[0].content[..], [CommentContent::Text(_)]));
+        assert!(matches!(
+            &comments[0].content[..],
+            [CommentContent::Text(_)]
+        ));
 
         assert_eq!(comments[1].author, "user");
         assert!(
@@ -2890,7 +2859,10 @@ mod tests {
 
         assert_eq!(comments[4].author, "user");
         assert!(
-            matches!(&comments[4].content[..], [CommentContent::ToolResult { .. }]),
+            matches!(
+                &comments[4].content[..],
+                [CommentContent::ToolResult { .. }]
+            ),
             "tool-result comment must carry a ToolResult block",
         );
 

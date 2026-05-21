@@ -1049,7 +1049,12 @@ mod tests {
 
     // ---- Layer 1: result-cap helpers ----
 
-    fn ticket_ctx() -> (ToolContext, Arc<TicketSystem>, String, crate::test_util::TempDir) {
+    fn ticket_ctx() -> (
+        ToolContext,
+        Arc<TicketSystem>,
+        String,
+        crate::test_util::TempDir,
+    ) {
         let dir = crate::test_util::TempDir::new().unwrap();
         let system = TicketSystem::new();
         system.dir(dir.path().to_path_buf());
@@ -1087,8 +1092,7 @@ mod tests {
     #[test]
     fn cap_oversized_result_replaces_oversized_ok_with_stub() {
         let (ctx, _system, key, dir) = ticket_ctx();
-        let (outcome, path) =
-            cap_oversized_result(Ok("a".repeat(500)), &ctx, "call-xyz", 100);
+        let (outcome, path) = cap_oversized_result(Ok("a".repeat(500)), &ctx, "call-xyz", 100);
         let stub = outcome.unwrap();
         assert!(stub.starts_with("<persisted-output>"));
         assert!(stub.contains("Output too large"));
@@ -1121,8 +1125,7 @@ mod tests {
     fn cap_oversized_result_returns_raw_when_no_ticket_key() {
         let ctx = test_ctx();
         let payload = "x".repeat(500);
-        let (outcome, path) =
-            cap_oversized_result(Ok(payload.clone()), &ctx, "call-1", 100);
+        let (outcome, path) = cap_oversized_result(Ok(payload.clone()), &ctx, "call-1", 100);
         assert_eq!(outcome.unwrap(), payload);
         assert!(path.is_none(), "no ticket key means no offload");
     }
@@ -1197,7 +1200,10 @@ mod tests {
                 _ => String::new(),
             })
             .collect();
-        assert_eq!(before, after, "aggregate must be a no-op when only stubs remain");
+        assert_eq!(
+            before, after,
+            "aggregate must be a no-op when only stubs remain"
+        );
     }
 
     #[test]
@@ -1206,7 +1212,8 @@ mod tests {
         let stub = format_oversized_tool_result(1_048_576, &path, "preview-body");
         assert!(stub.starts_with("<persisted-output>"));
         assert!(stub.contains("Output too large (1.0 MB)."));
-        assert!(stub.contains("Full output saved to: /tmp/agentwerk/tickets/TICKET-1/outputs/call-1.txt"));
+        assert!(stub
+            .contains("Full output saved to: /tmp/agentwerk/tickets/TICKET-1/outputs/call-1.txt"));
         assert!(stub.contains("Preview (first 12 B):"));
         assert!(stub.contains("preview-body"));
         assert!(stub.ends_with("</persisted-output>"));

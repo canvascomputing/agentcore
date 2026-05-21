@@ -901,5 +901,4 @@ mod tests {
         assert!(schema.validate(&json!(null)).is_err());
         assert!(schema.validate(&json!("anything")).is_err());
     }
-
 }

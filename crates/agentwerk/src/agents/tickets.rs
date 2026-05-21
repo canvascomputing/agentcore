@@ -1260,7 +1260,10 @@ fn latest_ticket_file(ticket_dir: &Path) -> Option<PathBuf> {
 }
 
 fn parse_ticket_filename_ts(name: &str) -> Option<u64> {
-    name.strip_prefix("ticket.")?.strip_suffix(".json")?.parse().ok()
+    name.strip_prefix("ticket.")?
+        .strip_suffix(".json")?
+        .parse()
+        .ok()
 }
 
 fn append_ticket_event_to_dir(
@@ -1732,7 +1735,8 @@ mod tests {
         sys.task("seed");
         let outputs = dir.path().join("tickets").join("TICKET-1").join("outputs");
         assert!(!outputs.exists());
-        sys.write_tool_output("TICKET-1", "call-1", "payload").unwrap();
+        sys.write_tool_output("TICKET-1", "call-1", "payload")
+            .unwrap();
         assert!(outputs.is_dir());
     }
 

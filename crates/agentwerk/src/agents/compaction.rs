@@ -186,7 +186,13 @@ mod tests {
             output_tokens: 0,
         };
         let messages = [Message::user("hi")];
-        assert!(!should_compact_proactively(None, &usage, &messages, "", &[]));
+        assert!(!should_compact_proactively(
+            None,
+            &usage,
+            &messages,
+            "",
+            &[]
+        ));
     }
 
     #[test]
