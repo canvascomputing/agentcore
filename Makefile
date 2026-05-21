@@ -71,9 +71,6 @@ bump: test
 
 # Install Claude Code hooks into .claude/settings.local.json
 hooks:
-	@mkdir -p .claude/hooks
-	@cp hooks/*.sh .claude/hooks/
-	@chmod +x .claude/hooks/*.sh
 	@if [ ! -f .claude/settings.local.json ]; then echo '{}' > .claude/settings.local.json; fi
 	@jq -s '.[0] * .[1]' .claude/settings.local.json hooks/hooks.json > .claude/settings.local.tmp \
 		&& mv .claude/settings.local.tmp .claude/settings.local.json

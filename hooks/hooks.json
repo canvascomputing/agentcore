@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/check-conventions.sh"
+            "command": "jq --rawfile style \"$CLAUDE_PROJECT_DIR/agentdocs/style.md\" --rawfile arch \"$CLAUDE_PROJECT_DIR/agentdocs/architecture.md\" '{hookSpecificOutput:{hookEventName:\"PostToolUse\",additionalContext:(\"Review the edit you just made to \"+(.tool_input.file_path // \"the file\")+\" against the project conventions below. If you introduced a violation, fix it immediately.\\n\\n--- style.md ---\\n\"+$style+\"\\n\\n--- architecture.md ---\\n\"+$arch)}}'"
           }
         ]
       }
