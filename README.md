@@ -171,9 +171,10 @@ tickets.ticket(
 | `agent(agent)` | Add an agent to this ticket system. |
 | `pool(n, build)` | Add `n` agents built by `build(i)`, where `i` is the 0-based agent index. |
 | `dir(d)` | Set the directory where knowledge, results, and ticket logs are persisted. |
-| `task(t)` | Submit a task. |
+| `task(t)` | Submit a task and return its ticket key. |
 | `task_labeled(t, l)` | Submit a task tagged with `l` for label-scoped routing. |
 | `ticket(t)` | Submit a `Ticket` with custom labels, a schema, or a parent link. |
+| `comment(key, c)` | Add a comment to an existing ticket. |
 
 ### Execution
 

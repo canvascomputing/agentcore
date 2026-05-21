@@ -202,6 +202,21 @@ impl Ticket {
         &self.comments
     }
 
+    /// True when the model owes a turn: the transcript is empty, the
+    /// last comment is user-side, or the model's last reply still has
+    /// unresolved tool calls.
+    pub fn is_waiting_for_response(&self) -> bool {
+        let Some(c) = self.comments.last() else {
+            return true;
+        };
+        if c.author != "assistant" {
+            return true;
+        }
+        c.content
+            .iter()
+            .any(|x| matches!(x, CommentContent::ToolUse { .. }))
+    }
+
     /// Reduce the transcript to just `summary_text`: every non-system
     /// comment is dropped and a single `user` comment carrying
     /// `summary_text` is appended. System-author comments (the system
@@ -612,30 +627,39 @@ impl TicketSystem {
 
     // ---- ticket-creation API mirrored on Agent ----
 
-    /// Enqueue a ticket carrying `task` as its body.
-    pub fn task<T: Serialize>(&self, task: T) -> &Self {
-        self.dispatch(Ticket::new(task));
-        self
+    /// Enqueue a ticket carrying `task` as its body. Returns the new
+    /// ticket's key.
+    pub fn task<T: Serialize>(&self, task: T) -> String {
+        self.dispatch(Ticket::new(task))
     }
 
     /// Enqueue a ticket carrying `task`, attached to `label` for Path B
-    /// routing.
-    pub fn task_labeled<T: Serialize>(&self, task: T, label: impl Into<String>) -> &Self {
-        self.dispatch(Ticket::new(task).label(label));
-        self
+    /// routing. Returns the new ticket's key.
+    pub fn task_labeled<T: Serialize>(&self, task: T, label: impl Into<String>) -> String {
+        self.dispatch(Ticket::new(task).label(label))
     }
 
     /// Enqueue a fully-built `Ticket`. System-managed fields (key,
     /// reporter, created_at, status, result) are overwritten. To pin the
     /// ticket to a specific agent, label it with the agent's name.
     /// Compose schema and label via `Ticket::new(...).schema(...).label(...)`.
-    pub fn ticket(&self, ticket: Ticket) -> &Self {
-        self.dispatch(ticket);
+    /// Returns the inserted ticket's key.
+    pub fn ticket(&self, ticket: Ticket) -> String {
+        self.dispatch(ticket)
+    }
+
+    /// Append a user-side text comment to an existing ticket. The
+    /// agent loop's wait-for-input branch picks it up on the next
+    /// iteration; the model sees it as the next `user` message in
+    /// the conversation. Use this to drive multi-turn chats on one
+    /// ticket instead of creating a new ticket per turn.
+    pub fn comment(&self, key: &str, content: impl Into<String>) -> &Self {
+        self.add_comment(key, Comment::user_text(content));
         self
     }
 
-    fn dispatch(&self, ticket: Ticket) {
-        self.insert(ticket, "user".to_string());
+    fn dispatch(&self, ticket: Ticket) -> String {
+        self.insert(ticket, "user".to_string())
     }
 
     // ---- inherent ticket-store methods ----
@@ -1227,7 +1251,11 @@ pub(crate) fn pending_count(ticket_system: &TicketSystem) -> usize {
         .lock()
         .unwrap()
         .values()
-        .filter(|t| matches!(t.status, Status::Todo | Status::InProgress))
+        .filter(|t| match t.status {
+            Status::Todo => true,
+            Status::InProgress => t.is_waiting_for_response(),
+            _ => false,
+        })
         .count()
 }
 
@@ -1401,8 +1429,9 @@ mod tests {
         let alice = Agent::new().name("alice");
         let (sys, _tmp) = test_system();
         let alice = sys.agent(alice);
-        // Bound — task() works, lands in the shared queue.
-        alice.task("first").task("second");
+        // Bound: task() works, lands in the shared queue.
+        alice.task("first");
+        alice.task("second");
         assert_eq!(sys.count(|t| t.status == Status::Todo), 2);
     }
 
@@ -1452,7 +1481,9 @@ mod tests {
     #[test]
     fn first_returns_earliest_ticket_by_creation() {
         let (sys, _tmp) = test_system();
-        sys.task("first").task("second").task("third");
+        sys.task("first");
+        sys.task("second");
+        sys.task("third");
         let first = sys.first().unwrap();
         assert_eq!(first.key(), "TICKET-1");
         assert_eq!(first.task, serde_json::Value::String("first".into()));
@@ -1461,7 +1492,9 @@ mod tests {
     #[test]
     fn tickets_returns_all_in_creation_order() {
         let (sys, _tmp) = test_system();
-        sys.task("a").task("b").task("c");
+        sys.task("a");
+        sys.task("b");
+        sys.task("c");
         let all = sys.tickets();
         assert_eq!(all.len(), 3);
         assert_eq!(all[0].key(), "TICKET-1");
@@ -1472,7 +1505,9 @@ mod tests {
     #[test]
     fn all_results_returns_done_payloads_in_creation_order() {
         let (sys, _tmp) = test_system();
-        sys.task("a").task("b").task("c");
+        sys.task("a");
+        sys.task("b");
+        sys.task("c");
         attach_done_result(&sys, "TICKET-1", "first");
         attach_done_result(&sys, "TICKET-3", "third");
         assert_eq!(sys.all_results(), vec!["first", "third"]);
@@ -1481,7 +1516,8 @@ mod tests {
     #[test]
     fn last_result_returns_last_done_payload() {
         let (sys, _tmp) = test_system();
-        sys.task("a").task("b");
+        sys.task("a");
+        sys.task("b");
         attach_done_result(&sys, "TICKET-2", "second");
         attach_done_result(&sys, "TICKET-1", "first");
         assert_eq!(sys.last_result().as_deref(), Some("second"));
@@ -1490,7 +1526,9 @@ mod tests {
     #[test]
     fn all_results_orders_by_creation_regardless_of_done_order() {
         let (sys, _tmp) = test_system();
-        sys.task("a").task("b").task("c");
+        sys.task("a");
+        sys.task("b");
+        sys.task("c");
         attach_done_result(&sys, "TICKET-3", "third");
         attach_done_result(&sys, "TICKET-1", "first");
         attach_done_result(&sys, "TICKET-2", "second");
@@ -1508,7 +1546,9 @@ mod tests {
     #[test]
     fn done_and_failed_filter_by_status() {
         let (sys, _tmp) = test_system();
-        sys.task("ok").task("oops").task("pending");
+        sys.task("ok");
+        sys.task("oops");
+        sys.task("pending");
         sys.claim(|t| t.key() == "TICKET-1", "agent");
         sys.set_done("TICKET-1").unwrap();
         sys.set_failed("TICKET-2").unwrap();
@@ -1523,7 +1563,9 @@ mod tests {
     #[test]
     fn ticket_status_transitions_record_stats() {
         let (sys, _tmp) = test_system();
-        sys.task("a").task("b").task("c");
+        sys.task("a");
+        sys.task("b");
+        sys.task("c");
         // Created 3 tickets.
         assert_eq!(sys.stats().tickets_created(), 3);
         sys.claim(|t| t.key() == "TICKET-1", "agent");
@@ -1641,7 +1683,8 @@ mod tests {
     #[test]
     fn workspace_logs_one_line_per_lifecycle_step_for_multiple_tickets() {
         let (sys, dir) = test_system();
-        sys.task("a").task("b");
+        sys.task("a");
+        sys.task("b");
         sys.claim(|t| t.key() == "TICKET-1", "agent");
         sys.set_done("TICKET-1").unwrap();
         sys.claim(|t| t.key() == "TICKET-2", "agent");
@@ -1686,7 +1729,9 @@ mod tests {
     #[test]
     fn claim_picks_earliest_eligible_ticket() {
         let (sys, _tmp) = test_system();
-        sys.task("a").task("b").task("c");
+        sys.task("a");
+        sys.task("b");
+        sys.task("c");
         let key = sys.claim(|t| t.status == Status::Todo, "alice").unwrap();
         assert_eq!(key, "TICKET-1");
     }

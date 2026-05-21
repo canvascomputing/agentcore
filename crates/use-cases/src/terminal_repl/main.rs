@@ -1,15 +1,19 @@
 //! Interactive terminal chat. One `TicketSystem` + `Agent` + `Knowledge`
-//! lives for the whole session; each input line enqueues a ticket and
-//! runs `finish` once. The agent has `knowledge(...)` bound, so durable
-//! facts the model writes via `knowledge_tool` survive across turns and
-//! across process restarts (the store lives at `./.agentwerk/`).
+//! lives for the whole session, and one chat ticket spans every turn:
+//! the first input creates the ticket via `tickets.task(...)`, every
+//! subsequent input lands as a user comment via `tickets.comment(&key, ...)`.
+//! The agent loop's wait-for-input branch picks each comment up and
+//! drives the next model turn on the same growing transcript. Tickets
+//! and knowledge both persist to `./.agentwerk/`, so an existing chat
+//! resumes across process restarts.
 //! The model's response streams to stdout via
-//! `EventKind::TextChunkReceived`, and the agent finishes its ticket
-//! via the auto-registered `write_result_tool`. Slash commands:
-//! `/exit` quits, `/knowledge` prints the current knowledge index,
-//! `/clear` resets it. Ctrl-C at the prompt exits with code 130;
-//! Ctrl-C during a turn cancels that turn (a second Ctrl-C while the
-//! cancel is still draining force-quits with exit code 130).
+//! `EventKind::TextChunkReceived`. Slash commands:
+//! `/exit` quits, `/knowledge` prints the knowledge index,
+//! `/clear` resets knowledge, `/new` starts a fresh chat ticket,
+//! `/stats` prints run counters, `/tickets` lists every ticket.
+//! Ctrl-C at the prompt exits with code 130; Ctrl-C during a turn
+//! cancels that turn (a second Ctrl-C while the cancel is still
+//! draining force-quits with exit code 130).
 //!
 //! Every exit path goes through `std::process::exit` rather than a
 //! plain `return`: the stdin reader runs on a tokio blocking thread
@@ -31,7 +35,7 @@ const ROLE: &str = include_str!("prompts/repl.role.md");
 async fn main() {
     let style = Style::detect();
     eprintln!(
-        "{}agentwerk REPL: /exit /knowledge /clear, Ctrl-C to cancel.{}",
+        "{}agentwerk REPL: /exit /knowledge /clear /new /stats /tickets, Ctrl-C to cancel.{}",
         style.dim, style.reset,
     );
 
@@ -63,12 +67,12 @@ async fn main() {
     let handler: Arc<dyn Fn(Event) + Send + Sync> =
         Arc::new(move |e: Event| print_event(&e, &event_style, test_window, &handler_midstream));
 
-    let tickets = TicketSystem::new();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let store_dir = cwd.join(".agentwerk");
+    let tickets = TicketSystem::load(&store_dir).expect("open ticket store");
     tickets.max_steps(40);
 
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let knowledge_dir = cwd.join(".agentwerk");
-    let knowledge = Knowledge::load(&knowledge_dir).expect("open knowledge store");
+    let knowledge = Knowledge::load(&store_dir).expect("open knowledge store");
 
     let _agent = tickets.agent(
         Agent::new()
@@ -89,6 +93,19 @@ async fn main() {
     let mut prev_tool_calls: u64 = 0;
     let mut prev_input: u64 = 0;
     let mut prev_output: u64 = 0;
+
+    // Resume the newest open chat ticket from disk if one exists,
+    // so a previous session's transcript carries into this one.
+    let mut chat_key: Option<String> = tickets
+        .filter(|t| t.status() == "in_progress" && t.has_label("orchestrator"))
+        .last()
+        .map(|t| t.key().to_string());
+    if let Some(k) = &chat_key {
+        eprintln!(
+            "{}resumed chat ticket {k}{}",
+            style.dim, style.reset,
+        );
+    }
 
     loop {
         let line = tokio::select! {
@@ -122,12 +139,71 @@ async fn main() {
             eprintln!("{}knowledge cleared{}", style.dim, style.reset);
             continue;
         }
+        if line == "/new" {
+            let k = tickets.task("<new chat>");
+            eprintln!("{}new chat {k}{}", style.dim, style.reset);
+            chat_key = Some(k);
+            continue;
+        }
+        if line == "/stats" {
+            let s = tickets.stats();
+            eprintln!(
+                "{}{} steps · {} requests · {} tools · {} in / {} out · {} created / {} done / {} failed{}",
+                style.dim,
+                s.steps(),
+                s.requests(),
+                s.tool_calls(),
+                s.input_tokens(),
+                s.output_tokens(),
+                s.tickets_created(),
+                s.tickets_done(),
+                s.tickets_failed(),
+                style.reset,
+            );
+            continue;
+        }
+        if line == "/tickets" {
+            let all = tickets.tickets();
+            if all.is_empty() {
+                eprintln!("{}(no tickets){}", style.dim, style.reset);
+            } else {
+                for t in all {
+                    let preview = match &t.task {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    let mut preview: String = preview.chars().take(60).collect();
+                    if preview.len() < t.task.to_string().len() {
+                        preview.push('…');
+                    }
+                    let active = chat_key.as_deref() == Some(t.key());
+                    let mark = if active { "▸ " } else { "  " };
+                    eprintln!(
+                        "{}{mark}{} [{}] · {} comments · {}{}",
+                        style.dim,
+                        t.key(),
+                        t.status(),
+                        t.comments().len(),
+                        preview,
+                        style.reset,
+                    );
+                }
+            }
+            continue;
+        }
 
         announce_assistant(&style);
         // "agent › " left stdout mid-line; mark so the first event
         // breaks out before its own content.
         midstream.store(true, Ordering::Relaxed);
-        tickets.task(line);
+        match &chat_key {
+            Some(k) => {
+                tickets.comment(k, line);
+            }
+            None => {
+                chat_key = Some(tickets.task(line));
+            }
+        }
 
         let run_fut = tickets.finish();
         tokio::pin!(run_fut);

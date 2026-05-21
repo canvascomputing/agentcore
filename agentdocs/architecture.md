@@ -9,6 +9,7 @@ The invariants that shape how code fits together. Layout says where code lives; 
 - The `Agent` builder carries identity, prompt parts, provider/model, tools, working dir, event handler, and a `Weak<TicketSystem>` (dangling by default).
 - `TicketSystem::add(agent)` (or `agent.ticket_system(&shared)`) stamps the system's `Weak<Self>` onto the agent, drains any tickets the agent had queued in its private default system into the shared one, and pushes a clone of the agent onto the system's agents list.
 - `TicketSystem::start` / `finish` spawn one tokio task per registered agent; each task upgrades its `Weak` once at the start and reads the shared store, policies, stats, and interrupt signal from the resulting `Arc<TicketSystem>`.
+- `tickets.task(value)` and `tickets.task_labeled(value, label)` create a new ticket and return its key as `String`. `tickets.comment(&key, content)` appends a user-side text comment to an existing ticket: the agent loop's wait-for-input branch picks the comment up and drives the next turn on the same transcript. Use `task` to start a conversation, `comment` to continue it; this is how multi-turn chat is built on top of one ticket.
 
 ## Shared system, per-agent task
 

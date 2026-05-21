@@ -19,7 +19,7 @@ use super::retry::{ExponentialRetry, ImmediateRetry, Retry};
 use super::stats::LoopStats;
 use super::tickets::{policy_violated_kind, to_messages, Comment, Status};
 use crate::prompts::{retry_directive, schema_retry_detail};
-use crate::tools::{missing_finisher_detail, FINISHER_TOOL_NAMES};
+use crate::tools::FINISHER_TOOL_NAMES;
 
 /// Per-iteration control signal for the compaction helpers.
 enum LoopAction {
@@ -183,21 +183,23 @@ pub(super) async fn handle_tickets(agent: Agent) {
             ));
             return;
         }
-        let in_progress_key = ticket_system
-            .find(|t| t.status == Status::InProgress && t.has_label(agent.get_name()))
-            .map(|t| t.key().to_string());
-        let claim_todo = || {
-            ticket_system.claim(
+        let Some(key) = ticket_system
+            .claim(
                 |t| t.status == Status::Todo && agent.handles_labels(&t.labels),
                 agent.get_name(),
             )
-        };
-        let key = match in_progress_key.or_else(claim_todo) {
-            Some(key) => key,
-            None => {
-                tokio::time::sleep(POLL_INTERVAL).await;
-                continue;
-            }
+            .or_else(|| {
+                ticket_system
+                    .find(|t| {
+                        t.status == Status::InProgress
+                            && t.has_label(agent.get_name())
+                            && t.is_waiting_for_response()
+                    })
+                    .map(|t| t.key().to_string())
+            })
+        else {
+            tokio::time::sleep(POLL_INTERVAL).await;
+            continue;
         };
 
         process_ticket(&agent, &ticket_system, &signal, &key).await;
@@ -241,24 +243,23 @@ async fn process_ticket(
     // every request in this loop.
     let system_prompt = agent.system_prompt(Some(&knowledge_index));
 
-    // Seed the ticket's transcript with the system prompt, the
-    // optional context prelude, and the task body. Compaction later
-    // collapses every non-system comment into a single summary, so no
-    // anchor index is recorded here.
-    ticket_system.add_comment(key, Comment::system_text(system_prompt.clone()));
-    if let Some(context_msg) = agent.context_message(&policies, &ticket_system.stats) {
-        ticket_system.add_comment(key, Comment::user_text(context_msg));
+    // Seed once; resumed tickets keep their transcript.
+    if ticket.comments().is_empty() {
+        ticket_system.add_comment(key, Comment::system_text(system_prompt.clone()));
+        if let Some(context_msg) = agent.context_message(&policies, &ticket_system.stats) {
+            ticket_system.add_comment(key, Comment::user_text(context_msg));
+        }
+        let Message::User {
+            content: task_blocks,
+        } = &task_message
+        else {
+            unreachable!("Ticket::as_user_message returns Message::User");
+        };
+        ticket_system.add_comment(key, Comment::user(task_blocks, &HashMap::new()));
+        emit(EventKind::TicketStarted {
+            key: key.to_string(),
+        });
     }
-    let Message::User {
-        content: task_blocks,
-    } = &task_message
-    else {
-        unreachable!("Ticket::as_user_message returns Message::User");
-    };
-    ticket_system.add_comment(key, Comment::user(task_blocks, &HashMap::new()));
-    emit(EventKind::TicketStarted {
-        key: key.to_string(),
-    });
 
     let provider = agent.provider_handle();
     let scope = TicketScope {
@@ -302,6 +303,10 @@ async fn process_ticket(
             Some(t) => t,
             None => return,
         };
+        if !ticket.is_waiting_for_response() {
+            tokio::time::sleep(POLL_INTERVAL).await;
+            continue 'outer;
+        }
         // Derive messages from the ticket each turn so the loop carries
         // no parallel transcript: every `add_comment` is visible on the
         // next iteration without manual bookkeeping.
@@ -449,48 +454,8 @@ async fn process_ticket(
             })
             .collect();
 
-        if response.status != ResponseStatus::ToolUse || calls.is_empty() {
-            let Some(ticket) = ticket_system.get(key) else {
-                return;
-            };
-
-            // No result means the model ended without calling a
-            // finisher — inject a corrective directive and replay.
-            if ticket.result().is_none() {
-                consecutive_schema_failures = consecutive_schema_failures.saturating_add(1);
-                let registered: Vec<&str> = agent
-                    .tool_definitions()
-                    .iter()
-                    .filter_map(|d| FINISHER_TOOL_NAMES.iter().find(|n| **n == d.name).copied())
-                    .collect();
-                let finisher_detail = missing_finisher_detail(&registered);
-                emit(EventKind::SchemaRetried {
-                    attempt: consecutive_schema_failures,
-                    max_attempts: max_schema_retries,
-                    message: finisher_detail.clone(),
-                });
-                ticket_system
-                    .add_comment(key, Comment::user_text(retry_directive(&finisher_detail)));
-                if consecutive_schema_failures >= max_schema_retries {
-                    fail_ticket_schema_exhausted(ticket_system, key, max_schema_retries, &emit);
-                    return;
-                }
-                continue;
-            }
-
-            if ticket.schema.as_ref().is_some_and(|schema| {
-                ticket
-                    .result()
-                    .is_some_and(|result| schema.validate(result).is_err())
-            }) {
-                let _ = ticket_system.set_failed(key);
-                emit(event_for_status(Status::Failed, key));
-                return;
-            }
-
-            let _ = ticket_system.set_done(key);
-            emit(event_for_status(Status::Done, key));
-            return;
+        if calls.is_empty() {
+            continue 'outer;
         }
 
         for call in &calls {

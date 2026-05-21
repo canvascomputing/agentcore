@@ -346,32 +346,31 @@ impl Agent {
 
     /// Enqueue a ticket carrying `task` as its body. Always available
     /// (the agent has a bound ticket system from construction onward).
-    /// Returns `&Self` for chaining.
-    pub fn task<T: Serialize>(&self, task: T) -> &Self {
+    /// Returns the new ticket's key.
+    pub fn task<T: Serialize>(&self, task: T) -> String {
         let ticket = Ticket::new(task);
-        self.dispatch(ticket);
-        self
+        self.dispatch(ticket)
     }
 
     /// Enqueue a ticket carrying `task` and attached to `label` for
     /// Path B routing. To pin a ticket directly to an agent, label it
     /// with the agent's name: `agent.ticket(Ticket::new(...).label("alice"))`.
-    pub fn task_labeled<T: Serialize>(&self, task: T, label: impl Into<String>) -> &Self {
+    /// Returns the new ticket's key.
+    pub fn task_labeled<T: Serialize>(&self, task: T, label: impl Into<String>) -> String {
         let ticket = Ticket::new(task).label(label);
-        self.dispatch(ticket);
-        self
+        self.dispatch(ticket)
     }
 
     /// Enqueue a fully-built `Ticket`. System-managed fields (key,
     /// reporter, created_at, status, result) are overwritten. To pin the
     /// ticket to a specific agent, label it with the agent's name.
     /// Compose schema and label via `Ticket::new(...).schema(...).label(...)`.
-    pub fn ticket(&self, ticket: Ticket) -> &Self {
-        self.dispatch(ticket);
-        self
+    /// Returns the inserted ticket's key.
+    pub fn ticket(&self, ticket: Ticket) -> String {
+        self.dispatch(ticket)
     }
 
-    fn dispatch(&self, mut ticket: Ticket) {
+    fn dispatch(&self, mut ticket: Ticket) -> String {
         let sys = self
             .ticket_system
             .upgrade()
@@ -379,7 +378,7 @@ impl Agent {
         if let serde_json::Value::String(s) = &ticket.task {
             ticket.task = serde_json::Value::String(self.interpolate(s));
         }
-        sys.insert(ticket, self.name.clone());
+        sys.insert(ticket, self.name.clone())
     }
 
     /// Start the agent loop on a background tokio task. Forwards to

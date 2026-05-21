@@ -30,7 +30,7 @@ pub use grep::GrepTool;
 pub use knowledge::KnowledgeTool;
 pub use list_directory::ListDirectoryTool;
 pub use read_file::ReadFileTool;
-pub(crate) use tickets::{missing_finisher_detail, FINISHER_TOOL_NAMES};
+pub(crate) use tickets::FINISHER_TOOL_NAMES;
 pub use tickets::{ManageTicketsTool, ReadTicketsTool, WriteHandoverTool, WriteResultTool};
 pub use tool_search::ToolSearchTool;
 pub use web_fetch::WebFetchTool;
