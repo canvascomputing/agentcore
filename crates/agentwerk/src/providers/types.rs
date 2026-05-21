@@ -56,9 +56,13 @@ pub enum ContentBlock {
     ToolResult {
         tool_use_id: String,
         content: String,
-        #[serde(default)]
-        is_error: bool,
+        #[serde(default = "default_true")]
+        succeeded: bool,
     },
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// What the LLM API reported about why token generation ended.
@@ -196,11 +200,11 @@ mod tests {
     }
 
     #[test]
-    fn tool_result_is_error_defaults_false() {
+    fn tool_result_succeeded_defaults_true() {
         let json = r#"{"type":"tool_result","tool_use_id":"id1","content":"ok"}"#;
         let block: ContentBlock = serde_json::from_str(json).unwrap();
         match block {
-            ContentBlock::ToolResult { is_error, .. } => assert!(!is_error),
+            ContentBlock::ToolResult { succeeded, .. } => assert!(succeeded),
             other => panic!("Expected ToolResult, got {other:?}"),
         }
     }

@@ -377,9 +377,9 @@ fn serialize_content_block(block: &ContentBlock) -> Value {
         ContentBlock::ToolResult {
             tool_use_id,
             content,
-            is_error,
+            succeeded,
         } => {
-            serde_json::json!({"type": "tool_result", "tool_use_id": tool_use_id, "content": content, "is_error": is_error})
+            serde_json::json!({"type": "tool_result", "tool_use_id": tool_use_id, "content": content, "is_error": !succeeded})
         }
     }
 }

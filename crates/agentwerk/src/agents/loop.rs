@@ -2,6 +2,8 @@
 //! reading the shared `TicketSystem` through the upgraded
 //! `Weak<TicketSystem>` stamped at `bind_agent`.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -248,7 +250,7 @@ async fn process_ticket(
     let Message::User { content: task_blocks } = &task_message else {
         unreachable!("Ticket::as_user_message returns Message::User");
     };
-    ticket_system.add_comment(key, Comment::user(task_blocks));
+    ticket_system.add_comment(key, Comment::user(task_blocks, &HashMap::new()));
     emit(EventKind::TicketStarted {
         key: key.to_string(),
     });
@@ -505,11 +507,12 @@ async fn process_ticket(
             .registry(Arc::new(agent.tool_registry().clone()))
             .ticket_system(Arc::clone(ticket_system))
             .agent_name(agent.get_name().to_string())
+            .ticket_key(key.to_string())
             .knowledge(agent.knowledge_or_default());
         let outcomes = agent.tool_registry().execute(&calls, &tool_context).await;
 
         let mut schema_failure_message: Option<String> = None;
-        for (block, tool_result) in &outcomes {
+        for (block, tool_result, _path) in &outcomes {
             let ContentBlock::ToolResult { tool_use_id, .. } = block else {
                 continue;
             };
@@ -553,7 +556,18 @@ async fn process_ticket(
 
         // Emitted even on the exhausting attempt so observers see the
         // sequence SchemaRetried(N) → PolicyViolated.
-        let mut blocks: Vec<ContentBlock> = outcomes.into_iter().map(|(block, _)| block).collect();
+        let mut paths: HashMap<String, PathBuf> = HashMap::new();
+        let mut blocks: Vec<ContentBlock> = Vec::with_capacity(outcomes.len());
+        for (block, _, path) in outcomes {
+            if let (
+                ContentBlock::ToolResult { tool_use_id, .. },
+                Some(p),
+            ) = (&block, path)
+            {
+                paths.insert(tool_use_id.clone(), p);
+            }
+            blocks.push(block);
+        }
         if let Some(validator_message) = &schema_failure_message {
             let schema_detail = schema_retry_detail(validator_message);
             emit(EventKind::SchemaRetried {
@@ -565,7 +579,7 @@ async fn process_ticket(
                 text: retry_directive(&schema_detail),
             });
         }
-        ticket_system.add_comment(key, Comment::user(&blocks));
+        ticket_system.add_comment(key, Comment::user(&blocks, &paths));
 
         for _ in 0..calls.len() {
             ticket_system.stats.record_tool_call();
@@ -2388,14 +2402,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn huge_tool_result_is_persisted_as_knowledge_page_and_ticket_finishes_done() {
-        use crate::agents::Knowledge;
+    async fn huge_tool_result_is_persisted_to_ticket_outputs_dir_and_ticket_finishes_done() {
+        use crate::agents::tickets::CommentContent;
         use crate::tools::{Tool, ToolResult};
 
         // Layer 1: an ~800 KB tool result is far above PER_TOOL_CAP
         // (50K). ToolRegistry::execute caps it to a stub before the
         // ContentBlock::ToolResult lands in messages, and persists the
-        // full content as a Knowledge page named `tool-result-call-1`.
+        // full content to `<dir>/tickets/<key>/outputs/call-1.txt`.
         // The model then finishes the ticket in one more turn. No
         // compaction fires; no failure surfaces.
         let provider = MockProvider::with_results(vec![
@@ -2419,8 +2433,6 @@ mod tests {
         };
 
         let results_dir = crate::test_util::TempDir::new().unwrap();
-        let knowledge_dir = crate::test_util::TempDir::new().unwrap();
-        let store = Knowledge::open(knowledge_dir.path()).unwrap();
         let tickets = TicketSystem::new();
         tickets
             .dir(results_dir.path().to_path_buf())
@@ -2440,7 +2452,6 @@ mod tests {
             .model("claude-sonnet-4-20250514")
             .role("test")
             .context("static")
-            .knowledge(&store)
             .tool(dump)
             .event_handler(handler);
         tickets.agent(agent);
@@ -2459,21 +2470,33 @@ mod tests {
         assert!(failures_in(&events).is_empty());
         assert_eq!(ticket.status, Status::Done);
 
-        // The Knowledge store carries the full original content under
-        // the expected slug, and the index summary names the tool.
-        let body = store
-            .read_page("tool-result-call-1")
-            .expect("knowledge page must exist");
-        assert!(body.contains(&"x".repeat(800_000)));
-        assert!(store.index().contains("dump output"));
+        // The full payload sits under the ticket's outputs folder.
+        let output_path = results_dir
+            .path()
+            .join("tickets")
+            .join("TICKET-1")
+            .join("outputs")
+            .join("call-1.txt");
+        let body = std::fs::read_to_string(&output_path).expect("offload file must exist");
+        assert_eq!(body, "x".repeat(800_000));
+
+        // The comment carries the structured path pointer.
+        let tool_result_path = ticket.comments().iter().find_map(|c| {
+            c.content.iter().find_map(|b| match b {
+                CommentContent::ToolResult { id, path, .. } if id == "call-1" => path.clone(),
+                _ => None,
+            })
+        });
+        assert_eq!(tool_result_path.as_deref(), Some(output_path.as_path()));
 
         // The second request (after the tool call) sees the stub in
-        // place of the giant blob.
+        // place of the giant blob, naming the absolute offload path.
         let stub_visible = provider.received()[1].iter().any(|m| match m {
             Message::User { content } => content.iter().any(|b| match b {
                 ContentBlock::ToolResult { content, .. } => {
                     content.contains("<persisted-output>")
-                        && content.contains("tool-result-call-1")
+                        && content.contains("Full output saved to:")
+                        && content.contains(output_path.to_string_lossy().as_ref())
                 }
                 _ => false,
             }),
@@ -2542,7 +2565,6 @@ mod tests {
 
     #[tokio::test]
     async fn parallel_moderate_results_aggregate_offloads_largest_first() {
-        use crate::agents::Knowledge;
         use crate::tools::{Tool, ToolResult};
 
         // Five parallel calls to `size_tool`, each below PER_TOOL_CAP
@@ -2592,8 +2614,6 @@ mod tests {
         };
 
         let results_dir = crate::test_util::TempDir::new().unwrap();
-        let knowledge_dir = crate::test_util::TempDir::new().unwrap();
-        let store = Knowledge::open(knowledge_dir.path()).unwrap();
         let tickets = TicketSystem::new();
         tickets
             .dir(results_dir.path().to_path_buf())
@@ -2620,7 +2640,6 @@ mod tests {
                 .provider(provider.clone() as Arc<dyn Provider>)
                 .model("mock")
                 .role("test")
-                .knowledge(&store)
                 .tool(size_tool)
                 .event_handler(handler),
         );
@@ -2657,86 +2676,17 @@ mod tests {
             .iter()
             .find(|c| c.starts_with("<persisted-output>"))
             .expect("stub must be present");
-        assert!(stub.contains("tool-result-c1"));
+        let expected_path = results_dir
+            .path()
+            .join("tickets")
+            .join("TICKET-1")
+            .join("outputs")
+            .join("c1.txt");
+        assert!(stub.contains(expected_path.to_string_lossy().as_ref()));
 
-        // The offloaded content survives in Knowledge at full size.
-        let body = store.read_page("tool-result-c1").unwrap();
-        assert!(body.starts_with(&"x".repeat(48_000)));
-    }
-
-    #[tokio::test]
-    async fn next_ticket_sees_offloaded_results_in_knowledge_index() {
-        use crate::agents::Knowledge;
-        use crate::tools::{Tool, ToolResult};
-
-        // Ticket 1 offloads a giant `dump` result; ticket 2 should
-        // see the page under `## Knowledge` in its system prompt at
-        // step 1 (knowledge index is captured at the top of each
-        // ticket).
-        let provider = MockProvider::with_results(vec![
-            Ok(ModelResponse {
-                content: vec![ContentBlock::ToolUse {
-                    id: "call-1".into(),
-                    name: "dump".into(),
-                    input: serde_json::json!({}),
-                }],
-                status: ResponseStatus::ToolUse,
-                usage: TokenUsage::default(),
-                model: "mock".into(),
-            }),
-            Ok(write_result_response("first")),
-            Ok(write_result_response("second")),
-        ]);
-
-        let results_dir = crate::test_util::TempDir::new().unwrap();
-        let knowledge_dir = crate::test_util::TempDir::new().unwrap();
-        let store = Knowledge::open(knowledge_dir.path()).unwrap();
-        let tickets = TicketSystem::new();
-        tickets
-            .dir(results_dir.path().to_path_buf())
-            .max_request_retries(0)
-            .request_retry_delay(Duration::from_millis(1))
-            .max_time(Duration::from_millis(500));
-
-        let dump = Tool::new("dump", "Returns ~800 KB of text")
-            .handler(|_input, _ctx| async move {
-                Ok(ToolResult::success("x".repeat(800_000)))
-            });
-
-        tickets.agent(
-            Agent::new()
-                .name("tester")
-                .provider(provider.clone() as Arc<dyn Provider>)
-                .model("mock")
-                .role("test")
-                .knowledge(&store)
-                .tool(dump),
-        );
-        tickets.task("first");
-        tickets.task("second");
-        let _ = tickets.finish().await;
-
-        let prompts = provider.received_system_prompts();
-        assert_eq!(prompts.len(), 3);
-        assert!(
-            !prompts[0].contains("tool-result-call-1"),
-            "ticket 1's first step has an empty knowledge index",
-        );
-        assert!(
-            prompts[2].contains("## Knowledge"),
-            "ticket 2 should render the knowledge section: {:?}",
-            prompts[2],
-        );
-        assert!(
-            prompts[2].contains("tool-result-call-1"),
-            "ticket 2 should see the offloaded slug: {:?}",
-            prompts[2],
-        );
-        assert!(
-            prompts[2].contains("dump output"),
-            "ticket 2's index entry names the tool: {:?}",
-            prompts[2],
-        );
+        // The offloaded content survives on disk at full size.
+        let body = std::fs::read_to_string(&expected_path).unwrap();
+        assert_eq!(body, "x".repeat(48_000));
     }
 
     // Blocking limit

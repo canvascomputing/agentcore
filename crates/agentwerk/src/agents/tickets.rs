@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -305,16 +306,23 @@ pub enum CommentContent {
     ToolResult {
         id: String,
         output: String,
-        is_error: bool,
+        succeeded: bool,
+        /// Absolute path of the offloaded full payload when the inline
+        /// `output` carries only a preview. `None` when the full output
+        /// fit inline.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<PathBuf>,
     },
 }
 
 impl Comment {
     /// Build a `"user"` comment from the provider blocks the loop sent.
-    pub(crate) fn user(blocks: &[ContentBlock]) -> Self {
+    /// `paths` maps `tool_use_id → absolute path` for tool results whose
+    /// full output was offloaded to disk; empty when nothing was offloaded.
+    pub(crate) fn user(blocks: &[ContentBlock], paths: &HashMap<String, PathBuf>) -> Self {
         Self {
             author: "user".into(),
-            content: to_comment_content(blocks),
+            content: to_comment_content(blocks, paths),
             created_at: now_millis(),
         }
     }
@@ -329,10 +337,12 @@ impl Comment {
     }
 
     /// Build an `"assistant"` comment from the model's reply content.
+    /// Assistant content never carries tool-result blocks, so no paths
+    /// map is needed.
     pub(crate) fn assistant(blocks: &[ContentBlock]) -> Self {
         Self {
             author: "assistant".into(),
-            content: to_comment_content(blocks),
+            content: to_comment_content(blocks, &HashMap::new()),
             created_at: now_millis(),
         }
     }
@@ -356,11 +366,17 @@ pub(crate) fn to_messages(comments: &[Comment]) -> Vec<Message> {
     comments.iter().filter_map(comment_to_message).collect()
 }
 
-fn to_comment_content(blocks: &[ContentBlock]) -> Vec<CommentContent> {
-    blocks.iter().map(content_block_to_comment).collect()
+fn to_comment_content(
+    blocks: &[ContentBlock],
+    paths: &HashMap<String, PathBuf>,
+) -> Vec<CommentContent> {
+    blocks
+        .iter()
+        .map(|b| content_block_to_comment(b, paths))
+        .collect()
 }
 
-fn content_block_to_comment(b: &ContentBlock) -> CommentContent {
+fn content_block_to_comment(b: &ContentBlock, paths: &HashMap<String, PathBuf>) -> CommentContent {
     match b {
         ContentBlock::Text { text } => CommentContent::Text(text.clone()),
         ContentBlock::ToolUse { id, name, input } => CommentContent::ToolUse {
@@ -371,11 +387,12 @@ fn content_block_to_comment(b: &ContentBlock) -> CommentContent {
         ContentBlock::ToolResult {
             tool_use_id,
             content,
-            is_error,
+            succeeded,
         } => CommentContent::ToolResult {
             id: tool_use_id.clone(),
             output: content.clone(),
-            is_error: *is_error,
+            succeeded: *succeeded,
+            path: paths.get(tool_use_id).cloned(),
         },
     }
 }
@@ -393,11 +410,12 @@ fn to_content_blocks(content: &[CommentContent]) -> Vec<ContentBlock> {
             CommentContent::ToolResult {
                 id,
                 output,
-                is_error,
+                succeeded,
+                path: _,
             } => ContentBlock::ToolResult {
                 tool_use_id: id.clone(),
                 content: output.clone(),
-                is_error: *is_error,
+                succeeded: *succeeded,
             },
         })
         .collect()
@@ -629,6 +647,19 @@ impl TicketSystem {
         let dir = self.dir_value();
         let _guard = self.tickets_log_lock.lock().unwrap();
         let _ = append_ticket_event_to_dir(&dir, &event);
+    }
+
+    /// Persist a tool's full output to `<dir>/tickets/<key>/outputs/<tool_use_id>.txt`.
+    /// Returns the absolute path on success, `None` when the write fails.
+    /// Best-effort, matching the surrounding observational-persistence
+    /// contract (`Ticket::write`, `append_ticket_event`).
+    pub(crate) fn write_tool_output(
+        &self,
+        key: &str,
+        tool_use_id: &str,
+        content: &str,
+    ) -> Option<PathBuf> {
+        write_tool_output_to_dir(&self.dir_value(), key, tool_use_id, content).ok()
     }
 
     /// Returns a clone of the ticket at `key`, if any.
@@ -1260,6 +1291,22 @@ fn append_ticket_event_to_dir(
     file.write_all(line.as_bytes())
 }
 
+/// Write a tool's full output to `<dir>/tickets/<key>/outputs/<tool_use_id>.txt`
+/// and return the absolute path. Used to offload oversized payloads off
+/// the wire while leaving a structured pointer in the comment.
+fn write_tool_output_to_dir(
+    dir: &Path,
+    key: &str,
+    tool_use_id: &str,
+    content: &str,
+) -> io::Result<PathBuf> {
+    let outputs_dir = dir.join("tickets").join(key).join("outputs");
+    std::fs::create_dir_all(&outputs_dir)?;
+    let path = outputs_dir.join(format!("{tool_use_id}.txt"));
+    std::fs::write(&path, content)?;
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1672,6 +1719,34 @@ mod tests {
         sys.ticket(Ticket::new("child body").parent("TICKET-1"));
         let stored = sys.get("TICKET-1").unwrap();
         assert_eq!(stored.parent_key(), Some("TICKET-1"));
+    }
+
+    #[test]
+    fn write_tool_output_writes_file_at_expected_path() {
+        let (sys, dir) = test_system();
+        sys.task("seed");
+        let path = sys
+            .write_tool_output("TICKET-1", "call-1", "the full content")
+            .expect("write succeeds when dir exists");
+        let expected = dir
+            .path()
+            .join("tickets")
+            .join("TICKET-1")
+            .join("outputs")
+            .join("call-1.txt");
+        assert_eq!(path, expected);
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(body, "the full content");
+    }
+
+    #[test]
+    fn write_tool_output_creates_outputs_subdir_lazily() {
+        let (sys, dir) = test_system();
+        sys.task("seed");
+        let outputs = dir.path().join("tickets").join("TICKET-1").join("outputs");
+        assert!(!outputs.exists());
+        sys.write_tool_output("TICKET-1", "call-1", "payload").unwrap();
+        assert!(outputs.is_dir());
     }
 
     #[test]

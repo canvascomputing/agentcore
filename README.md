@@ -73,7 +73,7 @@ make use_case name=<name>    # run one
 - [Tools](#tools): Capabilities agents use to solve a ticket.
 - [Knowledge](#knowledge): Knowledge base an agent creates during a run.
 - [Schemas](#schemas): Schemas for validating ticket results.
-- [Compaction](#compaction): Automatic summarization when the conversation approaches the model's context window.
+- [Compaction](#compaction): Automatic context window summarization.
 - [Events](#events): Lifecycle events emitted while agents work.
 - [Stats](#stats): Metrics about tickets, tokens and time.
 
