@@ -5,7 +5,7 @@ use std::time::Duration;
 
 #[derive(Clone, Debug)]
 pub struct Policies {
-    pub max_steps: Option<u32>,
+    pub max_turns: Option<u32>,
     pub max_input_tokens: Option<u64>,
     pub max_output_tokens: Option<u64>,
     pub max_request_tokens: Option<u32>,
@@ -24,7 +24,7 @@ impl Policies {
 impl Default for Policies {
     fn default() -> Self {
         Self {
-            max_steps: None,
+            max_turns: None,
             max_input_tokens: None,
             max_output_tokens: None,
             max_request_tokens: None,
@@ -43,7 +43,7 @@ mod tests {
     #[test]
     fn defaults_match_documented_values() {
         let p = Policies::default();
-        assert_eq!(p.max_steps, None);
+        assert_eq!(p.max_turns, None);
         assert_eq!(p.max_input_tokens, None);
         assert_eq!(p.max_output_tokens, None);
         assert_eq!(p.max_request_tokens, None);

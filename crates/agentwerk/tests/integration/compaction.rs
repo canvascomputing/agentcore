@@ -128,7 +128,7 @@ async fn summariser_condenses_transcript_and_ticket_completes(
     // Stop after one process_ticket call so the retry loop cannot re-enter
     // and balloon the context. The first call is enough to trigger and
     // verify compaction.
-    tickets.max_steps(1);
+    tickets.max_turns(1);
     let agent = Agent::new()
         .provider(provider)
         .model(Model::from_name(&model).context_window(LOCAL_CTX))

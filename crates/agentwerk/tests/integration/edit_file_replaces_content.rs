@@ -22,7 +22,7 @@ async fn replaces_substring_in_place() -> std::result::Result<(), Box<dyn std::e
 
     let tickets = TicketSystem::new();
 
-    tickets.max_steps(10);
+    tickets.max_turns(10);
     let agent = Agent::new()
         .provider(provider)
         .model(&model)

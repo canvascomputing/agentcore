@@ -92,7 +92,7 @@ async fn finds_code_pattern_with_special_chars(
 
     let tickets = TicketSystem::new();
 
-    tickets.max_steps(10);
+    tickets.max_turns(10);
     let agent = Agent::new()
         .provider(provider)
         .model(&model)

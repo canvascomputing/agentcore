@@ -485,12 +485,12 @@ mod tests {
     fn context_message_appends_runtime_lines_when_policy_budgets_are_set() {
         let agent = Agent::new().dir("/tmp/check");
         let policies = Policies {
-            max_steps: Some(3),
+            max_turns: Some(3),
             max_input_tokens: Some(1_000),
             ..Policies::default()
         };
         let stats = Stats::new();
-        stats.record_step();
+        stats.record_turn();
         stats.record_request(250, 0);
 
         let rendered = agent
@@ -499,7 +499,7 @@ mod tests {
 
         let expected = format!(
             "{static_prefix}\n\
-             - Steps remaining: 2\n\
+             - Turns remaining: 2\n\
              - Input tokens remaining: 750",
             static_prefix = default_context(
                 &PathBuf::from("/tmp/check"),
@@ -516,11 +516,11 @@ mod tests {
         // the caller opted out of the default scaffolding entirely.
         let agent = Agent::new().context("- Note: custom");
         let policies = Policies {
-            max_steps: Some(3),
+            max_turns: Some(3),
             ..Policies::default()
         };
         let stats = Stats::new();
-        stats.record_step();
+        stats.record_turn();
         assert_eq!(
             agent.context_message(&policies, &stats).as_deref(),
             Some("## Context\n\n- Note: custom"),

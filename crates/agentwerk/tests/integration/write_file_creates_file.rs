@@ -20,7 +20,7 @@ async fn creates_file_with_token() -> std::result::Result<(), Box<dyn std::error
 
     let tickets = TicketSystem::new();
 
-    tickets.max_steps(10);
+    tickets.max_turns(10);
     let agent = Agent::new()
         .provider(provider)
         .model(&model)

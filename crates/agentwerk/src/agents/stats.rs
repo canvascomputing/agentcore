@@ -18,7 +18,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// `Arc<dyn LoopStats + Send + Sync>` and reports loop events through
 /// it. Write-only; reads happen on `Stats` directly.
 pub trait LoopStats: Send + Sync {
-    fn record_step(&self);
+    fn record_turn(&self);
     fn record_request(&self, input_tokens: u64, output_tokens: u64);
     fn record_tool_call(&self);
     fn record_error(&self);
@@ -40,7 +40,7 @@ pub(crate) trait TicketStats: Send + Sync {
 /// Run-wide counters. Implements every recorder protocol; exposes
 /// inherent read methods for the caller to consume after a run.
 pub struct Stats {
-    steps: AtomicU64,
+    turns: AtomicU64,
     requests: AtomicU64,
     tool_calls: AtomicU64,
     errors: AtomicU64,
@@ -71,7 +71,7 @@ pub struct Stats {
 impl Stats {
     pub fn new() -> Self {
         Self {
-            steps: AtomicU64::new(0),
+            turns: AtomicU64::new(0),
             requests: AtomicU64::new(0),
             tool_calls: AtomicU64::new(0),
             errors: AtomicU64::new(0),
@@ -99,8 +99,8 @@ impl Stats {
             .clone()
     }
 
-    pub fn steps(&self) -> u64 {
-        self.steps.load(Ordering::Relaxed)
+    pub fn turns(&self) -> u64 {
+        self.turns.load(Ordering::Relaxed)
     }
 
     pub fn requests(&self) -> u64 {
@@ -301,7 +301,7 @@ impl Stats {
 
     fn fields_as_json(&self) -> serde_json::Value {
         serde_json::json!({
-            "steps": self.steps.load(Ordering::Relaxed),
+            "turns": self.turns.load(Ordering::Relaxed),
             "requests": self.requests.load(Ordering::Relaxed),
             "tool_calls": self.tool_calls.load(Ordering::Relaxed),
             "errors": self.errors.load(Ordering::Relaxed),
@@ -317,7 +317,7 @@ impl Stats {
 
     fn load_fields(&self, value: &serde_json::Value) {
         let get = |key: &str| value.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
-        self.steps.store(get("steps"), Ordering::Relaxed);
+        self.turns.store(get("turns"), Ordering::Relaxed);
         self.requests.store(get("requests"), Ordering::Relaxed);
         self.tool_calls.store(get("tool_calls"), Ordering::Relaxed);
         self.errors.store(get("errors"), Ordering::Relaxed);
@@ -356,8 +356,8 @@ impl Default for Stats {
 }
 
 impl LoopStats for Stats {
-    fn record_step(&self) {
-        self.steps.fetch_add(1, Ordering::Relaxed);
+    fn record_turn(&self) {
+        self.turns.fetch_add(1, Ordering::Relaxed);
     }
 
     fn record_request(&self, input_tokens: u64, output_tokens: u64) {
@@ -413,7 +413,7 @@ mod tests {
     #[test]
     fn fresh_stats_are_zero() {
         let s = Stats::new();
-        assert_eq!(s.steps(), 0);
+        assert_eq!(s.turns(), 0);
         assert_eq!(s.requests(), 0);
         assert_eq!(s.tool_calls(), 0);
         assert_eq!(s.errors(), 0);
@@ -433,14 +433,14 @@ mod tests {
     #[test]
     fn loop_stats_writes_show_up_in_reads() {
         let s = Stats::new();
-        s.record_step();
-        s.record_step();
+        s.record_turn();
+        s.record_turn();
         s.record_request(10, 5);
         s.record_request(2, 1);
         s.record_tool_call();
         s.record_error();
 
-        assert_eq!(s.steps(), 2);
+        assert_eq!(s.turns(), 2);
         assert_eq!(s.requests(), 2);
         assert_eq!(s.tool_calls(), 1);
         assert_eq!(s.errors(), 1);
@@ -531,12 +531,12 @@ mod tests {
     fn stats_for_label_slice_records_independently() {
         let s = Stats::new();
         let slice = s.stats_for_label("scan");
-        slice.record_step();
+        slice.record_turn();
         slice.record_request(10, 5);
-        assert_eq!(slice.steps(), 1);
+        assert_eq!(slice.turns(), 1);
         assert_eq!(slice.input_tokens(), 10);
         assert_eq!(slice.output_tokens(), 5);
-        assert_eq!(s.steps(), 0);
+        assert_eq!(s.turns(), 0);
         assert_eq!(s.input_tokens(), 0);
     }
 
@@ -567,8 +567,8 @@ mod tests {
         let dir = crate::test_util::TempDir::new().unwrap();
 
         let s = Stats::new();
-        s.record_step();
-        s.record_step();
+        s.record_turn();
+        s.record_turn();
         s.record_request(100, 50);
         s.record_tool_call();
         s.record_error();
@@ -577,7 +577,7 @@ mod tests {
         s.record_failed(Duration::from_secs(3), Duration::from_secs(2));
 
         let slice = s.stats_for_label("scan");
-        slice.record_step();
+        slice.record_turn();
         slice.record_request(40, 20);
         slice.record_created();
         slice.record_done(Duration::from_secs(4), Duration::from_secs(3));
@@ -585,7 +585,7 @@ mod tests {
         use crate::persistence::Persist;
         s.save(dir.path()).unwrap();
         let restored = Stats::load(dir.path()).unwrap();
-        assert_eq!(restored.steps(), 2);
+        assert_eq!(restored.turns(), 2);
         assert_eq!(restored.requests(), 1);
         assert_eq!(restored.tool_calls(), 1);
         assert_eq!(restored.errors(), 1);
@@ -598,7 +598,7 @@ mod tests {
         assert_eq!(restored.work_duration(), Duration::from_secs(7));
 
         let restored_slice = restored.stats_for_label("scan");
-        assert_eq!(restored_slice.steps(), 1);
+        assert_eq!(restored_slice.turns(), 1);
         assert_eq!(restored_slice.input_tokens(), 40);
         assert_eq!(restored_slice.tickets_done(), 1);
         assert_eq!(restored_slice.ticket_duration(), Duration::from_secs(4));

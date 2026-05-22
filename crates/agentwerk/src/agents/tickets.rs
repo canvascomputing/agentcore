@@ -555,8 +555,8 @@ impl TicketSystem {
 
     // ---- policy builders ----
 
-    pub fn max_steps(&self, n: u32) -> &Self {
-        self.policies.lock().unwrap().max_steps = Some(n);
+    pub fn max_turns(&self, n: u32) -> &Self {
+        self.policies.lock().unwrap().max_turns = Some(n);
         self
     }
 
@@ -1015,7 +1015,7 @@ impl TicketSystem {
             .count()
     }
 
-    /// Snapshot of the active policies for the loop's per-step guards.
+    /// Snapshot of the active policies for the loop's per-turn guards.
     pub(crate) fn policies(&self) -> Policies {
         self.policies.lock().unwrap().clone()
     }
@@ -1202,8 +1202,8 @@ impl TicketSystem {
 /// stats reading. Used by the `finish` watcher and by the per-agent
 /// loop's pre-claim check.
 pub(crate) fn policy_violated(policies: &Policies, stats: &Stats) -> bool {
-    if let Some(limit) = policies.max_steps {
-        if stats.steps() >= u64::from(limit) {
+    if let Some(limit) = policies.max_turns {
+        if stats.turns() >= u64::from(limit) {
             return true;
         }
     }
@@ -1227,9 +1227,9 @@ pub(crate) fn policy_violated_kind(
     stats: &Stats,
 ) -> Option<(crate::event::PolicyKind, u64)> {
     use crate::event::PolicyKind;
-    if let Some(limit) = policies.max_steps {
-        if stats.steps() >= u64::from(limit) {
-            return Some((PolicyKind::Steps, u64::from(limit)));
+    if let Some(limit) = policies.max_turns {
+        if stats.turns() >= u64::from(limit) {
+            return Some((PolicyKind::Turns, u64::from(limit)));
         }
     }
     if let Some(limit) = policies.max_input_tokens {
@@ -1681,7 +1681,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_logs_one_line_per_lifecycle_step_for_multiple_tickets() {
+    fn workspace_logs_one_line_per_lifecycle_turn_for_multiple_tickets() {
         let (sys, dir) = test_system();
         sys.task("a");
         sys.task("b");
@@ -1960,7 +1960,7 @@ mod tests {
     fn load_prefers_stats_file_over_derivation() {
         let dir = crate::test_util::TempDir::new().unwrap();
         std::fs::create_dir_all(dir.path().join("tickets")).unwrap();
-        let body = serde_json::json!({ "steps": 42, "requests": 7 });
+        let body = serde_json::json!({ "turns": 42, "requests": 7 });
         std::fs::write(
             dir.path().join("stats.json"),
             serde_json::to_vec(&body).unwrap(),
@@ -1968,7 +1968,7 @@ mod tests {
         .unwrap();
 
         let sys = TicketSystem::load(dir.path()).unwrap();
-        assert_eq!(sys.stats().steps(), 42);
+        assert_eq!(sys.stats().turns(), 42);
         assert_eq!(sys.stats().requests(), 7);
     }
 

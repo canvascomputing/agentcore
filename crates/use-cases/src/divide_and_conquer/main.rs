@@ -41,8 +41,8 @@ async fn main() {
     let schema = partial_sum_schema();
     let tickets = TicketSystem::new();
     tickets.cancel_on_ctrl_c();
-    if let Some(n) = args.max_steps {
-        tickets.max_steps(n);
+    if let Some(n) = args.max_turns {
+        tickets.max_turns(n);
     }
 
     for (idx, (lo, hi)) in partitions.iter().enumerate() {
@@ -405,7 +405,7 @@ struct CliArgs {
     n: u64,
     partitions: usize,
     concurrency: usize,
-    max_steps: Option<u32>,
+    max_turns: Option<u32>,
     verbose: bool,
 }
 
@@ -415,7 +415,7 @@ impl CliArgs {
         let mut n: Option<u64> = None;
         let mut partitions: usize = 16;
         let mut concurrency: usize = 8;
-        let mut max_steps: Option<u32> = None;
+        let mut max_turns: Option<u32> = None;
         let mut verbose = false;
 
         let mut i = 1;
@@ -429,9 +429,9 @@ impl CliArgs {
                     i += 1;
                     concurrency = parse_value(args.get(i), "--concurrency");
                 }
-                "--max-steps" => {
+                "--max-turns" => {
                     i += 1;
-                    max_steps = Some(parse_value(args.get(i), "--max-steps"));
+                    max_turns = Some(parse_value(args.get(i), "--max-turns"));
                 }
                 "-v" | "--verbose" => verbose = true,
                 "-h" | "--help" => {
@@ -454,7 +454,7 @@ impl CliArgs {
             n: n.unwrap_or(10_000),
             partitions,
             concurrency,
-            max_steps,
+            max_turns,
             verbose,
         }
     }
@@ -467,7 +467,7 @@ impl CliArgs {
         eprintln!(
             "  -c, --concurrency <N>  Number of worker agents sharing the queue (default: 8)"
         );
-        eprintln!("      --max-steps <N>    Per-system step cap (default: unlimited)");
+        eprintln!("      --max-turns <N>    Per-system turn cap (default: unlimited)");
         eprintln!("  -v, --verbose          Stream per-worker tool calls");
         eprintln!("  -h, --help             Show this help\n");
         eprintln!("Examples:");

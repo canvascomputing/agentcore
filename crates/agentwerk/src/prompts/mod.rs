@@ -77,9 +77,9 @@ pub fn default_context(dir: &Path, policies: &Policies, stats: &Stats) -> String
 /// budget is set, so the caller can skip the join.
 fn runtime_budgets(policies: &Policies, stats: &Stats) -> Option<String> {
     let mut lines: Vec<String> = Vec::new();
-    if let Some(limit) = policies.max_steps {
-        let remaining = u64::from(limit).saturating_sub(stats.steps());
-        lines.push(format!("- Steps remaining: {remaining}"));
+    if let Some(limit) = policies.max_turns {
+        let remaining = u64::from(limit).saturating_sub(stats.turns());
+        lines.push(format!("- Turns remaining: {remaining}"));
     }
     if let Some(limit) = policies.max_input_tokens {
         let remaining = limit.saturating_sub(stats.input_tokens());
@@ -157,17 +157,17 @@ mod tests {
     }
 
     #[test]
-    fn default_context_lists_each_set_step_and_token_budget() {
+    fn default_context_lists_each_set_turn_and_token_budget() {
         let working_dir = PathBuf::from("/tmp/check");
         let policies = Policies {
-            max_steps: Some(10),
+            max_turns: Some(10),
             max_input_tokens: Some(100_000),
             max_output_tokens: Some(20_000),
             ..Policies::default()
         };
         let stats = Stats::new();
-        stats.record_step();
-        stats.record_step();
+        stats.record_turn();
+        stats.record_turn();
         stats.record_request(5_000, 8_000);
 
         let rendered = default_context(&working_dir, &policies, &stats);
@@ -177,7 +177,7 @@ mod tests {
         // so the expected literal stays portable across CI hosts.
         let expected = format!(
             "{static_prefix}\n\
-             - Steps remaining: 8\n\
+             - Turns remaining: 8\n\
              - Input tokens remaining: 95000\n\
              - Output tokens remaining: 12000",
             static_prefix = default_context(&working_dir, &Policies::default(), &Stats::new()),
@@ -189,16 +189,16 @@ mod tests {
     fn default_context_only_shows_configured_budgets() {
         let working_dir = PathBuf::from("/tmp/check");
         let policies = Policies {
-            max_steps: Some(5),
+            max_turns: Some(5),
             ..Policies::default()
         };
         let stats = Stats::new();
-        stats.record_step();
+        stats.record_turn();
 
         let rendered = default_context(&working_dir, &policies, &stats);
 
         let expected = format!(
-            "{static_prefix}\n- Steps remaining: 4",
+            "{static_prefix}\n- Turns remaining: 4",
             static_prefix = default_context(&working_dir, &Policies::default(), &Stats::new()),
         );
         assert_eq!(rendered, expected);
@@ -211,18 +211,18 @@ mod tests {
     fn default_context_saturates_remaining_at_zero() {
         let working_dir = PathBuf::from("/tmp/check");
         let policies = Policies {
-            max_steps: Some(2),
+            max_turns: Some(2),
             ..Policies::default()
         };
         let stats = Stats::new();
         for _ in 0..5 {
-            stats.record_step();
+            stats.record_turn();
         }
 
         let rendered = default_context(&working_dir, &policies, &stats);
 
         let expected = format!(
-            "{static_prefix}\n- Steps remaining: 0",
+            "{static_prefix}\n- Turns remaining: 0",
             static_prefix = default_context(&working_dir, &Policies::default(), &Stats::new()),
         );
         assert_eq!(rendered, expected);

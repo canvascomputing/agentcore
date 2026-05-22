@@ -27,7 +27,7 @@ Where code lives and the rules that govern placement.
 - `tickets.rs` holds `Ticket`, `Status`, `TicketError`, `Comment`, `CommentContent`, and `TicketSystem`: the orchestrator that owns the shared queue, registered agents, policies, interrupt signal, and stats. `Comment` is the per-ticket transcript entry; `CommentContent` mirrors `providers::ContentBlock` so the ticket surface stays free of provider types.
 - `loop.rs` holds the `Runnable` trait (implemented by `TicketSystem`) and the per-agent loop driver.
 - `knowledge.rs` holds `Knowledge`: the cross-ticket store backed by a `pages/` directory of markdown files and a compact `index.md`. Mutations go through `write_page` / `read_page` / `remove_page` / `clear`.
-- `policy.rs` holds `Policies` and the limit checks the loop applies on each step.
+- `policy.rs` holds `Policies` and the limit checks the loop applies on each turn.
 - `stats.rs` holds `Stats`, `LoopStats`, and the run-wide counters and timings.
 
 ## The `providers/` module

@@ -216,7 +216,7 @@ async fn process_ticket(
     let handler = agent.resolve_event_handler();
     let emit = |kind: EventKind| handler(Event::new(agent.get_name(), kind));
 
-    ticket_system.stats.record_step();
+    ticket_system.stats.record_turn();
 
     let Some(ticket) = ticket_system.get(key) else {
         return;
@@ -224,7 +224,7 @@ async fn process_ticket(
     let labels = ticket.labels.clone();
     let task_message = ticket.as_user_message();
     for label in &labels {
-        ticket_system.stats.stats_for_label(label).record_step();
+        ticket_system.stats.stats_for_label(label).record_turn();
     }
 
     // Read once so the system prompt stays byte-stable across every
@@ -2479,17 +2479,17 @@ mod tests {
         // stubs), prime `last_usage` via a high input_tokens reply.
         //
         // Sequence:
-        //   1. text(170K input)  : primes proactive on step 2.
-        //   2. text("SUMMARY-A") : proactive summarize on step 2.
-        //   3. text(default usage): main of step 2; clears last_usage
-        //                           so proactive is quiet on step 3.
-        //   4. Err(ContextWindowExceeded): main of step 3 overflows;
+        //   1. text(170K input)  : primes proactive on turn 2.
+        //   2. text("SUMMARY-A") : proactive summarize on turn 2.
+        //   3. text(default usage): main of turn 2; clears last_usage
+        //                           so proactive is quiet on turn 3.
+        //   4. Err(ContextWindowExceeded): main of turn 3 overflows;
         //                                  reactive consumes its budget.
-        //   5. text("SUMMARY-B") : reactive summarize on step 3.
-        //   6. write_result_response: settles the ticket on step 3 retry.
+        //   5. text("SUMMARY-B") : reactive summarize on turn 3.
+        //   6. write_result_response: settles the ticket on turn 3 retry.
         //
         // Proactive must not consume compaction_retry: the reactive
-        // seam in step 3 still has its full ImmediateRetry budget.
+        // seam in turn 3 still has its full ImmediateRetry budget.
         let provider = MockProvider::with_results(vec![
             Ok(text_response_with_usage(
                 "thinking...",
@@ -2529,8 +2529,8 @@ mod tests {
         use crate::tools::{Tool, ToolResult};
 
         // Five parallel calls to `size_tool`, each below PER_TOOL_CAP
-        // (50K) but together over PER_STEP_CAP (200K). The aggregate
-        // pass stubs the largest first; one offload brings the step
+        // (50K) but together over PER_TURN_CAP (200K). The aggregate
+        // pass stubs the largest first; one offload brings the turn
         // under budget, so only `c1` is replaced.
         let provider = MockProvider::with_results(vec![
             Ok(ModelResponse {
@@ -2661,8 +2661,8 @@ mod tests {
 
     #[tokio::test]
     async fn blocking_limit_exceeded_emits_event_and_skips_provider_call() {
-        // Step 1 primes last_usage above the 197K blocking threshold
-        // for the 200K Sonnet window. On step 2 both seams cross
+        // Turn 1 primes last_usage above the 197K blocking threshold
+        // for the 200K Sonnet window. On turn 2 both seams cross
         // their lines: proactive runs first, blocking runs after, and
         // compact_or_stop routes the synthetic overflow through the
         // reactive seam.
@@ -2746,7 +2746,7 @@ mod tests {
 
     #[tokio::test]
     async fn blocking_limit_does_not_fire_in_first_iteration() {
-        // last_usage is None on step 1, so the estimate floor is 0 +
+        // last_usage is None on turn 1, so the estimate floor is 0 +
         // (tiny prompt/tools/messages) / 4. Far below the 197K
         // blocking threshold. No BlockingLimitExceeded event.
         let provider = MockProvider::with_results(vec![Ok(write_result_response("done"))]);

@@ -70,7 +70,7 @@ async fn main() {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let store_dir = cwd.join(".agentwerk");
     let tickets = TicketSystem::load(&store_dir).expect("open ticket store");
-    tickets.max_steps(40);
+    tickets.max_turns(40);
 
     let knowledge = Knowledge::load(&store_dir).expect("open knowledge store");
 
@@ -90,7 +90,7 @@ async fn main() {
             .knowledge(&knowledge),
     );
 
-    let mut prev_steps: u64 = 0;
+    let mut prev_turns: u64 = 0;
     let mut prev_requests: u64 = 0;
     let mut prev_tool_calls: u64 = 0;
     let mut prev_input: u64 = 0;
@@ -150,9 +150,9 @@ async fn main() {
         if line == "/stats" {
             let s = tickets.stats();
             eprintln!(
-                "{}{} steps · {} requests · {} tools · {} in / {} out · {} created / {} done / {} failed{}",
+                "{}{} turns · {} requests · {} tools · {} in / {} out · {} created / {} done / {} failed{}",
                 style.dim,
-                s.steps(),
+                s.turns(),
                 s.requests(),
                 s.tool_calls(),
                 s.input_tokens(),
@@ -238,12 +238,12 @@ async fn main() {
             }
         };
 
-        let steps = stats.steps().saturating_sub(prev_steps);
+        let turns = stats.turns().saturating_sub(prev_turns);
         let requests = stats.requests().saturating_sub(prev_requests);
         let tool_calls = stats.tool_calls().saturating_sub(prev_tool_calls);
         let input = stats.input_tokens().saturating_sub(prev_input);
         let output = stats.output_tokens().saturating_sub(prev_output);
-        prev_steps = stats.steps();
+        prev_turns = stats.turns();
         prev_requests = stats.requests();
         prev_tool_calls = stats.tool_calls();
         prev_input = stats.input_tokens();
@@ -253,7 +253,7 @@ async fn main() {
             eprintln!();
         }
         eprintln!(
-            "{}{outcome} · {steps} steps · {requests} requests · {tool_calls} tools · {input} in / {output} out{}",
+            "{}{outcome} · {turns} turns · {requests} requests · {tool_calls} tools · {input} in / {output} out{}",
             style.dim, style.reset,
         );
     }

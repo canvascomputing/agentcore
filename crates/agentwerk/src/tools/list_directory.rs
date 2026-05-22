@@ -1,4 +1,4 @@
-//! Lets an agent enumerate the contents of a directory: the first step of any exploratory task against an unknown layout.
+//! Lets an agent enumerate the contents of a directory: the first turn of any exploratory task against an unknown layout.
 
 use std::future::Future;
 use std::path::PathBuf;

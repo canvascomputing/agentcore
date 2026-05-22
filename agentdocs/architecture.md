@@ -16,7 +16,7 @@ The invariants that shape how code fits together. Layout says where code lives; 
 **Agents read shared state through one `Arc<TicketSystem>`. Locks are held only around queue and metric operations, never across `provider.respond().await`.**
 
 - The ticket store, policies, stats, interrupt signal, and registered-agent list live on `TicketSystem`.
-- The per-agent loop in `agents/loop.rs` claims one ticket, drives it through one or more provider/tool steps, and releases locks before each await.
+- The per-agent loop in `agents/loop.rs` claims one ticket, drives it through one or more provider/tool turns, and releases locks before each await.
 - Multiple agents share one queue; a ticket is claimed exactly once.
 - Sub-systems are not nested: a single `TicketSystem` is the unit of orchestration.
 
@@ -74,7 +74,7 @@ Two layers of state exist. The per-ticket transcript lives on `Ticket::comments`
 
 **Each concrete provider owns a `reqwest::Client` directly. There is no transport abstraction.**
 
-- The `Provider` trait fulfils one contract: `respond` (drive one step) plus per-vendor metadata.
+- The `Provider` trait fulfils one contract: `respond` (drive one turn) plus per-vendor metadata.
 - `ModelRequest`, `Message`, `ContentBlock`, and `TokenUsage` are the wire-shaped types every provider converts to and from.
 - HTTP error mapping is shared through `providers::map_http_errors` plus a provider-specific `classify` closure; SSE parsing lives in `providers::stream`.
 - Retry happens at the request level using `Policies::max_request_retries` and `request_retry_delay`; vendor code does not retry.
@@ -91,9 +91,9 @@ Two layers of state exist. The per-ticket transcript lives on `Ticket::comments`
 
 **`Stats` is one struct of atomic counters; each domain interacts through its own write-only protocol.**
 
-- `LoopStats` is what the per-agent loop sees: `record_step`, `record_request`, `record_tool_call`, `record_error`.
+- `LoopStats` is what the per-agent loop sees: `record_turn`, `record_request`, `record_tool_call`, `record_error`.
 - `TicketStats` is what the ticket lifecycle sees: `record_created`, `record_started`, `record_done`, `record_failed`.
-- Reads happen on `Stats` directly through inherent accessors (`steps()`, `tickets_done()`, `run_duration()`, `success_rate()`, ...), never through the recorder traits.
+- Reads happen on `Stats` directly through inherent accessors (`turns()`, `tickets_done()`, `run_duration()`, `success_rate()`, ...), never through the recorder traits.
 - Lock-free for increments; readers do one atomic load per call.
 - `Stats::stats_for_label(label)` returns a nested `Stats` slice scoped to one label. The loop and ticket lifecycle bump each slice alongside the global counters; `run_duration()` is `None` on a slice (elapsed run duration stays global).
 
@@ -106,7 +106,7 @@ Two layers of state exist. The per-ticket transcript lives on `Ticket::comments`
 - Crate-internal helpers `write_atomic` (tmp+rename) and `append_line` (`O_APPEND` + newline) are the only places that touch the filesystem. They are `pub(crate)` so trait impls colocated with their types can call them; by convention nothing outside a `Persist` or `Append` impl reaches for them — the one documented exception is `TicketSystem::write_tool_output`, which writes single-shot flat files that don't fit either trait.
 - Vocabulary is fixed: `save`, `load`, `append`. Bootstrap verbs other than `load` (e.g. `open`) are not used. Domain words (`checkpoint`, `snapshot`, `counter`, `persist`) do not appear in identifiers or test names.
 
-## Policies are per-system, checked at step boundaries
+## Policies are per-system, checked at turn boundaries
 
 **A run stops cleanly when any limit on `Policies` trips. The check fires `EventKind::PolicyViolated` and exits the per-agent task.**
 

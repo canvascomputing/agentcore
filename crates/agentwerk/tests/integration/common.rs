@@ -17,7 +17,7 @@ pub fn build_provider() -> (Arc<dyn Provider>, String) {
 pub fn print_result(tickets: &TicketSystem, stats: &Stats) {
     let json = serde_json::json!({
         "response": tickets.last_result().unwrap_or_default(),
-        "steps": stats.steps(),
+        "turns": stats.turns(),
         "tool_calls": stats.tool_calls(),
         "tokens_in": stats.input_tokens(),
         "tokens_out": stats.output_tokens(),

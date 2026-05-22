@@ -22,10 +22,10 @@ use super::error::ToolError;
 /// with a stub. ~12.5K tokens at the `bytes/4` estimator.
 const PER_TOOL_CAP: usize = 50_000;
 
-/// Aggregate ceiling on a single step's tool-result bytes. When parallel
+/// Aggregate ceiling on a single turn's tool-result bytes. When parallel
 /// tools each return moderate but legal sizes, this cap offloads the
-/// largest until the step is under budget. ~50K tokens.
-const PER_STEP_CAP: usize = 200_000;
+/// largest until the turn is under budget. ~50K tokens.
+const PER_TURN_CAP: usize = 200_000;
 
 /// Bytes of original output retained in the stub preview. Snapped to
 /// the last newline within the window when one exists, otherwise
@@ -204,7 +204,7 @@ pub trait ToolLike: Send + Sync {
     fn input_schema(&self) -> Value;
 
     /// Whether this tool has no side effects. Read-only tools in the same
-    /// step run concurrently; non-read-only tools run serially. Default: `false`.
+    /// turn run concurrently; non-read-only tools run serially. Default: `false`.
     fn is_read_only(&self) -> bool {
         false
     }
@@ -396,7 +396,7 @@ impl ToolRegistry {
             }
         }
 
-        cap_aggregate_outputs(&mut results, ctx, PER_STEP_CAP);
+        cap_aggregate_outputs(&mut results, ctx, PER_TURN_CAP);
 
         results
     }
@@ -476,7 +476,7 @@ impl Tool {
     }
 
     /// Mark the tool read-only so the loop runs it concurrently with other
-    /// read-only calls in the same step.
+    /// read-only calls in the same turn.
     pub fn read_only(mut self, read_only: bool) -> Self {
         self.read_only = read_only;
         self
@@ -651,7 +651,7 @@ fn cap_oversized_result(
 }
 
 /// Aggregate-cap pass: while the total `ContentBlock::ToolResult` bytes
-/// in `results` exceed `per_step_cap`, replace the largest non-stub
+/// in `results` exceed `per_turn_cap`, replace the largest non-stub
 /// result with a stub. Stops when no further offload would help (either
 /// the cap is met or persistence has failed for every remaining
 /// candidate).
@@ -662,7 +662,7 @@ fn cap_aggregate_outputs(
         Option<PathBuf>,
     )],
     ctx: &ToolContext,
-    per_step_cap: usize,
+    per_turn_cap: usize,
 ) {
     loop {
         let total: usize = results
@@ -672,7 +672,7 @@ fn cap_aggregate_outputs(
                 _ => 0,
             })
             .sum();
-        if total <= per_step_cap {
+        if total <= per_turn_cap {
             return;
         }
         let mut largest: Option<(usize, usize)> = None;

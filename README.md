@@ -224,7 +224,7 @@ Configure execution policies on a ticket system. A breach fires `EventKind::Poli
 ```rust
 let tickets = TicketSystem::new();
 tickets
-    .max_steps(40)
+    .max_turns(40)
     .max_time(std::time::Duration::from_secs(300))
     .max_input_tokens(200_000)
     .max_output_tokens(50_000)
@@ -236,7 +236,7 @@ tickets
 
 | Method | Description |
 |--------|-------------|
-| `max_steps(n)` | Cap the total number of steps. |
+| `max_turns(n)` | Cap the total number of turns. |
 | `max_time(d)` | Cap the total elapsed duration. |
 | `max_input_tokens(n)` | Cap the total input tokens. |
 | `max_output_tokens(n)` | Cap the total output tokens. |
@@ -264,19 +264,19 @@ When `context(...)` is not set, agentwerk supplies a default block:
 - Platform: darwin
 - OS version: 25.1.0
 - Date: 2026-05-06
-- Steps remaining: 8
+- Turns remaining: 8
 - Input tokens remaining: 95000
 - Output tokens remaining: 12000
 - Time remaining: 240s
 ```
 
-At each step the agent sends:
+At each turn the agent sends:
 
 - **system**: `role(...)`, with the `knowledge(...)` index
 - **tools**: tools registered with `tool(...)`
-- **messages**: a list that grows step by step
+- **messages**: a list that grows turn by turn
 
-`messages` begins with `context(...)` and the body of the current ticket. On each later step the agent appends the model's reply.
+`messages` begins with `context(...)` and the body of the current ticket. On each later turn the agent appends the model's reply.
 
 ## Tools
 
@@ -320,7 +320,7 @@ let greet = Tool::new("greet", "Say hello")
     });
 ```
 
-`.read_only(true)` allows the agent to run a tool concurrently with other read-only calls in the same step.
+`.read_only(true)` allows the agent to run a tool concurrently with other read-only calls in the same turn.
 
 ## Knowledge
 
@@ -443,7 +443,7 @@ let scan = s.stats_for_label("scan");
 | | `avg_ticket_duration()` | Return the mean of the same span, or `None` until a ticket finishes. |
 | **Tokens** | `input_tokens()` | Return the total input tokens across all provider responses. |
 | | `output_tokens()` | Return the total output tokens across all provider responses. |
-| **Activity** | `steps()` | Return the count of times an agent picked up a ticket to process. |
+| **Activity** | `turns()` | Return the count of times an agent picked up a ticket to process. |
 | | `requests()` | Return the total provider responses received. |
 | | `tool_calls()` | Return the total tool calls. |
 | | `errors()` | Return the total provider errors. |

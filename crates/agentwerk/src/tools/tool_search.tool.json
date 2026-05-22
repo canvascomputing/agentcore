@@ -7,7 +7,7 @@
   "constraints": [
     "Use this when a tool you expect is not in your initial definitions block — the framework defers some tools and exposes only their names until they are first searched for.",
     "Match is by name and keyword; pass terse queries like `pdf`, `database query`, `calendar event`.",
-    "After this tool returns a match, the surfaced tool can be called directly by name on the next step."
+    "After this tool returns a match, the surfaced tool can be called directly by name on the next turn."
   ],
   "anti_patterns": [
     "For a tool already listed in the initial definitions — call it directly.",
@@ -15,7 +15,7 @@
     "To find files by name — use `glob_tool`."
   ],
   "cautions": [
-    "IMPORTANT: a successful search adds the tool to the discovered set, growing the system-prompt context for subsequent steps. Search broadly once rather than narrowly many times."
+    "IMPORTANT: a successful search adds the tool to the discovered set, growing the system-prompt context for subsequent turns. Search broadly once rather than narrowly many times."
   ],
   "output": [
     "Plain text, markdown-formatted. Header line `Found N tool(s) matching '<query>':`, followed by one section per match — `## <name>`, the tool's description, and a fenced JSON block for its input schema.",

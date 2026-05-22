@@ -20,8 +20,8 @@ pub enum CompactReason {
 /// Which configured policy a [`EventKind::PolicyViolated`] refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyKind {
-    /// `max_steps` — the step cap across all agents.
-    Steps,
+    /// `max_turns` — the turn cap across all agents.
+    Turns,
     /// `max_input_tokens` — cumulative request-side token cap.
     InputTokens,
     /// `max_output_tokens` — cumulative reply-side token cap.
@@ -286,7 +286,7 @@ mod tests {
                 kind: ToolFailureKind::SchemaValidationFailed,
             },
             EventKind::PolicyViolated {
-                kind: PolicyKind::Steps,
+                kind: PolicyKind::Turns,
                 limit: 10,
             },
             EventKind::PolicyViolated {
